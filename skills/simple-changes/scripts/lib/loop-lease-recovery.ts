@@ -23,6 +23,7 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
 import { ensureStateDirectory } from "./git-location.ts";
 import { sha256, sha256Json } from "./hash.ts";
+import { assertNoHeldUnits } from "./held-units.ts";
 import {
   captureInventory,
   inventoryDigestInput,
@@ -1242,6 +1243,7 @@ export const recoverPostCleanupLoop = (
         const inventory = captureInventory(repositoryPath);
         const lease = requireLease(inventory);
         assertMatchingRun(lease, runId);
+        assertNoHeldUnits(lease, "loop recover-post-cleanup");
         const { absentPaths, intent } = preparePostCleanupRecoveryIntent(
           commonGitDirectory,
           inventory,
@@ -1785,6 +1787,7 @@ export const closeLoopTargetEquivalent = (
         const inventory = captureInventory(repositoryPath);
         let lease = requireLease(inventory);
         assertMatchingRun(lease, runId);
+        assertNoHeldUnits(lease, "loop close-equivalent");
         const lifecycle = controllerLifecycle(lease);
         if (lifecycle.status === "active" && lease.ownerAgentId !== agentId) {
           throw new SimpleChangesError(

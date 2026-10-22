@@ -189,24 +189,44 @@ export const splitShipmentOutcomeInput = (
 };
 
 /**
+ * The digest a lease records for an outcome: the complete receipt's digest,
+ * bound to the digest of every unit held when it was recorded. Without held
+ * units it is the receipt digest itself, so earlier outcomes read as before.
+ * With them it differs from that digest, so a runtime that does not know
+ * held units refuses the outcome instead of closing over the held work.
+ */
+export const boundOutcomeDigest = (
+  receiptDigest: string,
+  holdDigests: readonly string[]
+): string =>
+  holdDigests.length === 0
+    ? receiptDigest
+    : sha256Json({ heldUnits: holdDigests, outcomeDigest: receiptDigest });
+
+/**
  * Re-joins the override and handoff sidecars with the exact outcome they were
  * recorded for. The stored receipt and the sidecars' entries must recompose
  * into the complete receipt the recorded digest names, so editing any field,
  * substituting another run's sidecar, or removing the sidecar of an outcome
  * recorded with overrides or handoffs fails closed. A sidecar is null when no
- * file exists.
+ * file exists. `holdDigests` are the run's held units, which the recorded
+ * digest also binds, so adding, removing, or changing a hold after recording
+ * fails too.
  */
 export const recordedPreservedSourceEvidence = (
   overrideSidecar: unknown,
   handoffSidecar: unknown,
   runId: string,
   receipt: ShipmentOutcomeReceipt,
-  receiptDigest: string
+  receiptDigest: string,
+  holdDigests: readonly string[] = []
 ): PreservedSourceEvidence => {
   if (overrideSidecar === null && handoffSidecar === null) {
-    if (sha256Json(receipt) !== receiptDigest) {
+    if (
+      boundOutcomeDigest(sha256Json(receipt), holdDigests) !== receiptDigest
+    ) {
       throw new SimpleChangesError(
-        `Shipment outcome for ${runId} was recorded with preserved-source overrides or handoffs whose sidecar is missing; record the outcome again.`,
+        `Shipment outcome for ${runId} was recorded with preserved-source overrides or handoffs whose sidecar is missing, or with held units that are missing or changed; record the outcome again.`,
         EXIT_CODES.unsafe
       );
     }
@@ -242,7 +262,8 @@ export const recordedPreservedSourceEvidence = (
         record !== null &&
         (record.runId !== runId || record.receiptDigest !== receiptDigest)
     ) ||
-    recomposed !== receiptDigest
+    recomposed === null ||
+    boundOutcomeDigest(recomposed, holdDigests) !== receiptDigest
   ) {
     throw new SimpleChangesError(OVERRIDES_UNBOUND, EXIT_CODES.unsafe);
   }

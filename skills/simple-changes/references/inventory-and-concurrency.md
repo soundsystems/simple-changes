@@ -210,6 +210,9 @@ appeared after loop start is an `unregistered-worktree` violation instead,
 handled as described below. `loop exec` also rejects `git switch` and `git
 checkout` before Git can move a registered checkout; prepare the correct
 branch-bound worktree before the loop instead.
+A refresh never reclassifies a unit. To keep a scoped unit out of this
+shipment after review found it not ready, hold it with the user's fresh
+approval through `loop hold-unit` (see [focused units](focused-units.md#held-unit)).
 
 Use these boundaries after an author is registered:
 

@@ -76,6 +76,8 @@ const PRESERVED_SOURCE_HANDOFF_DIRECTORY = "preserved-source-handoff";
 
 const CHANGELOG_AUTHOR_DIRECTORY = "changelog-author";
 
+const HELD_UNITS_DIRECTORY = "held-units";
+
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 
 const PERMISSION_DENIED_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
@@ -1471,6 +1473,7 @@ const currentTargetRevision = (lease: LoopLease): string => {
 
 type ReceiptSidecarDirectory =
   | typeof CHANGELOG_AUTHOR_DIRECTORY
+  | typeof HELD_UNITS_DIRECTORY
   | typeof PRESERVED_SOURCE_HANDOFF_DIRECTORY
   | typeof PRESERVED_SOURCE_OVERRIDE_DIRECTORY
   | typeof REMOTE_BRANCH_ANCESTRY_DIRECTORY
@@ -1723,6 +1726,7 @@ export {
   exactWorktreeLease,
   forgetLeaseSession,
   gitLabProjectForTargetRef,
+  HELD_UNITS_DIRECTORY,
   MISSING_OPENING_REMOTE_INVENTORY_BLOCKER,
   MISSING_REMOTE_RECONCILIATION_BLOCKER,
   matchingOverride,

@@ -12,6 +12,7 @@ import {
 } from "./emergency-shipping.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256, sha256Json } from "./hash.ts";
+import { heldUnitIds, readHeldUnits } from "./held-units.ts";
 import {
   assertExactBranch,
   captureInventory,
@@ -79,6 +80,7 @@ import {
 } from "./review-ledger.ts";
 import { retirementBackedBranches } from "./run-created-retirement.ts";
 import type {
+  HeldUnitHold,
   LoopLease,
   LoopVerification,
   LoopViolation,
@@ -120,6 +122,71 @@ export interface FinalizationCleanupResult {
   removedBranches: FinalizationRemovedBranch[];
   removedWorktrees: string[];
 }
+
+interface HeldProtection {
+  /** Branches of held source checkouts, never deleted by finalization. */
+  branches: Set<string>;
+  holds: HeldUnitHold[];
+  /** Held paths in the primary checkout, never normalized or counted. */
+  primaryPaths: Set<string>;
+  /** Held source checkouts, never removed, demoted, or released. */
+  sources: Set<string>;
+  unitIds: Set<string>;
+}
+
+/** Whether the run's scope has units and every one of them is held. */
+const allUnitsHeld = (
+  lease: LoopLease,
+  holds: readonly HeldUnitHold[]
+): boolean => {
+  const units = lease.shipmentScope?.plan.units ?? [];
+  const held = heldUnitIds(holds);
+  return units.length > 0 && units.every((unit) => held.has(unit.id));
+};
+
+/**
+ * The primary-checkout paths held units own: their scoped paths and the
+ * original paths the hold observed as part of their result, such as the path
+ * a held rename moved from, which the primary's status and delivery proof
+ * also report. A copy's modified source is its own change, owned by whatever
+ * scopes it, so it is not included.
+ */
+const heldPrimaryPaths = (
+  lease: LoopLease,
+  holds: readonly HeldUnitHold[]
+): Set<string> =>
+  new Set(
+    holds
+      .filter((hold) => hold.unit.sourceWorktree === lease.primaryCheckout)
+      .flatMap((hold) => [
+        ...hold.unit.paths,
+        ...hold.observation.originalPaths.map((item) => item.path),
+      ])
+  );
+
+/**
+ * What this run's held units protect from finalization cleanup, or null when
+ * the hold record cannot be read, in which case callers clean nothing.
+ */
+const heldProtection = (lease: LoopLease): HeldProtection | null => {
+  let holds: HeldUnitHold[];
+  try {
+    holds = readHeldUnits(lease);
+  } catch {
+    return null;
+  }
+  return {
+    branches: new Set(
+      holds.flatMap((hold) =>
+        hold.observation.source.branch ? [hold.observation.source.branch] : []
+      )
+    ),
+    holds,
+    primaryPaths: heldPrimaryPaths(lease, holds),
+    sources: new Set(holds.map((hold) => hold.unit.sourceWorktree)),
+    unitIds: heldUnitIds(holds),
+  };
+};
 
 const emptyFinalizationCleanup = (): FinalizationCleanupResult => ({
   cleanedPrimaryPaths: [],
@@ -200,7 +267,9 @@ const reconcileConcurrentAuthorClaims = (
   cleanup: FinalizationCleanupResult,
   // Receives each claim kept because its checkout's branch is not exact, so
   // the absent-claim sweep later in finalization keeps it too.
-  keptClaims: Set<string>
+  keptClaims: Set<string>,
+  // Held source checkouts keep their claims and registrations untouched.
+  heldSources: ReadonlySet<string>
 ): LoopLease => {
   const coordination = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
@@ -211,7 +280,11 @@ const reconcileConcurrentAuthorClaims = (
   const demoted = new Map<string, LoopWorktreeLease>();
   const handoffDispositions = new Map<string, LoopWorktreeDisposition>();
   for (const registered of lease.worktrees) {
-    if (registered.role !== "concurrent-author" || !registered.claimId) {
+    if (
+      registered.role !== "concurrent-author" ||
+      !registered.claimId ||
+      heldSources.has(registered.path)
+    ) {
       continue;
     }
     const worktree = worktreesByPath.get(registered.path);
@@ -367,7 +440,16 @@ const automaticCleanupCandidates = (
   const coordination = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
   );
+  // A held unit's source checkout is never a cleanup candidate, and an
+  // unreadable hold record leaves every checkout in place.
+  const protection = heldProtection(lease);
+  if (!protection) {
+    return [];
+  }
   return inventory.worktrees.filter((worktree) => {
+    if (protection.sources.has(worktree.path)) {
+      return false;
+    }
     const registered = registeredByPath.get(worktree.path);
     const removalDisposition = matchingRemovalDisposition(lease, worktree);
     const targetContained = targetContainsRevision(
@@ -746,7 +828,8 @@ const removeTargetContainedBranches = (
   repositoryPath: string,
   targetBranch: string,
   targetRevision: string,
-  cleanup: FinalizationCleanupResult
+  cleanup: FinalizationCleanupResult,
+  heldBranches: ReadonlySet<string>
 ): void => {
   const inventory = captureInventory(repositoryPath);
   const openingBranches = new Map(
@@ -779,6 +862,7 @@ const removeTargetContainedBranches = (
       (branch) =>
         !(isLossyName(branch.name) || retirementBacked.has(branch.name)) &&
         branch.name !== targetBranch &&
+        !heldBranches.has(branch.name) &&
         branch.worktreePath === null &&
         (openingBranches.get(branch.name) === branch.sha ||
           runOwnedBranches.has(branch.name) ||
@@ -883,9 +967,12 @@ const preservesProvenMixedPrimary = (
   primary: WorktreeInventory,
   eligiblePaths: Set<string>
 ): boolean => {
+  const held = heldProtection(lease)?.unitIds ?? new Set<string>();
   const scopedPrimaryPaths = new Set(
     (lease.shipmentScope?.plan.units ?? [])
-      .filter((unit) => unit.sourceWorktree === primary.path)
+      .filter(
+        (unit) => unit.sourceWorktree === primary.path && !held.has(unit.id)
+      )
       .flatMap((unit) => unit.paths)
   );
   return (
@@ -1037,19 +1124,14 @@ const stagePolicyPathsAtTarget = (
   return carried;
 };
 
-const reconcileTargetEquivalentPrimaryChanges = (
+// Dirty primary paths whose bytes already equal the target and whose index
+// can be restored. A held unit's primary bytes stay exactly as held.
+const targetEquivalentPrimaryPaths = (
   lease: LoopLease,
-  inventory: RepositoryInventory,
-  targetBranch: string,
+  primary: WorktreeInventory & { headSha: string },
   targetRevision: string,
-  cleanup: FinalizationCleanupResult
-): CarriedPolicyPaths | null => {
-  const primary = inventory.worktrees.find(
-    (worktree) => worktree.path === lease.primaryCheckout
-  );
-  if (!(primary?.headSha && primary.changes.length > 0)) {
-    return null;
-  }
+  heldPaths: ReadonlySet<string>
+): Set<string> => {
   const eligiblePaths = new Set<string>();
   for (const change of primary.changes) {
     if (change.conflicted || change.untracked) {
@@ -1058,6 +1140,9 @@ const reconcileTargetEquivalentPrimaryChanges = (
     const paths = [change.originalPath, change.path].filter(
       (path): path is string => Boolean(path)
     );
+    if (paths.some((path) => heldPaths.has(path))) {
+      continue;
+    }
     const worktreeMatchesTarget = diffMatchesRevision(
       lease.primaryCheckout,
       targetRevision,
@@ -1083,6 +1168,35 @@ const reconcileTargetEquivalentPrimaryChanges = (
       }
     }
   }
+  return eligiblePaths;
+};
+
+const reconcileTargetEquivalentPrimaryChanges = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetBranch: string,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): CarriedPolicyPaths | null => {
+  const primary = inventory.worktrees.find(
+    (worktree) => worktree.path === lease.primaryCheckout
+  );
+  if (!(primary?.headSha && primary.changes.length > 0)) {
+    return null;
+  }
+  const protection = heldProtection(lease);
+  if (!protection) {
+    cleanup.errors.push(
+      "The held-unit record could not be read, so no primary path was cleaned."
+    );
+    return null;
+  }
+  const eligiblePaths = targetEquivalentPrimaryPaths(
+    lease,
+    { ...primary, headSha: primary.headSha },
+    targetRevision,
+    protection.primaryPaths
+  );
   if (eligiblePaths.size === 0) {
     return null;
   }
@@ -1468,16 +1582,45 @@ const automaticFinalizationCleanup = (
     cleanup.errors.push(targetRefusal);
     return { cleanup, lease };
   }
+  // Held units' checkouts, branches, claims, and primary bytes stay exactly
+  // as held; an unreadable hold record stops automatic cleanup entirely.
+  const protection = heldProtection(lease);
+  if (!protection) {
+    cleanup.errors.push(
+      `The held-unit record for ${lease.runId} could not be read or no longer matches what loop hold-unit recorded, so automatic cleanup did not run.`
+    );
+    return { cleanup, lease };
+  }
+  // The recorded outcome digest binds its overrides and holds. Check it
+  // before any cleanup, so a removed or edited record can never leave held
+  // work unprotected while cleanup runs.
+  if (lease.shipmentOutcome && !recordedOutcomeIntact(lease)) {
+    cleanup.errors.push(
+      `The recorded shipment outcome for ${lease.runId} no longer matches its preserved-source overrides or held units, so automatic cleanup did not run.`
+    );
+    return { cleanup, lease };
+  }
   const repositoryPath = inventoryInput.repository.primaryCheckout;
   lease = completeAbsentRemovalIntents(lease, inventoryInput, targetRevision);
-  const keptClaims = new Set<string>();
+  // A held unit's claim stays, even when its checkout is gone, and so does
+  // every claim on a held source checkout: a claim that replaced the one
+  // observed at hold time protects the same held work.
+  const keptClaims = new Set<string>([
+    ...protection.holds.flatMap((hold) =>
+      hold.observation.claim ? [hold.observation.claim.claimId] : []
+    ),
+    ...readCoordinationDocumentFromCommonDirectory(lease.commonGitDirectory)
+      .claims.filter((claim) => protection.sources.has(claim.path))
+      .map((claim) => claim.claimId),
+  ]);
   lease = reconcileConcurrentAuthorClaims(
     lease,
     inventoryInput,
     repositoryPath,
     targetRevision,
     cleanup,
-    keptClaims
+    keptClaims,
+    protection.sources
   );
   // A removal disposition records the checkout's branch, so a checkout on a
   // name that is not exact stays in place. Leaving it out of the candidates
@@ -1520,10 +1663,15 @@ const automaticFinalizationCleanup = (
     repositoryPath,
     targetBranch,
     targetRevision,
-    cleanup
+    cleanup,
+    protection.branches
   );
   let inventory = captureInventory(repositoryPath);
+  // A held unit packaged from the primary checkout keeps that checkout on
+  // its branch with its bytes, clean or not: no switch, fast-forward, or
+  // normalization.
   if (
+    !protection.sources.has(lease.primaryCheckout) &&
     preparePrimarySynchronization(
       lease,
       inventory,
@@ -1574,7 +1722,8 @@ const automaticFinalizationCleanup = (
     repositoryPath,
     targetBranch,
     targetRevision,
-    cleanup
+    cleanup,
+    protection.branches
   );
   cleanup.removedBranches = [
     ...new Map(
@@ -1586,7 +1735,8 @@ const automaticFinalizationCleanup = (
     lease.commonGitDirectory,
     captureInventory(repositoryPath),
     lease.ownerAgentId,
-    keptClaims
+    keptClaims,
+    protection.sources
   )) {
     cleanup.releasedClaims.push({
       claimId: claim.claimId,
@@ -1698,7 +1848,8 @@ const storedPreservedSources = (lease: LoopLease): PreservedSourceEvidence => {
     ),
     lease.runId,
     outcome.receipt,
-    outcome.receiptDigest
+    outcome.receiptDigest,
+    readHeldUnits(lease).map((hold) => hold.holdDigest)
   );
 };
 
@@ -1798,13 +1949,39 @@ const shipmentOutcomeCompletionBlockers = (
       : [`Shipment outcome entry changed after review: ${item.path}`]
   );
   let evidence: PreservedSourceEvidence;
+  let holds: HeldUnitHold[];
   try {
     evidence = storedPreservedSources(lease);
+    holds = readHeldUnits(lease);
   } catch (error) {
     return [
       ...targetBlockers,
       error instanceof Error ? error.message : String(error),
     ];
+  }
+  // Every scoped unit is either reported in the outcome or held, never both.
+  const held = heldUnitIds(holds);
+  const reported = new Set(receipt.units.map((unit) => unit.unitId));
+  const unitBlockers = lease.shipmentScope.plan.units.flatMap((unit) => {
+    if (held.has(unit.id) && reported.has(unit.id)) {
+      return [
+        `Shipment outcome reports held unit ${unit.id}; a held unit is preserved and never delivered or target-equivalent. Record the outcome again without it.`,
+      ];
+    }
+    if (!(held.has(unit.id) || reported.has(unit.id))) {
+      return [
+        `Shipment outcome omits scoped unit ${unit.id}, which is not held. Record the outcome again.`,
+      ];
+    }
+    return [];
+  });
+  // A run that held every scoped unit delivered none of its scope. It closes
+  // only at the exact pinned target, however it closes, and never as a
+  // verified delivery.
+  if (allUnitsHeld(lease, holds) && targetRevision !== lease.targetRevision) {
+    unitBlockers.push(
+      `Every scoped unit of ${lease.runId} is held, so it delivered nothing, but the target moved from ${lease.targetRevision} to ${targetRevision ?? "unresolved"}. A run that held all of its work closes only at its pinned target; replan it instead.`
+    );
   }
   // A preserved-source override or handoff holds only while its source,
   // claim, pause, copy, and target entries stay exactly as approved.
@@ -1819,7 +1996,7 @@ const shipmentOutcomeCompletionBlockers = (
         ]
       : [];
   });
-  return [...targetBlockers, ...sourceBlockers];
+  return [...targetBlockers, ...unitBlockers, ...sourceBlockers];
 };
 
 const repositoryCleanupBlockers = (
@@ -1994,6 +2171,25 @@ export interface LoopFinalizationResult {
   verification: LoopVerification;
 }
 
+/**
+ * A unit `loop hold-unit` held, reported apart from delivered work. Its
+ * source checkout, branch, claim, and bytes were left untouched.
+ */
+export interface LoopFinalizationHeldUnit {
+  approvedBy: string;
+  holdDigest: string;
+  paths: string[];
+  reason: string;
+  recordedAt: string;
+  sourceBranch: string | null;
+  sourceHeadSha: string | null;
+  /** Whether the source still has the exact branch, head, status, and bytes the hold recorded. */
+  sourceMatchesHold: boolean;
+  sourceWorktree: string;
+  title: string;
+  unitId: string;
+}
+
 export interface LoopFinalizationReceipt {
   /** Questions a paused controller left for the user. */
   awaitingUser?: string[];
@@ -2004,6 +2200,8 @@ export interface LoopFinalizationReceipt {
   controllerStatus: "released" | "relinquished";
   deliveryStatus: "verified" | "unverified";
   finalizedAt: string;
+  /** Units held instead of delivered; present only when the run held one. */
+  heldUnits?: LoopFinalizationHeldUnit[];
   kind: "loop-finalization";
   leaseDigest: string;
   preservedWorktrees: string[];
@@ -2015,6 +2213,58 @@ export interface LoopFinalizationReceipt {
   shipmentStatus: "closed" | "open" | "unstarted";
   targetRevision: string | null;
 }
+
+// Whether a held source still has exactly what its hold recorded.
+const heldSourceMatches = (
+  hold: HeldUnitHold,
+  inventory: RepositoryInventory
+): boolean => {
+  const { source } = hold.observation;
+  const current = inventory.worktrees.find(
+    (worktree) => worktree.path === source.worktree
+  );
+  if (
+    !current ||
+    current.branch !== source.branch ||
+    current.headSha !== source.headSha ||
+    current.changeDigest !== source.changeDigest
+  ) {
+    return false;
+  }
+  try {
+    return [...hold.observation.paths, ...hold.observation.originalPaths].every(
+      (item) =>
+        worktreeSourceEntry(current.path, item.path) === item.sourceEntry
+    );
+  } catch {
+    return false;
+  }
+};
+
+const heldUnitsField = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): Pick<LoopFinalizationReceipt, "heldUnits"> => {
+  const holds = heldProtection(lease)?.holds ?? [];
+  if (holds.length === 0) {
+    return {};
+  }
+  return {
+    heldUnits: holds.map((hold) => ({
+      approvedBy: hold.authorization.approvedBy,
+      holdDigest: hold.holdDigest,
+      paths: [...hold.unit.paths],
+      reason: hold.observation.reason,
+      recordedAt: hold.recordedAt,
+      sourceBranch: hold.observation.source.branch,
+      sourceHeadSha: hold.observation.source.headSha,
+      sourceMatchesHold: heldSourceMatches(hold, inventory),
+      sourceWorktree: hold.unit.sourceWorktree,
+      title: hold.unit.title,
+      unitId: hold.unit.id,
+    })),
+  };
+};
 
 const reviewAttemptsField = (
   lease: LoopLease
@@ -2047,7 +2297,18 @@ const hasVerifiedDelivery = (
   if (shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0) {
     return false;
   }
+  // Held units are reported separately and never count as delivered; the
+  // blockers above already proved the hold record readable. A run that held
+  // every unit delivered none of its scope.
+  const holds = readHeldUnits(lease);
+  if (allUnitsHeld(lease, holds)) {
+    return false;
+  }
+  const held = heldUnitIds(holds);
   return scope.plan.units.every((unit) => {
+    if (held.has(unit.id)) {
+      return true;
+    }
     const source = inventory.worktrees.find(
       (worktree) => worktree.path === unit.sourceWorktree
     );
@@ -2107,8 +2368,14 @@ const preservesUnchangedPrimary = (
   if (!(primary && registered && scope) || isLossyName(primary.branch)) {
     return false;
   }
+  // A held unit's primary paths are excluded, never delivered.
+  const protection = heldProtection(lease);
+  if (!protection) {
+    return false;
+  }
   const units = scope.plan.units.filter(
-    (unit) => unit.sourceWorktree === primary.path
+    (unit) =>
+      unit.sourceWorktree === primary.path && !protection.unitIds.has(unit.id)
   );
   const outcome = lease.shipmentOutcome?.receipt;
   const delivered = new Map<string, string | null>();
@@ -2132,9 +2399,12 @@ const preservesUnchangedPrimary = (
     changes: primary.changes,
     delivered,
     digest: primary.changeDigest,
-    excluded: scope.plan.exclusions
-      .filter((item) => item.worktreePath === primary.path)
-      .map((item) => item.path),
+    excluded: [
+      ...scope.plan.exclusions
+        .filter((item) => item.worktreePath === primary.path)
+        .map((item) => item.path),
+      ...protection.primaryPaths,
+    ],
     head: primary.headSha,
     headContained: Boolean(
       primary.headSha &&
@@ -2154,6 +2424,39 @@ const preservesUnchangedPrimary = (
     target,
     targetEntry: (path) => targetTreeEntry(lease.primaryCheckout, target, path),
   });
+};
+
+/**
+ * A run that held every scoped unit delivered nothing. It may close, with
+ * delivery left unverified, when its intact outcome is exactly empty (so the
+ * target did not move), and any dirty primary is unchanged from its baseline
+ * with every dirty path held, preserved, or excluded.
+ */
+const allHeldCompletion = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): boolean => {
+  const scope = lease.shipmentScope;
+  const outcome = lease.shipmentOutcome?.receipt;
+  const protection = heldProtection(lease);
+  if (
+    !(scope && outcome && protection) ||
+    scope.plan.units.length === 0 ||
+    !scope.plan.units.every((unit) => protection.unitIds.has(unit.id)) ||
+    outcome.units.length > 0 ||
+    outcome.additionalPaths.length > 0
+  ) {
+    return false;
+  }
+  // The blockers include the exact pinned-target rule for all-held runs.
+  const target = currentTargetRevision(lease);
+  if (shipmentOutcomeCompletionBlockers(lease, inventory, target).length > 0) {
+    return false;
+  }
+  const primary = inventory.worktrees.find((worktree) => worktree.isPrimary);
+  return (
+    !primary?.changes.length || preservesUnchangedPrimary(lease, inventory)
+  );
 };
 
 const shipmentFinalizationVerification = (
@@ -2216,10 +2519,21 @@ const finalizationDecision = (
   const primary = finalInventory.worktrees.find(
     (worktree) => worktree.isPrimary
   );
+  let heldOnly = false;
+  if (!verifiedDelivery) {
+    try {
+      heldOnly = allHeldCompletion(lease, finalInventory);
+    } catch {
+      // The ordinary blockers below report unresolved target evidence.
+    }
+  }
+  // A run that held every unit closes like a scoped delivery, with its held
+  // work preserved in place, but never reports verified delivery.
   const scopedCompletion =
-    verifiedDelivery &&
-    (!primary?.changes.length ||
-      preservesUnchangedPrimary(lease, finalInventory));
+    heldOnly ||
+    (verifiedDelivery &&
+      (!primary?.changes.length ||
+        preservesUnchangedPrimary(lease, finalInventory)));
   const verification = shipmentFinalizationVerification(
     lease,
     finalInventory,
@@ -2279,6 +2593,7 @@ const finalizationDecision = (
     cleanupStatus: cleanupPending ? "pending" : "complete",
     deliveryStatus: verifiedDelivery ? "verified" : "unverified",
     finalizedAt: now,
+    ...heldUnitsField(lease, finalInventory),
     kind: "loop-finalization",
     leaseDigest: loopManifestDigest(lease),
     preservedWorktrees: finalInventory.worktrees
@@ -2300,8 +2615,16 @@ const releaseDeliveredSourceClaims = (
   inventory: RepositoryInventory,
   cleanup: FinalizationCleanupResult
 ): void => {
+  // A held unit's checkout keeps its claim, even when a delivered unit
+  // shares it; an unreadable hold record releases nothing.
+  const protection = heldProtection(lease);
+  if (!protection) {
+    return;
+  }
   const sourcePaths = new Set(
-    lease.shipmentScope?.plan.units.map((unit) => unit.sourceWorktree)
+    lease.shipmentScope?.plan.units
+      .map((unit) => unit.sourceWorktree)
+      .filter((path) => !protection.sources.has(path))
   );
   const { claims } = readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory

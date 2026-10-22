@@ -73,9 +73,11 @@ import {
   finalizeLoop,
   grantLoopOverride,
   guardLoopMutation,
+  holdScopedUnit,
   LOOP_LOCK_WAIT_DEFAULT_MS,
   LOOP_LOCK_WAIT_MAX_MS,
   type LoopEquivalenceEvidence,
+  type LoopFinalizationHeldUnit,
   type LoopLockWait,
   LoopLockWaitError,
   loopLeasePath,
@@ -406,6 +408,10 @@ Usage:
     --receipt SHIPMENT_OUTCOME_FILE
     [--approved-by USER --approval-reference REFERENCE]
     [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
+  simple-changes loop hold-unit --run-id ID --agent-id ID --unit UNIT_ID
+    --reason TEXT --readiness-evidence "UNIT_ID: TEXT" [...]
+    [--approved-by USER --approval-reference REFERENCE
+     --observation-digest SHA256] [--json] [--repo PATH]
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
@@ -608,6 +614,8 @@ interface CliOptions {
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
+  // loop hold-unit --observation-digest: the observation the user approved.
+  observationDigest?: string;
   openingRemoteInventoryPath?: string;
   outputPath?: string;
   overrideHalt: boolean;
@@ -625,6 +633,8 @@ interface CliOptions {
   providerReceiptPath?: string;
   purpose?: string;
   questions?: RepoPolicy["questions"];
+  // loop hold-unit --readiness-evidence: each failed-readiness citation.
+  readinessEvidence: string[];
   ready: boolean;
   readyReceiptPath?: string;
   reason?: string;
@@ -715,6 +725,7 @@ const VALUED_OPTIONS = new Set([
   "--migration-handling",
   "--migration-target",
   "--mode",
+  "--observation-digest",
   "--owner-ref",
   "--opening-remote-inventory",
   "--output",
@@ -728,6 +739,7 @@ const VALUED_OPTIONS = new Set([
   "--proposal-signatures",
   "--purpose",
   "--questions",
+  "--readiness-evidence",
   "--ready-receipt",
   "--reason",
   "--receipt",
@@ -1171,6 +1183,7 @@ const applyLoopValuedOption = (
     "--hold-id": "holdId",
     "--manifest-digest": "manifestDigest",
     "--name": "forkName",
+    "--observation-digest": "observationDigest",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
     "--output": "outputPath",
     "--owner-ref": "ownerRef",
@@ -1212,6 +1225,10 @@ const applyLoopValuedOption = (
   }
   if (option === "--awaiting-user") {
     options.awaitingUser.push(value);
+    return true;
+  }
+  if (option === "--readiness-evidence") {
+    options.readinessEvidence.push(value);
     return true;
   }
   if (option === "--root") {
@@ -1544,6 +1561,7 @@ const parseOptions = (args: string[]): CliOptions => {
     overrideHalt: false,
     positional: [],
     productionAuthorized: false,
+    readinessEvidence: [],
     ready: false,
     releaseClaim: false,
     repo: process.cwd(),
@@ -3841,6 +3859,17 @@ const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
     ? `Removed ${removed.length} agent work director${removed.length === 1 ? "y" : "ies"}.\n`
     : "";
 
+// Held units, reported apart from delivered work.
+const renderHeldUnits = (
+  held: readonly LoopFinalizationHeldUnit[] | undefined
+): string =>
+  (held ?? [])
+    .map(
+      (unit) =>
+        `Held, not delivered: unit ${unit.unitId} (${unit.title}) stays preserved in ${unit.sourceWorktree}${unit.sourceBranch ? ` on ${unit.sourceBranch}` : ""}; its checkout, branch, and claim were left untouched${unit.sourceMatchesHold ? "" : ", and its source changed after the hold"}.\n`
+    )
+    .join("");
+
 // A cleanup's non-fatal notes, one per line.
 const renderCleanupNotes = (notes: readonly string[]): string =>
   notes.map((note) => `Note: ${note}\n`).join("");
@@ -3959,7 +3988,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderCleanupNotes(result.cleanup.notes)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderCleanupNotes(result.cleanup.notes)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -4440,6 +4469,73 @@ const runLoopTurnCheck = async (options: CliOptions): Promise<void> => {
   process.exit(0);
 };
 
+// The shipment records a controller keeps: scope, outcome, and held units.
+const runLoopShipmentAction = (
+  action: string,
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): boolean => {
+  if (action === "record-scope" || action === "refresh-scope") {
+    const receipt = recordShipmentScope(
+      options.repo,
+      runId,
+      agentId,
+      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
+      action === "refresh-scope",
+      lockWaitOption(options)
+    );
+    writeOutput(receipt, options.json, `${receipt.summary}\n`);
+    return true;
+  }
+  if (action === "record-outcome") {
+    const outcome = recordShipmentOutcome(
+      options.repo,
+      runId,
+      agentId,
+      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
+      {
+        approvalReference: options.approvalReference,
+        approvedBy: options.approvedBy,
+      },
+      lockWaitOption(options)
+    );
+    writeOutput(outcome, options.json, `${outcome.summary}\n`);
+    return true;
+  }
+  if (action === "hold-unit") {
+    runLoopHoldUnit(options, runId, agentId);
+    return true;
+  }
+  return false;
+};
+
+const runLoopHoldUnit = (
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): void => {
+  const result = holdScopedUnit(options.repo, {
+    agentId,
+    approval: {
+      approvalReference: options.approvalReference,
+      approvedBy: options.approvedBy,
+      observationDigest: options.observationDigest,
+    },
+    readinessEvidence: options.readinessEvidence,
+    reason: requireCliOption(options.reason, "--reason"),
+    runId,
+    unitId: requireCliOption(options.unitId, "--unit"),
+  });
+  writeOutput(
+    result,
+    options.json,
+    result.status === "held"
+      ? `Held unit ${result.observation.unitId} in ${runId}: its exact source, branch, and claim stay preserved, and finalization reports it as held, never as delivered or target-equivalent.\n${result.summary}\n`
+      : `Nothing is held yet. Show the user this exact observation and ask for their approval now; an earlier or conditional instruction is not enough.\n${result.summary}\nAfter the user approves, run:\n${result.approvalCommand}\n`
+  );
+};
+
 const runLoopDraftOutcome = (options: CliOptions, runId: string): void => {
   const outcome = draftShipmentOutcome(options.repo, runId, {
     ...(options.changelogReceiptPath
@@ -4480,7 +4576,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, draft-outcome, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
+      "loop requires start, status, verify, record-scope, refresh-scope, draft-outcome, record-outcome, hold-unit, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
       EXIT_CODES.usage
     );
   }
@@ -4505,31 +4601,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
     return;
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
-  if (action === "record-scope" || action === "refresh-scope") {
-    const receipt = recordShipmentScope(
-      options.repo,
-      runId,
-      agentId,
-      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
-      action === "refresh-scope",
-      lockWaitOption(options)
-    );
-    writeOutput(receipt, options.json, `${receipt.summary}\n`);
-    return;
-  }
-  if (action === "record-outcome") {
-    const outcome = recordShipmentOutcome(
-      options.repo,
-      runId,
-      agentId,
-      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
-      {
-        approvalReference: options.approvalReference,
-        approvedBy: options.approvedBy,
-      },
-      lockWaitOption(options)
-    );
-    writeOutput(outcome, options.json, `${outcome.summary}\n`);
+  if (runLoopShipmentAction(action, options, runId, agentId)) {
     return;
   }
   if (runLoopTakeover(action, options, runId, agentId)) {

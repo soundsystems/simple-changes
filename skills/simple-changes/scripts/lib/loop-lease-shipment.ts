@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256Json } from "./hash.ts";
+import { readHeldUnits } from "./held-units.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   assertControllerActive,
@@ -37,6 +38,7 @@ import {
   preservedSourceHandoffFailure,
 } from "./preserved-source-handoff.ts";
 import {
+  boundOutcomeDigest,
   preservedSourceOverrideFailure,
   splitShipmentOutcomeInput,
 } from "./preserved-source-override.ts";
@@ -45,6 +47,7 @@ import { validateSchema } from "./schema.ts";
 import { sourceWorktreeDelta } from "./source-worktree-delta.ts";
 import type {
   ChangePlan,
+  HeldUnitHold,
   LoopLease,
   LoopVerification,
   PreservedSourceHandoffReceipt,
@@ -1147,7 +1150,8 @@ const validateShipmentOutcomeUnits = (
     handoffs: readonly PreservedSourceHandoffReceipt[];
     overrides: readonly PreservedSourceOverrideReceipt[];
   },
-  recordedAt: string
+  recordedAt: string,
+  holds: readonly HeldUnitHold[]
 ): { accountedPaths: Set<string>; scopedPaths: Set<string> } => {
   const scope = lease.shipmentScope;
   if (!scope) {
@@ -1156,12 +1160,26 @@ const validateShipmentOutcomeUnits = (
       EXIT_CODES.unsafe
     );
   }
+  // A held unit is preserved, never delivered or target-equivalent, so the
+  // outcome reports only the units that are not held, and a held unit's
+  // paths the target changed are external target changes.
+  const held = new Map(holds.map((hold) => [hold.unit.id, hold]));
+  const deliverableUnits = scope.plan.units.filter(
+    (unit) => !held.has(unit.id)
+  );
   const expectedUnits = new Map(
-    scope.plan.units.map((unit) => [unit.id, unit])
+    deliverableUnits.map((unit) => [unit.id, unit])
   );
   const seenUnits = new Set<string>();
   const accountedPaths = new Set<string>();
   for (const unit of receipt.units) {
+    const hold = held.get(unit.unitId);
+    if (hold) {
+      throw new SimpleChangesError(
+        `Shipment outcome unit ${unit.unitId} was held by loop hold-unit at ${hold.recordedAt}. A held unit stays preserved and is never ${unit.disposition}; remove it from units and account for any of its paths the target changed as additionalPaths.`,
+        EXIT_CODES.validation
+      );
+    }
     const expected = expectedUnits.get(unit.unitId);
     if (!expected || seenUnits.has(unit.unitId)) {
       throw new SimpleChangesError(
@@ -1220,7 +1238,7 @@ const validateShipmentOutcomeUnits = (
   }
   return {
     accountedPaths,
-    scopedPaths: new Set(scope.plan.units.flatMap((unit) => unit.paths)),
+    scopedPaths: new Set(deliverableUnits.flatMap((unit) => unit.paths)),
   };
 };
 
@@ -1479,6 +1497,7 @@ export const recordShipmentOutcome = (
             receipt.targetRevision
           );
           const recordedAt = new Date().toISOString();
+          const holds = readHeldUnits(lease);
           const { accountedPaths, scopedPaths } = validateShipmentOutcomeUnits(
             lease,
             inventory,
@@ -1486,7 +1505,8 @@ export const recordShipmentOutcome = (
             targetDeltaPaths,
             renameOriginals,
             { handoffs, overrides },
-            recordedAt
+            recordedAt,
+            holds
           );
           validateAdditionalShipmentPaths(
             lease,
@@ -1496,6 +1516,13 @@ export const recordShipmentOutcome = (
             targetDeltaPaths
           );
           assertCompleteTargetDelta(lease, receipt, accountedPaths);
+          // The recorded digest also binds every held unit, so a runtime
+          // that does not know held units refuses this outcome, and a hold
+          // added, removed, or changed later no longer matches it.
+          const outcomeDigest = boundOutcomeDigest(
+            receiptDigest,
+            holds.map((hold) => hold.holdDigest)
+          );
           // A null record removes a sidecar left by an earlier outcome.
           writeReceiptSidecar(
             lease,
@@ -1504,7 +1531,7 @@ export const recordShipmentOutcome = (
               ? null
               : {
                   overrides,
-                  receiptDigest,
+                  receiptDigest: outcomeDigest,
                   runId: lease.runId,
                   schemaVersion: 1,
                 }
@@ -1516,7 +1543,7 @@ export const recordShipmentOutcome = (
               ? null
               : {
                   handoffs,
-                  receiptDigest,
+                  receiptDigest: outcomeDigest,
                   runId: lease.runId,
                   schemaVersion: 1,
                 }
@@ -1524,13 +1551,21 @@ export const recordShipmentOutcome = (
           writeLease({
             ...withMutationEvidence(lease, recordedAt),
             ownerProcess: ownerProcessEvidence(recordedAt),
-            shipmentOutcome: { receipt, receiptDigest, recordedAt },
+            shipmentOutcome: {
+              receipt,
+              receiptDigest: outcomeDigest,
+              recordedAt,
+            },
             updatedAt: recordedAt,
           });
           return {
-            receiptDigest,
+            receiptDigest: outcomeDigest,
             recordedAt,
-            summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.`,
+            summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.${
+              holds.length > 0
+                ? ` ${holds.length} held unit(s) stay preserved and are not reported as delivered: ${holds.map((hold) => hold.unit.id).join(", ")}.`
+                : ""
+            }`,
           };
         }
       ),

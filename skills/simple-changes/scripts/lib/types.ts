@@ -1452,6 +1452,11 @@ export interface LoopLease {
    * predates it and cannot prove that it never mutated.
    */
   firstMutationAt?: string | null;
+  /**
+   * Present only on a run that held a unit: the digest of its holds, so a
+   * runtime that predates holds refuses to read this lease at all.
+   */
+  heldUnits?: { holdsDigest: string };
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   openingBranches?: Array<{ name: string; sha: string }>;
   /**
@@ -1532,6 +1537,69 @@ export interface ChangelogAuthorBinding {
 /** The sidecar beside the lease that holds a run's changelog authors. */
 export interface ChangelogAuthorRecord {
   authors: ChangelogAuthorBinding[];
+  runId: string;
+  schemaVersion: 1;
+}
+
+/**
+ * The exact state `loop hold-unit` observed for one frozen scoped unit. The
+ * user approves its digest, so any change to it before recording refuses.
+ */
+export interface HeldUnitObservation {
+  claim: {
+    branch: string | null;
+    claimId: string;
+    ownerAgentId: string;
+    state: WorktreeCoordinationState;
+  } | null;
+  controllerAgentId: string;
+  /**
+   * Each original path of the unit's own renames that is not an opening
+   * change of its own, with the source checkout's entry there, which must
+   * be absent, as it was when the scope froze.
+   */
+  originalPaths: Array<{ path: string; sourceEntry: string | null }>;
+  paths: Array<{
+    openingEntry: string | null;
+    path: string;
+    sourceEntry: string | null;
+  }>;
+  readinessEvidence: string[];
+  reason: string;
+  runId: string;
+  scopePlanDigest: string;
+  source: {
+    branch: string | null;
+    changeDigest: string;
+    headSha: string | null;
+    isPrimary: boolean;
+    worktree: string;
+  };
+  target: { ref: string; revision: string };
+  unitDigest: string;
+  unitId: string;
+}
+
+/** One immutable hold: a scoped unit kept preserved, never delivered. */
+export interface HeldUnitHold {
+  authorization: {
+    approvalReference: string;
+    approvedAt: string;
+    approvedBy: string;
+  };
+  /** The held unit's paths, in the shape of the scope's plan exclusions. */
+  exclusions: Array<{ path: string; reason: string; worktreePath: string }>;
+  holdDigest: string;
+  observation: HeldUnitObservation;
+  observationDigest: string;
+  recordedAt: string;
+  /** The original unit exactly as the frozen scope recorded it. */
+  unit: ChangeUnit;
+}
+
+/** The sidecar beside the lease that holds a run's held units. */
+export interface HeldUnitsRecord {
+  holds: HeldUnitHold[];
   runId: string;
   schemaVersion: 1;
 }

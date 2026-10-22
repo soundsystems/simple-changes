@@ -5,6 +5,19 @@ export const PATCH_EQUIVALENCE_MAX_COMMITS = 200;
 
 export type TargetContainmentMethod = "target-contained" | "patch-equivalent";
 
+/**
+ * The third way a local checkout may be removed, after the two Git proofs:
+ * a reviewed replacement lineage receipt that maps every unique source commit
+ * to replacement commits already in the target, verified against live Git
+ * (see `replacement-lineage.ts`). It is never inferred; only an explicit
+ * `--lineage-receipt` input to `prune` or `worktree cleanup` selects it.
+ */
+export const REVIEWED_REPLACEMENT_METHOD = "reviewed-replacement" as const;
+
+export type LocalRemovalMethod =
+  | TargetContainmentMethod
+  | typeof REVIEWED_REPLACEMENT_METHOD;
+
 export interface TargetContainmentAudit {
   exceededMaxCommits: boolean;
   method: TargetContainmentMethod | null;

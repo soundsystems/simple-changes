@@ -189,6 +189,7 @@ import {
   buildRemoteInventory,
   type RemoteInventoryBuild,
 } from "./lib/remote-inventory.ts";
+import type { ReplacementLineageOutcome } from "./lib/replacement-lineage.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
   discoverGlobalInstructionTargets,
@@ -481,7 +482,7 @@ Usage:
     [--json] [--repo PATH]
   simple-changes worktree refresh-index [--json] [--repo PATH]
   simple-changes worktree cleanup --agent-id ID --approved-by ID --reason TEXT
-    [--target REF] [--json] [--repo PATH]
+    [--target REF] [--lineage-receipt FILE] [--json] [--repo PATH]
   simple-changes hold add --agent-id ID --adapter ID
     --hold-scope ship|deploy|migrations --severity delay|halt --reason TEXT
     [--until-merged BRANCH] [--owner-ref REF] [--json] [--repo PATH]
@@ -497,7 +498,7 @@ Usage:
   simple-changes hold publish --agent-id ID --hold-id ID [--remote NAME]
     [--json] [--repo PATH]
   simple-changes prune --approved-by ID --reason TEXT [--target REF]
-    [--dry-run] [--json] [--repo PATH]
+    [--agent-id ID --lineage-receipt FILE] [--dry-run] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--unit ID] [--json] [--repo PATH]
   simple-changes workdir --agent-id ID [--json] [--repo PATH]
@@ -614,6 +615,7 @@ interface CliOptions {
   instructionPointer?: "add" | "leave";
   json: boolean;
   leaveUncovered: string[];
+  lineageReceiptPath?: string;
   localOnly: boolean;
   manifestDigest?: string;
   migrationHandling?: RepoPolicy["migrationHandling"];
@@ -775,6 +777,7 @@ const VALUED_OPTIONS = new Set([
   "--contribution",
   "--instance",
   "--leave-uncovered",
+  "--lineage-receipt",
   "--proposal",
   "--replays",
   "--session",
@@ -1252,6 +1255,10 @@ const applyLoopValuedOption = (
   }
   if (option === "--ready-receipt") {
     options.readyReceiptPath = resolve(value);
+    return true;
+  }
+  if (option === "--lineage-receipt") {
+    options.lineageReceiptPath = resolve(value);
     return true;
   }
   if (option === "--disposition") {
@@ -4807,6 +4814,23 @@ const runWorktreeClaim = (options: CliOptions, agentId: string): void => {
   );
 };
 
+const renderReviewedReplacement = (
+  outcome: ReplacementLineageOutcome | null,
+  dryRun: boolean
+): string => {
+  if (!outcome) {
+    return "";
+  }
+  const proof =
+    outcome.byteProof.status === "proven"
+      ? "its touched files equal the reviewed target byte for byte"
+      : "the replacement changed bytes, so the reviewed mapping is the evidence";
+  if (dryRun) {
+    return `Reviewed replacement: would pin ${outcome.headSha} at ${outcome.pinRef} and remove ${outcome.path} (${outcome.uniqueCommits.length} mapped commit(s); ${proof}).\n`;
+  }
+  return `Reviewed replacement: ${outcome.worktreeRemoved ? "removed" : "kept"} ${outcome.path}${outcome.branch ? `, branch ${outcome.branch} ${outcome.branchDeleted ? "deleted" : "kept"}` : ""}; head ${outcome.headSha} ${outcome.removalId ? `pinned at ${outcome.pinRef}` : "not pinned"} (${proof}).\n`;
+};
+
 const runWorktreeMaintenance = (
   action: string,
   options: CliOptions
@@ -4824,6 +4848,9 @@ const runWorktreeMaintenance = (
     const receipt = standaloneWorktreeCleanup({
       agentId: requireCliOption(options.agentId, "--agent-id"),
       approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
+      lineageReceipt: options.lineageReceiptPath
+        ? readJsonFile(options.lineageReceiptPath)
+        : undefined,
       reason: requireCliOption(options.reason, "--reason"),
       repositoryPath: options.repo,
       targetRef: options.targetRef,
@@ -4831,7 +4858,7 @@ const runWorktreeMaintenance = (
     writeOutput(
       receipt,
       options.json,
-      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderCleanupNotes(receipt.notes)}`
+      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderReviewedReplacement(receipt.reviewedReplacement, false)}${receipt.errors.map((error) => `! ${error}\n`).join("")}${renderCleanupNotes(receipt.notes)}`
     );
     return true;
   }
@@ -5344,14 +5371,25 @@ const renderPrune = (report: PruneReport): string => {
   for (const entry of report.preservedBranches) {
     lines.push(`- preserved branch ${entry.branch}: ${entry.reason}`);
   }
+  const lineage = renderReviewedReplacement(
+    report.reviewedReplacement,
+    report.dryRun
+  );
+  if (lineage) {
+    lines.push(lineage.trimEnd());
+  }
   lines.push(...report.notes, ...report.errors.map((error) => `! ${error}`));
   return `${lines.join("\n")}\n`;
 };
 
 const runPrune = (options: CliOptions): void => {
   const report = pruneRepository({
+    agentId: options.agentId,
     approvedBy: options.approvedBy,
     dryRun: options.dryRun,
+    lineageReceipt: options.lineageReceiptPath
+      ? readJsonFile(options.lineageReceiptPath)
+      : undefined,
     reason: options.reason,
     repositoryPath: options.repo,
     targetRef: options.targetRef,

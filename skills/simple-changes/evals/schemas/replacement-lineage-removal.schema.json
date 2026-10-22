@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/replacement-lineage-removal.schema.json",
+  "title": "Simple Changes reviewed replacement removal record",
+  "description": "One immutable file per phase of a reviewed-replacement removal by prune or worktree cleanup, kept under the Git common directory's simple-changes/replacement-lineage folder. The intent record is written after the source head is pinned and before the checkout is removed; the completed record adds the outcome. It is new state in its own file, so older runtimes, which strictly validate the cleanup history, never read it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schemaVersion",
+    "removalId",
+    "phase",
+    "command",
+    "cleanupId",
+    "controllerAgentId",
+    "approvedBy",
+    "reason",
+    "recordedAt",
+    "receiptDigest",
+    "receipt",
+    "targetRevision",
+    "uniqueCommits",
+    "byteProof",
+    "pinRef",
+    "outcome"
+  ],
+  "properties": {
+    "kind": { "const": "replacement-lineage-removal" },
+    "schemaVersion": { "const": 1 },
+    "removalId": {
+      "type": "string",
+      "pattern": "^lineage-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "phase": { "enum": ["intent", "completed"] },
+    "command": { "enum": ["prune", "worktree-cleanup"] },
+    "cleanupId": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "controllerAgentId": { "type": "string", "minLength": 1 },
+    "approvedBy": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string", "minLength": 1 },
+    "recordedAt": { "type": "string", "format": "date-time" },
+    "receiptDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "receipt": { "$ref": "replacement-lineage-receipt.schema.json" },
+    "targetRevision": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "uniqueCommits": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+      }
+    },
+    "byteProof": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "baseRevision", "touchedPaths"],
+          "properties": {
+            "status": { "const": "proven" },
+            "baseRevision": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            },
+            "touchedPaths": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason", "differingPaths"],
+          "properties": {
+            "status": { "const": "not-proven" },
+            "reason": { "type": "string", "minLength": 1 },
+            "differingPaths": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      ]
+    },
+    "pinRef": {
+      "type": "string",
+      "pattern": "^refs/simple-changes/superseded/replacement-lineage-[0-9a-f]{64}/(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "outcome": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["worktreeRemoved", "branchDeleted", "errors"],
+          "properties": {
+            "worktreeRemoved": { "type": "boolean" },
+            "branchDeleted": { "type": "boolean" },
+            "errors": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    }
+  }
+}

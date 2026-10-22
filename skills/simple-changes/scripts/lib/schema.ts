@@ -37,6 +37,8 @@ export const SCHEMA_NAMES = [
   "remote-branch-ancestry",
   "remote-branch-supersession",
   "remote-branch-open-targets",
+  "replacement-lineage-receipt",
+  "replacement-lineage-removal",
   "remote-inventory-pages",
   "remote-inventory-decisions",
   "release-consistency",

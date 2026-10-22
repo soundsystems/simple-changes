@@ -5,7 +5,9 @@ import {
   type ContainedBranchPreservation,
   type ContainedBranchRemoval,
   deleteTargetContainedBranches,
+  type LocalRemovalMethod,
   localBranchForTargetRef,
+  REVIEWED_REPLACEMENT_METHOD,
   type TargetContainmentMethod,
   targetContainmentAudit,
 } from "./cleanup-core.ts";
@@ -22,6 +24,15 @@ import {
 } from "./loop-lease.ts";
 import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
+import {
+  parseReplacementLineageReceipt,
+  plannedReplacementLineage,
+  type ReplacementLineageOutcome,
+  type ReplacementLineageReceipt,
+  removeReviewedReplacement,
+  type VerifiedReplacementLineage,
+  verifyReplacementLineage,
+} from "./replacement-lineage.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   RepositoryInventory,
@@ -109,11 +120,21 @@ export interface WorktreeCleanupReceipt {
  */
 export interface WorktreeCleanupResult extends WorktreeCleanupReceipt {
   notes: string[];
+  /**
+   * The checkout a `--lineage-receipt` removed, or null without one. It is
+   * kept out of the receipt history, whose containment values older runtimes
+   * validate strictly, and recorded in its own lineage files instead.
+   */
+  reviewedReplacement: ReplacementLineageOutcome | null;
 }
 
 export interface WorktreeCleanupOptions {
   agentId: string;
   approvedBy: string;
+  /** A reviewed replacement lineage receipt document, unvalidated. */
+  lineageReceipt?: unknown;
+  /** The clock the receipt's approval freshness is judged by. */
+  now?: Date | undefined;
   reason: string;
   repositoryPath: string;
   targetRef?: string | undefined;
@@ -235,7 +256,8 @@ const classifyCleanupCandidates = (
   inventory: RepositoryInventory,
   targetRevision: string,
   targetRef: string,
-  protectedPaths: ReadonlyMap<string, string> = new Map()
+  protectedPaths: ReadonlyMap<string, string> = new Map(),
+  lineagePath: string | null = null
 ): CleanupClassification => {
   const classification: CleanupClassification = {
     preserved: [],
@@ -252,7 +274,8 @@ const classifyCleanupCandidates = (
     (worktree) => worktree.prunable && protectedPaths.has(worktree.path)
   );
   for (const worktree of inventory.worktrees) {
-    if (worktree.isPrimary) {
+    // A verified lineage receipt's checkout is removed by its own path.
+    if (worktree.isPrimary || worktree.path === lineagePath) {
       continue;
     }
     const protection = protectedPaths.get(worktree.path);
@@ -340,6 +363,45 @@ const classifyCleanupCandidates = (
   }
   return classification;
 };
+
+interface LineageVerificationInput {
+  agentId: string;
+  approvedBy: string;
+  inventory: RepositoryInventory;
+  leaseBranches: ReadonlySet<string>;
+  leasePaths: ReadonlyMap<string, string>;
+  now: Date | undefined;
+  receipt: ReplacementLineageReceipt | null;
+  targetRef: string;
+  targetRevision: string;
+}
+
+// Verifies a lineage receipt under the cleanup locks, before anything is
+// written; a refusal throws. Without a receipt cleanup is unchanged.
+const verifiedLineage = (
+  input: LineageVerificationInput
+): VerifiedReplacementLineage | null =>
+  input.receipt
+    ? verifyReplacementLineage({
+        approvedBy: input.approvedBy,
+        claims: readCoordinationDocumentFromCommonDirectory(
+          input.inventory.repository.commonGitDirectory
+        ).claims,
+        controllerAgentId: input.agentId,
+        inventory: input.inventory,
+        leaseBranches: input.leaseBranches,
+        leasePaths: input.leasePaths,
+        now: input.now ?? new Date(),
+        receipt: input.receipt,
+        targetRef: input.targetRef,
+        targetRevision: input.targetRevision,
+      })
+    : null;
+
+const parsedLineageReceipt = (
+  value: unknown
+): ReplacementLineageReceipt | null =>
+  value === undefined ? null : parseReplacementLineageReceipt(value);
 
 const branchTipSha = (
   primaryCheckout: string,
@@ -523,6 +585,7 @@ export const standaloneWorktreeCleanup = (
   const agentId = requiredText(options.agentId, "agent ID");
   const approvedBy = requiredText(options.approvedBy, "approver");
   const reason = requiredText(options.reason, "cleanup reason");
+  const lineageReceipt = parsedLineageReceipt(options.lineageReceipt);
   assertNoLoopLease(options.repositoryPath);
   const opening = locateRepository(options.repositoryPath);
   const { commonGitDirectory } = opening.repository;
@@ -537,10 +600,23 @@ export const standaloneWorktreeCleanup = (
         options.targetRef
       );
       const errors: string[] = [];
+      const lineage = verifiedLineage({
+        agentId,
+        approvedBy,
+        inventory,
+        leaseBranches: new Set(),
+        leasePaths: new Map(),
+        now: options.now,
+        receipt: lineageReceipt,
+        targetRef,
+        targetRevision,
+      });
       const classification = classifyCleanupCandidates(
         inventory,
         targetRevision,
-        targetRef
+        targetRef,
+        new Map(),
+        lineage?.worktree.path ?? null
       );
       const cleanupId = `cleanup-${randomUUID()}`;
       const plannedRemovals = classification.removable
@@ -585,6 +661,19 @@ export const standaloneWorktreeCleanup = (
         classification.removable,
         errors
       );
+      const reviewedReplacement = lineage
+        ? removeReviewedReplacement({
+            approvedBy,
+            cleanupId,
+            command: "worktree-cleanup",
+            commonGitDirectory,
+            controllerAgentId: agentId,
+            errors,
+            reason,
+            repositoryPath: options.repositoryPath,
+            verified: lineage,
+          })
+        : null;
       const prunedPaths = pruneStaleWorktreeMetadata(
         options.repositoryPath,
         classification.prunable,
@@ -634,14 +723,20 @@ export const standaloneWorktreeCleanup = (
         } satisfies WorktreeCleanupReceipt
       );
       appendWorktreeCleanup(commonGitDirectory, receipt);
-      return { ...receipt, notes };
+      return { ...receipt, notes, reviewedReplacement };
     }
   );
 };
 
 export interface PruneOptions {
+  /** The controller's agent ID; required with a lineage receipt. */
+  agentId?: string | undefined;
   approvedBy?: string | undefined;
   dryRun: boolean;
+  /** A reviewed replacement lineage receipt document, unvalidated. */
+  lineageReceipt?: unknown;
+  /** The clock the receipt's approval freshness is judged by. */
+  now?: Date | undefined;
   reason?: string | undefined;
   repositoryPath: string;
   targetRef?: string | undefined;
@@ -658,10 +753,14 @@ export interface PruneLeaseProtection {
 
 export interface PrunePlannedRemoval {
   branch: string | null;
-  containment: TargetContainmentMethod;
+  containment: LocalRemovalMethod;
   headSha: string;
   path: string;
 }
+
+export type PruneRemoval = Omit<WorktreeCleanupRemoval, "containment"> & {
+  containment: LocalRemovalMethod;
+};
 
 export interface PruneReport {
   approvedBy: string | null;
@@ -676,8 +775,10 @@ export interface PruneReport {
   preservedBranches: ContainedBranchPreservation[];
   prunedPaths: string[];
   reason: string | null;
-  removed: WorktreeCleanupRemoval[];
+  removed: PruneRemoval[];
   removedBranches: ContainedBranchRemoval[];
+  /** The checkout a `--lineage-receipt` plans or removed, else null. */
+  reviewedReplacement: ReplacementLineageOutcome | null;
   targetRef: string;
   targetRevision: string;
 }
@@ -805,6 +906,13 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
   }
   const approvedBy = options.approvedBy?.trim() || null;
   const reason = options.reason?.trim() || null;
+  const lineageReceipt = parsedLineageReceipt(options.lineageReceipt);
+  const lineageAgentId = lineageReceipt
+    ? requiredText(options.agentId ?? "", "agent ID (with a lineage receipt)")
+    : null;
+  if (lineageReceipt) {
+    requiredText(options.approvedBy ?? "", "approver");
+  }
   const opening = locateRepository(options.repositoryPath);
   const { commonGitDirectory } = opening.repository;
   return withCleanupLocks(commonGitDirectory, "prune", () => {
@@ -824,11 +932,23 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
     notes.push(
       "Prune never edits lease state, worktree claims, or recorded receipts."
     );
+    const lineage = verifiedLineage({
+      agentId: lineageAgentId ?? "",
+      approvedBy: approvedBy ?? "",
+      inventory,
+      leaseBranches: lease.branches,
+      leasePaths: lease.paths,
+      now: options.now,
+      receipt: lineageReceipt,
+      targetRef,
+      targetRevision,
+    });
     const classification = classifyCleanupCandidates(
       inventory,
       targetRevision,
       targetRef,
-      lease.paths
+      lease.paths,
+      lineage?.worktree.path ?? null
     );
     const branchPlan = prunableBranchCandidates(
       inventory,
@@ -841,14 +961,24 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
       repositoryPath: inventory.repository.primaryCheckout,
       targetRevision,
     });
-    const plannedRemovals = sortedByPath(
-      classification.removable.map((candidate) => ({
+    const plannedRemovals: PrunePlannedRemoval[] = sortedByPath([
+      ...classification.removable.map((candidate) => ({
         branch: candidate.worktree.branch,
         containment: candidate.containment,
         headSha: candidate.worktree.headSha,
         path: candidate.worktree.path,
-      }))
-    );
+      })),
+      ...(lineage
+        ? [
+            {
+              branch: lineage.worktree.branch,
+              containment: REVIEWED_REPLACEMENT_METHOD,
+              headSha: lineage.worktree.headSha,
+              path: lineage.worktree.path,
+            },
+          ]
+        : []),
+    ]);
     const plannedPrunePaths = classification.prunable
       .map((worktree) => worktree.path)
       .sort((left, right) => left.localeCompare(right));
@@ -871,20 +1001,44 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
       reason,
       removed: [],
       removedBranches: [],
+      reviewedReplacement: lineage ? plannedReplacementLineage(lineage) : null,
       targetRef,
       targetRevision,
     };
     if (options.dryRun) {
       return report;
     }
-    report.removed = sortedByPath(
-      removeProvenWorktrees(
-        options.repositoryPath,
-        targetRef,
-        classification.removable,
-        errors
-      )
+    const removed: PruneRemoval[] = removeProvenWorktrees(
+      options.repositoryPath,
+      targetRef,
+      classification.removable,
+      errors
     );
+    if (lineage) {
+      const outcome = removeReviewedReplacement({
+        approvedBy: approvedBy ?? "",
+        cleanupId: null,
+        command: "prune",
+        commonGitDirectory,
+        controllerAgentId: lineageAgentId ?? "",
+        errors,
+        reason: reason ?? "",
+        repositoryPath: options.repositoryPath,
+        verified: lineage,
+      });
+      report.reviewedReplacement = outcome;
+      if (outcome.worktreeRemoved) {
+        removed.push({
+          branch: outcome.branch,
+          branchDeleted: outcome.branchDeleted,
+          changeDigest: lineage.worktree.changeDigest,
+          containment: REVIEWED_REPLACEMENT_METHOD,
+          headSha: outcome.headSha,
+          path: outcome.path,
+        });
+      }
+    }
+    report.removed = sortedByPath(removed);
     report.prunedPaths = pruneStaleWorktreeMetadata(
       options.repositoryPath,
       classification.prunable,

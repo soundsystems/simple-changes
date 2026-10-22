@@ -76,6 +76,23 @@ const isAncestor = (
 const nulSeparated = (output: string): string[] =>
   output.split("\0").filter((item) => item.length > 0);
 
+const LOST_ANSWER_STEP =
+  "Git exited 0 without printing that answer, so the proof refuses; retry the command.";
+
+const DIFF_OPTIONS = [
+  "--no-renames",
+  "--no-ext-diff",
+  "--ignore-submodules=none",
+] as const;
+
+// Whether a diff whose listing came back empty really has no changes. A
+// listing may be legitimately empty, so an empty one is checked again by
+// exit code alone, which a lost answer cannot fake: exit 1 means changes.
+const confirmedEmptyDiff = (
+  repositoryPath: string,
+  args: readonly string[]
+): boolean => runGit(repositoryPath, args, true).exitCode === 0;
+
 // The range's exclusive start: the given base or the merge base, which must
 // be an ancestor of both the tip and the target.
 const sourceBaseFor = (
@@ -137,6 +154,14 @@ const singleParentCommits = (
   if (parentLines.length > maxCommits) {
     return refused(
       `Source range ${baseRevision}..${headRevision} has ${parentLines.length} commits, more than the ${maxCommits} one proof reads.`
+    );
+  }
+  // The base is an ancestor of a different tip, so the range holds at least
+  // one commit; an empty listing that exited 0 is a lost answer, and reading
+  // it as no commits would prove an empty range.
+  if (parentLines.length === 0 && baseRevision !== headRevision) {
+    return refused(
+      `Git listed no commits in ${baseRevision}..${headRevision}, which cannot be empty. ${LOST_ANSWER_STEP}`
     );
   }
   const commits: string[] = [];
@@ -206,7 +231,7 @@ export const proveExactByteTargetContainment = (
   }
   const touched = new Set<string>();
   for (const sha of commits) {
-    for (const path of nulSeparated(
+    const paths = nulSeparated(
       runGit(repositoryPath, [
         "diff-tree",
         "-r",
@@ -217,7 +242,23 @@ export const proveExactByteTargetContainment = (
         "--ignore-submodules=none",
         sha,
       ]).stdout
-    )) {
+    );
+    if (
+      paths.length === 0 &&
+      !confirmedEmptyDiff(repositoryPath, [
+        "diff-tree",
+        "--quiet",
+        "--no-commit-id",
+        "-r",
+        ...DIFF_OPTIONS,
+        sha,
+      ])
+    ) {
+      return refused(
+        `Git listed no paths for commit ${sha}, which changes some. ${LOST_ANSWER_STEP}`
+      );
+    }
+    for (const path of paths) {
       touched.add(path);
     }
   }
@@ -227,14 +268,27 @@ export const proveExactByteTargetContainment = (
         "diff",
         "--name-only",
         "-z",
-        "--no-renames",
-        "--no-ext-diff",
-        "--ignore-submodules=none",
+        ...DIFF_OPTIONS,
         headRevision,
         targetRevision,
       ]).stdout
     )
   );
+  if (
+    different.size === 0 &&
+    touched.size > 0 &&
+    !confirmedEmptyDiff(repositoryPath, [
+      "diff",
+      "--quiet",
+      ...DIFF_OPTIONS,
+      headRevision,
+      targetRevision,
+    ])
+  ) {
+    return refused(
+      `Git listed no paths where ${headRevision} differs from ${targetRevision}, but they differ. ${LOST_ANSWER_STEP}`
+    );
+  }
   const touchedPaths = [...touched].sort();
   const differingPaths = touchedPaths.filter((path) => different.has(path));
   if (differingPaths.length > 0) {

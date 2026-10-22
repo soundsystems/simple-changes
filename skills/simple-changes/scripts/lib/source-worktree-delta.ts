@@ -165,7 +165,10 @@ export const sourceWorktreeDelta = (
     return { failure: head };
   }
   const listed = indexedAndUntrackedPaths(sourceWorktree);
-  if (!listed) {
+  // An empty listing beside a HEAD with files would mean an empty index and
+  // no untracked file at all. A lost answer looks the same, and reading it as
+  // empty would hide every untracked file, so the handoff refuses instead.
+  if (!listed || (listed.length === 0 && head.size > 0)) {
     return { failure: "its index cannot be read" };
   }
   const symlinkedAncestor = symlinkedAncestorCheck(sourceWorktree);

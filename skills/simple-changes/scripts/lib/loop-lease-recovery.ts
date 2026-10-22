@@ -20,9 +20,14 @@ import { fileURLToPath } from "node:url";
 import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
 import { ensureStateDirectoryOf } from "./git-location.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import {
+  captureInventory,
+  isLossyName,
+  locateRepository,
+} from "./inventory.ts";
 import {
   assertControllerActive,
   assertMatchingRun,
@@ -78,6 +83,13 @@ import { targetTreeEntry } from "./loop-lease-shipment.ts";
 import { verificationAgainst } from "./loop-lease-verify.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import { validatePostCleanupRecovery } from "./remote-branch-reconciliation.ts";
+import {
+  currentRunCreatedRetirement,
+  type RunCreatedRetirement,
+  type RunCreatedRetirementRecord,
+  retiredRunCreatedPaths,
+  runCreatedRetirementPath,
+} from "./run-created-retirement.ts";
 import { validateSchema, validateSchemaDocument } from "./schema.ts";
 import type {
   LoopCloseEquivalentWorktreeProof,
@@ -312,6 +324,114 @@ const registrationKind = (
   return registered.claimId ? "adopted" : "opening";
 };
 
+// Run-created registrations retirement may account for. A controller is
+// never run-created, and retained or concurrent registrations never are.
+const RETIRABLE_RUN_CREATED_ROLES: ReadonlySet<LoopWorktreeLease["role"]> =
+  new Set(["author", "preserved"]);
+
+/**
+ * Retires a run-created authoring registration whose checkout is gone, on
+ * exact-byte target proof alone: its branch is retained under its exact
+ * registered name, unique to this registration and checked out nowhere, and
+ * every path its unique commits touched equals the current target's bytes.
+ * The proof is written to its own immutable recovery file, never the lease.
+ * Nothing is deleted or moved, and no ancestry or delivery is claimed.
+ */
+const retireRunCreatedWorktree = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  registered: LoopWorktreeLease,
+  actorAgentId: string,
+  approvedBy: string,
+  reason: string
+): LoopLease => {
+  const { path } = registered;
+  const refuse = (detail: string): never => {
+    throw new SimpleChangesError(
+      `Cannot retire run-created worktree ${path}: ${detail} Nothing was recorded.`,
+      EXIT_CODES.unsafe
+    );
+  };
+  const { branch } = registered;
+  if (branch === null || isLossyName(branch)) {
+    return refuse(
+      "its registration names no exact branch, so no retained branch can carry its work."
+    );
+  }
+  const targetBranch = targetBranchForRef(
+    inventory.repository.primaryCheckout,
+    lease.targetRef
+  );
+  if (branch === targetBranch) {
+    return refuse(`its branch ${branch} is the target branch.`);
+  }
+  const retained = inventory.branches.find((item) => item.name === branch);
+  if (!retained) {
+    return refuse(
+      `its branch ${branch} no longer exists. Retirement needs the branch retained so its commits stay recoverable.`
+    );
+  }
+  if (retained.worktreePath !== null) {
+    return refuse(
+      `its branch ${branch} is checked out at ${retained.worktreePath}.`
+    );
+  }
+  if (
+    lease.worktrees.some(
+      (other) => other.path !== path && other.branch === branch
+    )
+  ) {
+    return refuse(
+      `its branch ${branch} is also registered for another worktree, so it is not unique to this one.`
+    );
+  }
+  if (currentRunCreatedRetirement(lease, inventory, registered)) {
+    return lease;
+  }
+  const targetRevision = currentTargetRevision(lease);
+  const proof = proveExactByteTargetContainment(lease.primaryCheckout, {
+    sourceHead: retained.sha,
+    targetRevision,
+  });
+  if (proof.status === "refused") {
+    return refuse(
+      `exact-byte target proof failed for branch ${branch}. ${proof.reason}`
+    );
+  }
+  const now = new Date().toISOString();
+  const retirement: RunCreatedRetirement = {
+    absenceCheckedAt: now,
+    actorAgentId,
+    approvedBy,
+    baselineChangeDigest: registered.baselineChangeDigest,
+    baselineHeadSha: registered.baselineHeadSha,
+    branch,
+    branchHeadSha: proof.headRevision,
+    createdAt: now,
+    path,
+    proof: {
+      baseRevision: proof.baseRevision,
+      commits: proof.commits,
+      method: "exact-byte-target",
+      touchedPaths: proof.touchedPaths,
+    },
+    reason,
+    role: registered.role,
+    targetRef: lease.targetRef,
+    targetRevision: proof.targetRevision,
+  };
+  writeImmutableRecoveryEvent(runCreatedRetirementPath(lease, retirement), {
+    kind: "run-created-retirement",
+    retirement,
+    runId: lease.runId,
+    schemaVersion: 1,
+  } satisfies RunCreatedRetirementRecord);
+  return writeLease({
+    ...withMutationEvidence(lease, now),
+    updatedAt: now,
+  });
+};
+
 /**
  * Accounts for a preserved registration whose checkout another task removed.
  * The path must be absent from disk and from Git's live worktree list; the
@@ -353,9 +473,18 @@ export const retireAbsentWorktree = (
       const registered = lease.worktrees.find(
         (worktree) => worktree.path === path
       );
-      if (registered?.role !== "preserved" || registered.createdByRun) {
+      const runCreated =
+        registered?.createdByRun === true &&
+        RETIRABLE_RUN_CREATED_ROLES.has(registered.role);
+      if (
+        !(
+          registered &&
+          (runCreated ||
+            (registered.role === "preserved" && !registered.createdByRun))
+        )
+      ) {
         throw new SimpleChangesError(
-          `Retirement path must name a preserved registration that this run did not create (an opening, rebaselined, or adopted worktree): ${path}`,
+          `Retirement path must name a preserved registration that this run did not create (an opening, rebaselined, or adopted worktree), or an authoring worktree this run created: ${path}`,
           EXIT_CODES.unsafe
         );
       }
@@ -372,6 +501,16 @@ export const retireAbsentWorktree = (
         throw new SimpleChangesError(
           `Git still lists ${path} as a live worktree. Retirement requires the checkout to be absent from both the filesystem and the worktree list.`,
           EXIT_CODES.unsafe
+        );
+      }
+      if (runCreated) {
+        return retireRunCreatedWorktree(
+          lease,
+          inventory,
+          registered,
+          ownerAgentId,
+          approvedBy,
+          reason
         );
       }
       const existing = retirementForRegistration(lease, registered);
@@ -864,20 +1003,22 @@ const postCleanupAbsentPaths = (
     );
   }
   const verification = verificationAgainst(lease, inventory);
+  const retiredRunCreated = retiredRunCreatedPaths(lease, inventory);
   const recoverableMissingCreatedWorktrees = new Set(
     lease.worktrees
       .filter(
         (worktree) =>
           worktree.createdByRun &&
           worktree.role === "preserved" &&
-          !inventory.worktrees.some(
-            (current) => current.path === worktree.path
-          ) &&
-          targetContainsRevision(
-            inventory.repository.primaryCheckout,
-            targetRevision,
-            worktree.baselineHeadSha
-          )
+          (retiredRunCreated.has(worktree.path) ||
+            (!inventory.worktrees.some(
+              (current) => current.path === worktree.path
+            ) &&
+              targetContainsRevision(
+                inventory.repository.primaryCheckout,
+                targetRevision,
+                worktree.baselineHeadSha
+              )))
       )
       .map((worktree) => worktree.path)
   );
@@ -1400,6 +1541,15 @@ const equivalenceReceiptsByPath = (
     ])
   );
 
+const missingObligatedWorktree = (lease: LoopLease, path: string): string =>
+  `${path}: the obligated worktree is missing and no exact absence/branch-containment recovery evidence exists${
+    lease.worktrees.some(
+      (registered) => registered.path === path && registered.createdByRun
+    )
+      ? " (for a run-created authoring checkout whose branch is retained, `simple-changes loop retire-absent-worktree` can record exact-byte target proof)"
+      : ""
+  }`;
+
 const proveNothingLeftToShip = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -1413,7 +1563,13 @@ const proveNothingLeftToShip = (
   );
   const proofs: LoopCloseEquivalentWorktreeProof[] = [];
   const unproven: string[] = [];
+  // A run-created checkout retired on exact-byte target proof owes nothing
+  // more; its proof is in its own retirement record, not in this one.
+  const retired = retiredRunCreatedPaths(lease, inventory);
   for (const path of closeEquivalentObligatedPaths(lease)) {
+    if (retired.has(path)) {
+      continue;
+    }
     const current = currentByPath.get(path);
     if (!current) {
       const removalProof = completedRemovalProofForPath(
@@ -1425,9 +1581,7 @@ const proveNothingLeftToShip = (
         proofs.push(removalProof);
         continue;
       }
-      unproven.push(
-        `${path}: the obligated worktree is missing and no exact absence/branch-containment recovery evidence exists`
-      );
+      unproven.push(missingObligatedWorktree(lease, path));
       continue;
     }
     if (

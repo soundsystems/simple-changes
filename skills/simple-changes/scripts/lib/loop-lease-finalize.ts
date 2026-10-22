@@ -64,6 +64,7 @@ import {
   verificationAgainst,
 } from "./loop-lease-verify.ts";
 import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
+import { trustBoundPolicyPaths } from "./policy.ts";
 import { recordedPreservedSourceOverrides } from "./preserved-source-override.ts";
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
@@ -71,6 +72,7 @@ import {
   type ReviewAttemptsReport,
   reviewAttemptsForFinalization,
 } from "./review-ledger.ts";
+import { retirementBackedBranches } from "./run-created-retirement.ts";
 import type {
   LoopLease,
   LoopVerification,
@@ -763,12 +765,15 @@ const removeTargetContainedBranches = (
       )
       .map((disposition) => disposition.branch as string)
   );
+  // A branch a run-created retirement relies on stays, or the retirement
+  // would end.
+  const retirementBacked = retirementBackedBranches(lease, inventory);
   const deletion = deleteTargetContainedBranches({
     // Deletion acts on names, so a branch whose name is not exact is never
     // deleted automatically, whichever record named it.
     branches: inventory.branches.filter(
       (branch) =>
-        !isLossyName(branch.name) &&
+        !(isLossyName(branch.name) || retirementBacked.has(branch.name)) &&
         branch.name !== targetBranch &&
         branch.worktreePath === null &&
         (openingBranches.get(branch.name) === branch.sha ||
@@ -820,6 +825,10 @@ const switchCleanPrimaryToTarget = (
   );
 };
 
+// Primary paths are file names, never patterns: a tracked name such as
+// `:(glob)*.json` must not widen a restore to the repository policy.
+const LITERAL_PATHSPECS = "--literal-pathspecs";
+
 const diffMatchesRevision = (
   repositoryPath: string,
   revision: string,
@@ -829,6 +838,7 @@ const diffMatchesRevision = (
   runGit(
     repositoryPath,
     [
+      LITERAL_PATHSPECS,
       "diff",
       ...(cached ? ["--cached"] : []),
       ...(cached ? ["--ita-visible-in-index"] : []),
@@ -847,7 +857,7 @@ const indexHasOnlyOrdinaryEntries = (
   paths.every((path) => {
     const result = runGit(
       repositoryPath,
-      ["ls-files", "--debug", "--", path],
+      [LITERAL_PATHSPECS, "ls-files", "--debug", "--", path],
       true
     );
     if (result.exitCode !== 0) {
@@ -882,17 +892,159 @@ const preservesProvenMixedPrimary = (
   );
 };
 
+/**
+ * Repository policy paths finalization carries through the fast-forward:
+ * staged at the target's index entry, which already matches their bytes,
+ * so the fast-forward lands them without writing them. `stagedAtTarget`
+ * records whether each was staged that way before.
+ */
+interface CarriedPolicyPaths {
+  headSha: string;
+  paths: { path: string; stagedAtTarget: boolean }[];
+}
+
+// Whether the fast-forward that follows normalization can land the target
+// from the primary's current branch without a switch.
+const primaryCanFastForwardInPlace = (
+  inventory: RepositoryInventory,
+  primary: WorktreeInventory,
+  targetBranch: string,
+  targetRevision: string
+): boolean => {
+  const localTarget = inventory.branches.find(
+    (branch) => branch.name === targetBranch
+  );
+  return Boolean(
+    primary.branch === targetBranch &&
+      localTarget &&
+      localTarget.sha === primary.headSha &&
+      localTarget.sha !== targetRevision &&
+      targetContainsRevision(primary.path, targetRevision, localTarget.sha)
+  );
+};
+
+/**
+ * Normalization never writes the bytes of a dirty repository policy, or of
+ * any path its trust receipt binds: restoring an older HEAD copy undoes
+ * approved policy and invalidates the receipt. Those paths, with both
+ * sides of a rename, leave the restore set. When every other dirty path is
+ * normalizable and the primary can fast-forward in place, they are carried
+ * through the fast-forward instead; otherwise they stay byte for byte and a
+ * note names them. Synchronizing a clean policy file to a target that
+ * committed different policy is not normalization: it adopts the target's
+ * policy, which the receipt does not bind, so consequential settings stay
+ * reduced until `setup` confirms them.
+ */
+const withoutPolicyPaths = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  primary: WorktreeInventory,
+  eligiblePaths: Set<string>,
+  targetBranch: string,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): string[] => {
+  const consequential = new Set(
+    trustBoundPolicyPaths(lease.primaryCheckout, lease.commonGitDirectory)
+  );
+  const policyChanges = primary.changes.filter((change) =>
+    [change.originalPath, change.path].some(
+      (path) => path !== undefined && path !== null && consequential.has(path)
+    )
+  );
+  if (policyChanges.length === 0) {
+    return [];
+  }
+  const carriable =
+    policyChanges.every(
+      (change) => !change.originalPath && eligiblePaths.has(change.path)
+    ) &&
+    primary.changes.every((change) =>
+      [change.originalPath, change.path]
+        .filter((path): path is string => Boolean(path))
+        .every((path) => eligiblePaths.has(path))
+    ) &&
+    primaryCanFastForwardInPlace(
+      inventory,
+      primary,
+      targetBranch,
+      targetRevision
+    );
+  for (const change of policyChanges) {
+    eligiblePaths.delete(change.path);
+    if (change.originalPath) {
+      eligiblePaths.delete(change.originalPath);
+    }
+  }
+  if (carriable) {
+    return policyChanges
+      .map((change) => change.path)
+      .sort((left, right) => left.localeCompare(right));
+  }
+  for (const change of policyChanges) {
+    cleanup.notes.push(
+      `Kept ${change.path} in the primary checkout byte for byte: finalization never restores repository policy to an older copy, and the primary cannot fast-forward to ${lease.targetRef} now, so its approved bytes and trust receipt stay as they are.`
+    );
+  }
+  return [];
+};
+
+// Stages each carried policy path at the target's entry. Only the index
+// changes; the bytes already equal the target and are never written.
+const stagePolicyPathsAtTarget = (
+  lease: LoopLease,
+  headSha: string,
+  paths: string[],
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): CarriedPolicyPaths | null => {
+  if (paths.length === 0) {
+    return null;
+  }
+  const carried: CarriedPolicyPaths = {
+    headSha,
+    paths: paths.map((path) => ({
+      path,
+      stagedAtTarget: diffMatchesRevision(
+        lease.primaryCheckout,
+        targetRevision,
+        [path],
+        true
+      ),
+    })),
+  };
+  const staged = runGit(
+    lease.primaryCheckout,
+    [
+      LITERAL_PATHSPECS,
+      "restore",
+      `--source=${targetRevision}`,
+      "--staged",
+      "--",
+      ...paths,
+    ],
+    true
+  );
+  if (staged.exitCode !== 0) {
+    cleanup.errors.push(
+      `Could not stage repository policy at the target entry: ${staged.stderr.trim() || staged.stdout.trim()}`
+    );
+  }
+  return carried;
+};
+
 const reconcileTargetEquivalentPrimaryChanges = (
   lease: LoopLease,
   inventory: RepositoryInventory,
+  targetBranch: string,
   targetRevision: string,
   cleanup: FinalizationCleanupResult
-): void => {
+): CarriedPolicyPaths | null => {
   const primary = inventory.worktrees.find(
     (worktree) => worktree.path === lease.primaryCheckout
   );
   if (!(primary?.headSha && primary.changes.length > 0)) {
-    return;
+    return null;
   }
   const eligiblePaths = new Set<string>();
   for (const change of primary.changes) {
@@ -928,11 +1080,20 @@ const reconcileTargetEquivalentPrimaryChanges = (
     }
   }
   if (eligiblePaths.size === 0) {
-    return;
+    return null;
   }
   if (preservesProvenMixedPrimary(lease, inventory, primary, eligiblePaths)) {
-    return;
+    return null;
   }
+  const policyPaths = withoutPolicyPaths(
+    lease,
+    inventory,
+    primary,
+    eligiblePaths,
+    targetBranch,
+    targetRevision,
+    cleanup
+  );
   const freshPrimary = captureInventory(lease.primaryCheckout).worktrees.find(
     (worktree) => worktree.path === lease.primaryCheckout
   );
@@ -940,12 +1101,23 @@ const reconcileTargetEquivalentPrimaryChanges = (
     cleanup.errors.push(
       "The primary checkout changed while target-equivalent paths were being audited; no primary path was cleaned."
     );
-    return;
+    return null;
+  }
+  const carried = stagePolicyPathsAtTarget(
+    lease,
+    primary.headSha,
+    policyPaths,
+    targetRevision,
+    cleanup
+  );
+  if (eligiblePaths.size === 0) {
+    return carried;
   }
   const paths = [...eligiblePaths].sort();
   const restored = runGit(
     lease.primaryCheckout,
     [
+      LITERAL_PATHSPECS,
       "restore",
       `--source=${primary.headSha}`,
       "--staged",
@@ -959,10 +1131,62 @@ const reconcileTargetEquivalentPrimaryChanges = (
     cleanup.errors.push(
       `Could not normalize target-equivalent primary paths: ${restored.stderr.trim() || restored.stdout.trim()}`
     );
-    return;
+    return carried;
   }
   cleanup.cleanedPrimaryPaths.push(...paths);
   cleanup.primaryUpdated = true;
+  return carried;
+};
+
+/**
+ * After the fast-forward, reports carried policy paths. When it did not
+ * land, each entry this run staged and that is still staged at the target
+ * returns to the old HEAD's entry. That touches only the index, so the
+ * approved bytes and trust receipt are unaffected either way.
+ */
+const settleCarriedPolicyPaths = (
+  lease: LoopLease,
+  carried: CarriedPolicyPaths | null,
+  targetRevision: string,
+  cleanup: FinalizationCleanupResult
+): void => {
+  if (!carried) {
+    return;
+  }
+  const head = runGit(
+    lease.primaryCheckout,
+    ["rev-parse", "--verify", "HEAD"],
+    true
+  ).stdout.trim();
+  for (const { path, stagedAtTarget } of carried.paths) {
+    if (head === targetRevision) {
+      cleanup.notes.push(
+        `Carried ${path} through the fast-forward to ${lease.targetRef} without rewriting it; approved repository policy and its trust receipt are unchanged.`
+      );
+      continue;
+    }
+    if (
+      !stagedAtTarget &&
+      head === carried.headSha &&
+      diffMatchesRevision(lease.primaryCheckout, targetRevision, [path], true)
+    ) {
+      runGit(
+        lease.primaryCheckout,
+        [
+          LITERAL_PATHSPECS,
+          "restore",
+          `--source=${carried.headSha}`,
+          "--staged",
+          "--",
+          path,
+        ],
+        true
+      );
+    }
+    cleanup.notes.push(
+      `Kept ${path} in the primary checkout byte for byte: the fast-forward to ${lease.targetRef} did not land, so its approved bytes and trust receipt stay as they are.`
+    );
+  }
 };
 
 const fastForwardCleanPrimary = (
@@ -970,7 +1194,8 @@ const fastForwardCleanPrimary = (
   inventory: RepositoryInventory,
   targetBranch: string,
   targetRevision: string,
-  cleanup: FinalizationCleanupResult
+  cleanup: FinalizationCleanupResult,
+  carried: CarriedPolicyPaths | null = null
 ): void => {
   const primary = inventory.worktrees.find(
     (worktree) => worktree.path === lease.primaryCheckout
@@ -978,9 +1203,17 @@ const fastForwardCleanPrimary = (
   const localTarget = inventory.branches.find(
     (branch) => branch.name === targetBranch
   );
+  // Only carried policy paths, staged at the target entry, may remain.
+  const carriedPaths = new Set(carried?.paths.map(({ path }) => path));
   const canFastForward = Boolean(
     primary?.branch === targetBranch &&
-      primary.changes.length === 0 &&
+      primary.changes.every(
+        (change) =>
+          carriedPaths.has(change.path) &&
+          !change.originalPath &&
+          !change.untracked &&
+          !change.conflicted
+      ) &&
       localTarget &&
       localTarget.sha !== targetRevision &&
       targetContainsRevision(
@@ -994,7 +1227,8 @@ const fastForwardCleanPrimary = (
   }
   const result = runGit(
     lease.primaryCheckout,
-    ["merge", "--ff-only", targetRevision],
+    // Autostash would stash and rewrite carried policy bytes.
+    ["merge", "--ff-only", "--no-autostash", targetRevision],
     true
   );
   if (result.exitCode === 0) {
@@ -1293,9 +1527,10 @@ const automaticFinalizationCleanup = (
       targetRevision
     )
   ) {
-    reconcileTargetEquivalentPrimaryChanges(
+    const carriedPolicy = reconcileTargetEquivalentPrimaryChanges(
       lease,
       inventory,
+      targetBranch,
       targetRevision,
       cleanup
     );
@@ -1313,8 +1548,10 @@ const automaticFinalizationCleanup = (
       inventory,
       targetBranch,
       targetRevision,
-      cleanup
+      cleanup,
+      carriedPolicy
     );
+    settleCarriedPolicyPaths(lease, carriedPolicy, targetRevision, cleanup);
     if (
       process.env.NODE_ENV === "test" &&
       process.env.SIMPLE_CHANGES_TEST_FAIL_AFTER_PRIMARY_SYNC === lease.runId
@@ -1608,11 +1845,13 @@ const repositoryCleanupBlockers = (
       `Remove clean worktrees whose branches are contained in ${lease.targetRef}: ${mergedCleanupWorktrees.join(", ")}`
     );
   }
+  const retirementBacked = retirementBackedBranches(lease, inventory);
   const mergedCleanupBranchNames = inventory.branches
     .filter(
       (branch) =>
         branch.name !== targetBranch &&
         branch.worktreePath === null &&
+        !retirementBacked.has(branch.name) &&
         isTargetContained(branch.sha)
     )
     .map((branch) => branch.name);

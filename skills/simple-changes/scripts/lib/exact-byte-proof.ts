@@ -1,0 +1,254 @@
+import { runGit } from "./process.ts";
+
+/** The most source commits one proof reads; a longer range is refused. */
+export const EXACT_BYTE_PROOF_MAX_COMMITS = 200;
+
+const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
+
+export interface ExactByteTargetProofInput {
+  /** Commits that bound the range at most; defaults to the module limit. */
+  maxCommits?: number;
+  /**
+   * The exclusive start of the source range. It must be an ancestor of both
+   * `sourceHead` and `targetRevision`, so every commit outside the range is
+   * already in the target. Defaults to their merge base.
+   */
+  sourceBase?: string;
+  /** The source tip, such as a branch head. */
+  sourceHead: string;
+  targetRevision: string;
+}
+
+export interface ExactByteTargetProof {
+  baseRevision: string;
+  /** Every commit in `baseRevision..headRevision`, oldest first. */
+  commits: string[];
+  headRevision: string;
+  status: "proven";
+  targetRevision: string;
+  /** Every path any of `commits` added, changed, or removed, sorted. */
+  touchedPaths: string[];
+}
+
+export interface ExactByteTargetRefusal {
+  /** Touched paths whose entry at the source tip differs from the target. */
+  differingPaths: string[];
+  reason: string;
+  status: "refused";
+}
+
+export type ExactByteTargetResult =
+  | ExactByteTargetProof
+  | ExactByteTargetRefusal;
+
+const refused = (
+  reason: string,
+  differingPaths: string[] = []
+): ExactByteTargetRefusal => ({ differingPaths, reason, status: "refused" });
+
+const resolveCommit = (
+  repositoryPath: string,
+  revision: string
+): string | null => {
+  if (!revision || revision.startsWith("-")) {
+    return null;
+  }
+  const result = runGit(
+    repositoryPath,
+    ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`],
+    true
+  );
+  const sha = result.stdout.trim();
+  return result.exitCode === 0 && SHA_PATTERN.test(sha) ? sha : null;
+};
+
+const isAncestor = (
+  repositoryPath: string,
+  ancestor: string,
+  descendant: string
+): boolean =>
+  runGit(
+    repositoryPath,
+    ["merge-base", "--is-ancestor", ancestor, descendant],
+    true
+  ).exitCode === 0;
+
+const nulSeparated = (output: string): string[] =>
+  output.split("\0").filter((item) => item.length > 0);
+
+// The range's exclusive start: the given base or the merge base, which must
+// be an ancestor of both the tip and the target.
+const sourceBaseFor = (
+  repositoryPath: string,
+  sourceBase: string | undefined,
+  headRevision: string,
+  targetRevision: string
+): string | ExactByteTargetRefusal => {
+  let baseRevision: string | null;
+  if (sourceBase === undefined) {
+    const mergeBase = runGit(
+      repositoryPath,
+      ["merge-base", headRevision, targetRevision],
+      true
+    );
+    baseRevision =
+      mergeBase.exitCode === 0 ? mergeBase.stdout.trim() || null : null;
+    if (!baseRevision) {
+      return refused(
+        `Source tip ${headRevision} shares no history with target ${targetRevision}.`
+      );
+    }
+  } else {
+    baseRevision = resolveCommit(repositoryPath, sourceBase);
+    if (!baseRevision) {
+      return refused(`Source base ${sourceBase} does not name a commit.`);
+    }
+  }
+  if (!isAncestor(repositoryPath, baseRevision, headRevision)) {
+    return refused(
+      `Source base ${baseRevision} is not an ancestor of source tip ${headRevision}.`
+    );
+  }
+  if (!isAncestor(repositoryPath, baseRevision, targetRevision)) {
+    return refused(
+      `Source base ${baseRevision} is not contained in target ${targetRevision}, so commits before it would go unproven.`
+    );
+  }
+  return baseRevision;
+};
+
+// Every commit in base..head, oldest first, refusing a merge or a range
+// longer than the limit.
+const singleParentCommits = (
+  repositoryPath: string,
+  baseRevision: string,
+  headRevision: string,
+  maxCommits: number
+): string[] | ExactByteTargetRefusal => {
+  const parentLines = runGit(repositoryPath, [
+    "rev-list",
+    "--reverse",
+    "--parents",
+    `${baseRevision}..${headRevision}`,
+  ])
+    .stdout.split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (parentLines.length > maxCommits) {
+    return refused(
+      `Source range ${baseRevision}..${headRevision} has ${parentLines.length} commits, more than the ${maxCommits} one proof reads.`
+    );
+  }
+  const commits: string[] = [];
+  for (const line of parentLines) {
+    const [sha, ...parents] = line.split(" ");
+    if (!sha) {
+      continue;
+    }
+    if (parents.length > 1) {
+      return refused(
+        `Source range ${baseRevision}..${headRevision} contains merge commit ${sha}; exact-byte proof reads only single-parent commits.`
+      );
+    }
+    commits.push(sha);
+  }
+  return commits;
+};
+
+/**
+ * Proves that a source range left nothing outside the target: every path
+ * that any commit in `base..head` touched has exactly the same tree entry
+ * (bytes and mode, or absence) at the source tip as at the target revision.
+ * It reads history only and changes nothing.
+ *
+ * This is byte evidence, not ancestry: it holds when reviewed work reached
+ * the target inside a different or broader commit, which patch-ID matching
+ * cannot see. Because the base is an ancestor of the target and every path
+ * the range changed already equals the target, deleting the source branch
+ * would lose no content. It never says the target came from the source.
+ *
+ * It refuses, with a reason, when a revision does not resolve, the base is
+ * not an ancestor of both the tip and the target, the range holds a merge
+ * commit (whose changes depend on which parent is read) or more than
+ * `maxCommits` commits, or any touched path differs from the target.
+ */
+export const proveExactByteTargetContainment = (
+  repositoryPath: string,
+  input: ExactByteTargetProofInput
+): ExactByteTargetResult => {
+  const headRevision = resolveCommit(repositoryPath, input.sourceHead);
+  if (!headRevision) {
+    return refused(`Source tip ${input.sourceHead} does not name a commit.`);
+  }
+  const targetRevision = resolveCommit(repositoryPath, input.targetRevision);
+  if (!targetRevision) {
+    return refused(
+      `Target revision ${input.targetRevision} does not name a commit.`
+    );
+  }
+  const baseRevision = sourceBaseFor(
+    repositoryPath,
+    input.sourceBase,
+    headRevision,
+    targetRevision
+  );
+  if (typeof baseRevision !== "string") {
+    return baseRevision;
+  }
+  const commits = singleParentCommits(
+    repositoryPath,
+    baseRevision,
+    headRevision,
+    input.maxCommits ?? EXACT_BYTE_PROOF_MAX_COMMITS
+  );
+  if (!Array.isArray(commits)) {
+    return commits;
+  }
+  const touched = new Set<string>();
+  for (const sha of commits) {
+    for (const path of nulSeparated(
+      runGit(repositoryPath, [
+        "diff-tree",
+        "-r",
+        "-z",
+        "--no-commit-id",
+        "--name-only",
+        "--no-renames",
+        "--ignore-submodules=none",
+        sha,
+      ]).stdout
+    )) {
+      touched.add(path);
+    }
+  }
+  const different = new Set(
+    nulSeparated(
+      runGit(repositoryPath, [
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--no-ext-diff",
+        "--ignore-submodules=none",
+        headRevision,
+        targetRevision,
+      ]).stdout
+    )
+  );
+  const touchedPaths = [...touched].sort();
+  const differingPaths = touchedPaths.filter((path) => different.has(path));
+  if (differingPaths.length > 0) {
+    return refused(
+      `Source tip ${headRevision} differs from target ${targetRevision} at ${differingPaths.length} path(s) its commits touched: ${differingPaths.join(", ")}.`,
+      differingPaths
+    );
+  }
+  return {
+    baseRevision,
+    commits,
+    headRevision,
+    status: "proven",
+    targetRevision,
+    touchedPaths,
+  };
+};

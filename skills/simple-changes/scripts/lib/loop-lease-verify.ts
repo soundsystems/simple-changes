@@ -28,6 +28,7 @@ import {
   type PinnedUnitState,
 } from "./pinned-heads.ts";
 import { runGit } from "./process.ts";
+import { retiredRunCreatedPaths } from "./run-created-retirement.ts";
 import type {
   LoopLease,
   LoopVerification,
@@ -119,16 +120,19 @@ const retiredAbsentPaths = (
   lease: LoopLease,
   inventory: RepositoryInventory
 ): Set<string> =>
-  new Set(
-    lease.worktrees
+  new Set([
+    ...lease.worktrees
       .filter(
         (registered) =>
           registered.role === "preserved" &&
+          !registered.createdByRun &&
           retirementForRegistration(lease, registered) &&
           worktreeIsAbsent(inventory, registered.path)
       )
-      .map((registered) => registered.path)
-  );
+      .map((registered) => registered.path),
+    // A run-created registration retires only on exact-byte target proof.
+    ...retiredRunCreatedPaths(lease, inventory),
+  ]);
 
 // An author's own finished release, through `initialize --mode handoff`, a
 // ready-work receipt, or a plain `worktree release`, makes its checkout

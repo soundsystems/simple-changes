@@ -540,6 +540,28 @@ const released = claimFixture({
   updatedAt: releasedAt,
 });
 
+test("replan files are created only through plain state directories", () => {
+  const fixture = createTestRepository();
+  fixtures.push(fixture);
+  const lease = startLoop(fixture.root, "controller", "ship");
+  const common = captureInventory(fixture.root).repository.commonGitDirectory;
+  const history = join(common, "simple-changes", "history", lease.runId);
+  mkdirSync(history, { recursive: true });
+  // A non-directory where the observation directory belongs is refused by
+  // the contained state-directory helper, not met by a recursive mkdir.
+  const blocker = join(history, "status-observations");
+  writeFileSync(blocker, "not a directory\n");
+  expect(() => loopReplanStatus(fixture.root)).toThrow(
+    "is not a plain directory"
+  );
+  expect(readFileSync(blocker, "utf8")).toBe("not a directory\n");
+  rmSync(blocker);
+  const { statusDigest } = loopReplanStatus(fixture.root);
+  expect(readdirSync(join(history, "status-observations"))).toEqual([
+    `${statusDigest}.json`,
+  ]);
+});
+
 test("the pure delta accepts exactly one owner release and refuses each other difference", () => {
   const approved = observationFixture([claimFixture()]);
   const accepted = replanApprovalDelta(

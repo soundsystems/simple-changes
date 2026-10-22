@@ -159,7 +159,9 @@ runtime. Runtimes before 0.32.0 reject `extensions` too.
   detected harnesses, and any harness a reported run names, shows its
   `eligibility`, the conflicting authors with the commits that introduced
   them, and `ruledOutByWouldAuthor`. `status` is `open` (exit 0) only when the
-  configured reviewer stays eligible; `alternative-only` means only another
+  configured reviewer stays eligible and a reported real run proves it at
+  every effort the floor can require; `unverified` means it stays eligible
+  but no such run was reported; `alternative-only` means only another
   harness running the same model would, which the owner must choose;
   `closed` means this author would leave no eligible reviewer; `unknown`
   means evidence is missing, such as an author or review model named by a
@@ -170,9 +172,9 @@ runtime. Runtimes before 0.32.0 reject `extensions` too.
   anything but `open`, pick another author model or harness, or ask the
   owner, before dispatching.
   A route counts as available only after a real run of that model at that
-  effort, never from credential, sign-in, or status text; report such a run
-  with `--verified-route <harness id>/<model ID>@<effort>`, and otherwise
-  availability stays `unknown`.
+  effort, never from credential, sign-in, or status text; report each such
+  run with `--verified-route <harness id>/<model ID>@<effort>`, and otherwise
+  availability stays `unknown` and the room `unverified`.
 - **Coverage waivers.** Only the owner waives, before dispatch:
   `proposal waive-coverage --proposal <id> --head <sha> --authors-digest
   <digest> --receipt <waiver.json>` with `{"approvedBy", "reason",

@@ -79,6 +79,7 @@ export type RoomAvailability = "controller-verified" | "unknown";
 export type RoomReason =
   | "authoring-repair"
   | "author-identity-missing"
+  | "availability-unverified"
   | "authors-not-recorded"
   | "coverage-incomplete"
   | "independence-unproven"
@@ -115,7 +116,15 @@ export interface RoomCandidate {
   ruledOutByWouldAuthor: boolean;
 }
 
-export type RoomStatus = "open" | "alternative-only" | "closed" | "unknown";
+// open: the configured reviewer stays eligible and a reported real run
+// proves it at every effort the floor can require; unverified: it stays
+// eligible but no such run was reported.
+export type RoomStatus =
+  | "open"
+  | "unverified"
+  | "alternative-only"
+  | "closed"
+  | "unknown";
 
 export interface ReviewerRoom {
   adversarial: boolean;
@@ -386,6 +395,8 @@ const REASON_TEXT: Record<RoomReason, string> = {
   "authoring-repair": "an authoring sidecar is malformed and must be repaired",
   "authors-not-recorded":
     "the proposal has no recorded head and no range was given, so its authors are unknown",
+  "availability-unverified":
+    "no real run of the review model at the required effort was reported",
   "coverage-incomplete":
     "some commits have no attested author, so not every author is known",
   "independence-unproven":
@@ -427,8 +438,10 @@ const roomMessage = (
         : "No eligible reviewer remains even without this author: the attested authors or the owner's settings rule out every reviewer route. Ask the owner how to proceed.";
     case "open":
       return adversarial
-        ? `The configured reviewer, ${configured ? routeLabel(configured) : "the review role"}, stays eligible.`
+        ? `The configured reviewer, ${configured ? routeLabel(configured) : "the review role"}, stays eligible, and a reported real run proves the route.`
         : "The review role is not adversarial, so diversity is not required; executor independence is still checked after the review returns.";
+    case "unverified":
+      return `The configured reviewer, ${configured ? routeLabel(configured) : "the review role"}, stays eligible, but its availability is unproven: run that model once at ${[configured?.effort, configured?.escalationEffort].filter(Boolean).join(" and ")} in that harness and pass each real run as --verified-route before dispatching.`;
     case "alternative-only":
       return `The configured reviewer is ${configured?.eligibility === "ruled-out" ? "ruled out" : "not shown eligible"}${configured?.reason ? ` (${REASON_TEXT[configured.reason]})` : ""}. The same model in ${alternatives.join(", ")} would stay eligible, but only if the owner chooses that route and a real run of the model at that effort proves it.`;
     default:
@@ -716,7 +729,15 @@ const roomStatus = (
     return { reason: roomWide, status: "unknown" };
   }
   if (configured.eligibility === "eligible") {
-    return { reason: null, status: "open" };
+    // Availability is proven only by a reported real run, at the effort
+    // required now and at the one a later escalation would require.
+    const { availability } = configured;
+    const proven =
+      availability.effort === "controller-verified" &&
+      availability.escalationEffort !== "unknown";
+    return proven
+      ? { reason: null, status: "open" }
+      : { reason: "availability-unverified", status: "unverified" };
   }
   if (
     candidates.some(

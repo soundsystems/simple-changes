@@ -272,7 +272,7 @@ describe("reviewer room", () => {
     const open = room(run, [parseWouldAuthor(`${SAME}/model-gamma`)], {
       proposal: true,
     });
-    expect(open.status).toBe("open");
+    expect(open.status).toBe("unverified");
     expect(configured(open)).toMatchObject({
       conflicts: [],
       eligibility: "eligible",
@@ -295,7 +295,7 @@ describe("reviewer room", () => {
       authoring: stubAuthoring({ harness: OTHER }),
       proposal: true,
     });
-    expect(crossHarness.status).toBe("open");
+    expect(crossHarness.status).toBe("unverified");
     expect(configured(crossHarness)).toMatchObject({
       availability: { effort: "unknown" },
       eligibility: "eligible",
@@ -332,6 +332,31 @@ describe("reviewer room", () => {
     expect(proven.candidates[1]?.availability.effort).toBe(
       "controller-verified"
     );
+    // The room opens only once a real run proves the configured route at
+    // every effort the floor can require.
+    const fresh = (verified: string[]) =>
+      room(run, [author], {
+        authoring: stubAuthoring({ harness: OTHER }),
+        verified,
+      });
+    expect([fresh([]).status, fresh([]).reason]).toEqual([
+      "unverified",
+      "availability-unverified",
+    ]);
+    expect(fresh([`${OTHER}/${REVIEW_MODEL}@high`]).status).toBe("unverified");
+    expect(fresh([`${OTHER}/${REVIEW_MODEL}@xhigh`]).status).toBe("unverified");
+    expect(
+      fresh([`${OTHER}/${REVIEW_MODEL}@high`, `${OTHER}/${REVIEW_MODEL}@xhigh`])
+        .status
+    ).toBe("open");
+    // At the escalated floor one run at xhigh proves it.
+    expect(
+      room(run, [author], {
+        authoring: stubAuthoring({ harness: OTHER }),
+        proposal: true,
+        verified: [`${OTHER}/${REVIEW_MODEL}@xhigh`],
+      }).status
+    ).toBe("open");
     // The owner's "do not guide this harness" rules the alternative out.
     const refused = room(run, [author], {
       authoring: stubAuthoring({}, [SAME, OTHER]),
@@ -385,7 +410,7 @@ describe("reviewer room", () => {
     const across = room(run, [parseWouldAuthor(`${OTHER}/Model Review`)], {
       head: commit,
     });
-    expect(across.status).toBe("open");
+    expect(across.status).toBe("unverified");
   });
 
   test("a reviewer model that is not an ID proves no route, even across harnesses", () => {
@@ -409,13 +434,13 @@ describe("reviewer room", () => {
       expect(configured(result).eligibility).toBe("unknown");
     }
     // Negative control: the same cross-harness route with a model ID is open.
-    expect(room(run, author).status).toBe("open");
+    expect(room(run, author).status).toBe("unverified");
     // Without adversarial review the model is not compared.
     expect(
       room(run, author, {
         authoring: stubAuthoring({ adversarial: false, model: "most-capable" }),
       }).status
-    ).toBe("open");
+    ).toBe("unverified");
   });
 
   test("an attested author with neither instance nor session leaves independence unproven", () => {
@@ -424,7 +449,7 @@ describe("reviewer room", () => {
     attestAs(run, commit, "model-beta", ENV_OTHER, "instance-b");
     const author = [parseWouldAuthor(`${OTHER}/model-delta`)];
     // Negative control: the recorded instance and session prove independence.
-    expect(room(run, author).status).toBe("open");
+    expect(room(run, author).status).toBe("unverified");
     const path = reviewLedgerPath(
       locateRepository(run.root).repository.commonGitDirectory
     );
@@ -494,7 +519,7 @@ describe("reviewer room", () => {
     // Negative control: a different ID that is not an effort label is diverse.
     expect(
       room(run, [parseWouldAuthor(`${SAME}/${REVIEW_MODEL}-mini`)]).status
-    ).toBe("open");
+    ).toBe("unverified");
   });
 
   test("considers every attested author of the range and the proposal's recorded head", () => {
@@ -529,7 +554,7 @@ describe("reviewer room", () => {
       }),
     ]);
     // Negative control: a range that stops before the conflicting commit.
-    expect(room(run, [author], { head: first }).status).toBe("open");
+    expect(room(run, [author], { head: first }).status).toBe("unverified");
     // A named proposal with no recorded head and no range has unknown authors.
     const unrecorded = room(run, [author], {
       authoring: stubAuthoring({ harness: OTHER, model: "model-epsilon" }),
@@ -645,7 +670,7 @@ describe("reviewer room command", () => {
       sidecar: readFileSync(sidecar, "utf8"),
       status: git(run.author, ["status", "--porcelain"]),
     };
-    const cli = (wouldAuthor: string, json = true) => {
+    const cli = (wouldAuthor: string, json = true, extra: string[] = []) => {
       const result = spawnSync(
         [
           process.execPath,
@@ -662,6 +687,7 @@ describe("reviewer room command", () => {
           PROPOSAL,
           "--repo",
           run.author,
+          ...extra,
           ...(json ? ["--json"] : []),
         ],
         {
@@ -690,7 +716,15 @@ describe("reviewer room command", () => {
       required: { effort: "xhigh", effortSource: "escalation" },
       status: "closed",
     });
-    const open = cli(`${SAME}/model-gamma`, false);
+    const unverified = cli(`${SAME}/model-gamma`);
+    expect(unverified.exitCode).toBe(3);
+    expect((JSON.parse(unverified.stdout) as ReviewerRoom).status).toBe(
+      "unverified"
+    );
+    const open = cli(`${SAME}/model-gamma`, false, [
+      "--verified-route",
+      `${SAME}/${REVIEW_MODEL}@xhigh`,
+    ]);
     expect(open.exitCode).toBe(0);
     expect(open.stdout).toContain("Reviewer room: open");
     expect(open.stdout).toContain("Nothing was written.");

@@ -116,6 +116,8 @@ const PATH_EXISTS_PATTERN = /already exists/u;
 const NO_ARCHIVE_PATTERN =
   /no archive was made.*partial archive .* and its [0-9]+ pin\(s\) were removed/u;
 const MOVED_PIN_PATTERN = /objects\/[0-9a-f]{40} \(/u;
+const ONE_PIN_REMOVED_PATTERN =
+  /no archive was made.*partial archive .* and its 1 pin\(s\) were removed/u;
 const MARKER_UNREADABLE_PATTERN = /not a restore marker/u;
 const DAY = 86_400_000;
 const ADAPTER = "test-adapter";
@@ -2210,6 +2212,25 @@ describe("reviewed replacement lineage cleanup", () => {
         head.ref,
       ]).exitCode
     ).not.toBe(0);
+  });
+
+  test("a pin whose read-back is lost is still undone with the archive", () => {
+    const lineage = lineageFixture(false);
+    const receipt = receiptFor(lineage);
+    const { root } = lineage.fixture;
+    // The head pin's ref is the first the removal writes; its name carries
+    // the archive ID, so the seam matches any archive's head pin by suffix.
+    expectRefusal(
+      () =>
+        withEnvironment(
+          { NODE_ENV: "test", SIMPLE_CHANGES_TEST_FAIL_PIN_READBACK: "head" },
+          () => prune(lineage, receipt)
+        ),
+      ONE_PIN_REMOVED_PATTERN
+    );
+    expect(worktreePaths(root)).toContain(lineage.path);
+    expect(pinRefs(root)).toBe("");
+    expect(listWorktreeArchives(commonDirectory(root))).toEqual([]);
   });
 
   test("worktree archives names a restore marker it cannot read", () => {

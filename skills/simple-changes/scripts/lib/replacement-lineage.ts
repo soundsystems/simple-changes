@@ -1344,6 +1344,18 @@ const pinArchive = (
     if (written.exitCode !== 0) {
       return `Could not pin ${object} at ${ref}: ${written.stderr.trim()}`;
     }
+    // Recorded the moment Git reports the write, before the read-back can
+    // throw, so an undo always knows about it.
+    pinRefs.push({ object, ref });
+    if (
+      process.env.NODE_ENV === "test" &&
+      ref.endsWith(`/${process.env.SIMPLE_CHANGES_TEST_FAIL_PIN_READBACK}`)
+    ) {
+      throw new SimpleChangesError(
+        `Simulated lost answer while reading back ${ref}.`,
+        EXIT_CODES.unsafe
+      );
+    }
     const readBack = runGit(
       primary,
       [...overrides, "rev-parse", "--verify", "--quiet", ref],
@@ -1352,7 +1364,6 @@ const pinArchive = (
     if (readBack !== object) {
       return `Pinned ${ref}, but it reads back as ${readBack || "nothing"}, not ${object}.`;
     }
-    pinRefs.push({ object, ref });
     return null;
   };
   const headFailure = write(`${namespace}/head`, headSha);

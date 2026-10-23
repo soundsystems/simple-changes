@@ -1313,17 +1313,19 @@ const zeroObject = (object: string): string => "0".repeat(object.length);
 // Pins the head and every object the checkout named under the archive's own
 // namespace, each created only when absent and without dereferencing, so
 // two archives never share a pin and nothing outside the namespace moves.
+// Every pin written is appended to `pinRefs` as it is made, so the caller
+// holds the exact list to undo or to record even when a later step throws.
 const pinArchive = (
   verified: VerifiedReplacementLineage,
   source: ReviewedSourceState,
   candidates: readonly string[],
   archiveId: string,
-  overrides: readonly string[]
-): { failure: string | null; pinRefs: ArchivePinRef[] } => {
+  overrides: readonly string[],
+  pinRefs: ArchivePinRef[]
+): string | null => {
   const primary = verified.primaryCheckout;
   const { headSha, branch, path } = verified.worktree;
   const namespace = archivePinNamespace(archiveId);
-  const pinRefs: ArchivePinRef[] = [];
   const write = (ref: string, object: string): string | null => {
     const written = runGit(
       primary,
@@ -1355,7 +1357,7 @@ const pinArchive = (
   };
   const headFailure = write(`${namespace}/head`, headSha);
   if (headFailure) {
-    return { failure: headFailure, pinRefs };
+    return headFailure;
   }
   const named = new Map(
     source.namedObjects.map((entry) => [entry.object, entry.name] as const)
@@ -1375,17 +1377,14 @@ const pinArchive = (
       continue;
     }
     if (known.exitCode !== 0) {
-      return {
-        failure: `Could not confirm that ${object}${name ? `, named by ${name},` : ""} is in the repository (${known.stderr.trim() || `exit ${known.exitCode}`}), so it was not pinned.`,
-        pinRefs,
-      };
+      return `Could not confirm that ${object}${name ? `, named by ${name},` : ""} is in the repository (${known.stderr.trim() || `exit ${known.exitCode}`}), so it was not pinned.`;
     }
     const failure = write(`${namespace}/objects/${object}`, object);
     if (failure) {
-      return { failure, pinRefs };
+      return failure;
     }
   }
-  return { failure: null, pinRefs };
+  return null;
 };
 
 // Measures and bounds the checkout again, copies it and its private Git
@@ -1415,14 +1414,21 @@ const archiveSource = (
     commonGitDirectory,
     privateGitDirectory: archive.privateGitDirectory,
   });
+  const pinRefs: ArchivePinRef[] = [];
   try {
     return finishArchive(verified, source, removalId, overrides, {
       archiveId,
       copy,
       createdAt,
+      pinRefs,
     });
   } catch (error) {
-    return undoArchive(verified, archiveId, copy.directory, overrides, error);
+    return undoArchive(
+      verified,
+      { archiveId, directory: copy.directory, pinRefs },
+      overrides,
+      error
+    );
   }
 };
 
@@ -1433,17 +1439,23 @@ const finishArchive = (
   source: ReviewedSourceState,
   removalId: string,
   overrides: readonly string[],
-  copied: { archiveId: string; copy: ArchiveCopy; createdAt: Date }
+  copied: {
+    archiveId: string;
+    copy: ArchiveCopy;
+    createdAt: Date;
+    pinRefs: ArchivePinRef[];
+  }
 ): ArchivedSource => {
   const { archive, commonGitDirectory, receipt, receiptDigest, worktree } =
     verified;
-  const { archiveId, copy, createdAt } = copied;
-  const pins = pinArchive(
+  const { archiveId, copy, createdAt, pinRefs } = copied;
+  const pinFailure = pinArchive(
     verified,
     source,
     copy.objectIdCandidates,
     archiveId,
-    overrides
+    overrides,
+    pinRefs
   );
   if (
     process.env.NODE_ENV === "test" &&
@@ -1463,7 +1475,7 @@ const finishArchive = (
     expiresAt: archive.expiresAt,
     gitDirectory: copy.gitDirectory,
     kind: "worktree-archive",
-    pinRefs: pins.pinRefs,
+    pinRefs: [...pinRefs],
     privateGitDirectory: archive.privateGitDirectory,
     receiptDigest,
     removalId,
@@ -1485,57 +1497,65 @@ const finishArchive = (
     targetRef: receipt.targetRef,
   };
   writeWorktreeArchiveManifest(copy.directory, manifest);
-  return { directory: copy.directory, failure: pins.failure, manifest };
+  return { directory: copy.directory, failure: pinFailure, manifest };
 };
 
-// Removes the archive folder and the pins already written under its
-// namespace, so a refusal that says no archive was made is exact; what
-// could not be undone is named.
+/**
+ * Deletes pins by their exact recorded value, never following a symbolic
+ * ref, and returns the refs that could not be deleted (with Git's reason),
+ * so the caller reports exactly what remains.
+ */
+export const deleteTrackedPins = (
+  primaryCheckout: string,
+  pins: readonly ArchivePinRef[],
+  overrides: readonly string[] = []
+): string[] => {
+  const leftovers: string[] = [];
+  for (const pin of pins) {
+    const deleted = runGit(
+      primaryCheckout,
+      [...overrides, "update-ref", "--no-deref", "-d", pin.ref, pin.object],
+      true
+    );
+    if (deleted.exitCode !== 0) {
+      leftovers.push(
+        `${pin.ref} (${deleted.stderr.trim() || `exit ${deleted.exitCode}`})`
+      );
+    }
+  }
+  return leftovers;
+};
+
+// Removes the archive folder and exactly the pins this run wrote (tracked
+// as they were made, never rediscovered), so a refusal that says no archive
+// was made is exact; what could not be undone is named.
 const undoArchive = (
   verified: VerifiedReplacementLineage,
-  archiveId: string,
-  directory: string,
+  made: {
+    archiveId: string;
+    directory: string;
+    pinRefs: readonly ArchivePinRef[];
+  },
   overrides: readonly string[],
   error: unknown
 ): never => {
-  const leftovers: string[] = [];
-  const namespace = archivePinNamespace(archiveId);
-  const listed = runGit(
+  const leftovers = deleteTrackedPins(
     verified.primaryCheckout,
-    [
-      ...overrides,
-      "for-each-ref",
-      "--format=%(refname)%00%(objectname)",
-      `${namespace}/`,
-    ],
-    true
+    made.pinRefs,
+    overrides
   );
-  for (const line of listed.exitCode === 0 ? listed.stdout.split("\n") : []) {
-    const [ref, object] = line.split("\0");
-    if (
-      ref &&
-      object &&
-      runGit(
-        verified.primaryCheckout,
-        [...overrides, "update-ref", "--no-deref", "-d", ref, object],
-        true
-      ).exitCode !== 0
-    ) {
-      leftovers.push(ref);
-    }
-  }
   try {
-    discardArchiveDirectory(directory);
+    discardArchiveDirectory(made.directory);
   } catch (removal) {
     leftovers.push(
-      `${directory} (${removal instanceof Error ? removal.message : String(removal)})`
+      `${made.directory} (${removal instanceof Error ? removal.message : String(removal)})`
     );
   }
   const detail = error instanceof Error ? error.message : String(error);
   throw SimpleChangesError.withCause(
     leftovers.length === 0
-      ? `${detail} The partial archive ${archiveId} and its pins were removed.`
-      : `${detail} The partial archive ${archiveId} could not be fully removed; still present: ${leftovers.join(", ")}. Remove them by hand.`,
+      ? `${detail} The partial archive ${made.archiveId} and its ${made.pinRefs.length} pin(s) were removed.`
+      : `${detail} The partial archive ${made.archiveId} could not be fully removed; still present: ${leftovers.join(", ")}. Remove them by hand.`,
     error instanceof SimpleChangesError ? error.exitCode : EXIT_CODES.unsafe,
     error
   );

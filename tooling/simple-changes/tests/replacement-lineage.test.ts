@@ -22,6 +22,7 @@ import {
 import { startLoop } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import {
+  deleteTrackedPins,
   GIT_ENVIRONMENT_REDIRECTS,
   type ReplacementLineageOutcome,
   type ReplacementLineageReceipt,
@@ -113,7 +114,8 @@ const CONFIGURED_HOOK_PATTERN =
 const STAMP = "2026-10-08T12:00:00.000Z";
 const PATH_EXISTS_PATTERN = /already exists/u;
 const NO_ARCHIVE_PATTERN =
-  /no archive was made.*partial archive .* and its pins were removed/u;
+  /no archive was made.*partial archive .* and its [0-9]+ pin\(s\) were removed/u;
+const MOVED_PIN_PATTERN = /objects\/[0-9a-f]{40} \(/u;
 const MARKER_UNREADABLE_PATTERN = /not a restore marker/u;
 const DAY = 86_400_000;
 const ADAPTER = "test-adapter";
@@ -2177,6 +2179,37 @@ describe("reviewed replacement lineage cleanup", () => {
       PATH_EXISTS_PATTERN
     );
     expect(readFileSync(indexPath).equals(before)).toBe(true);
+  });
+
+  test("undoing an archive deletes exactly the tracked pins and names the rest", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const namespace =
+      "refs/simple-changes/archives/archive-20261022T120000Z-00000000-00000000";
+    const first = lineage.commits[0] ?? "";
+    const head = { object: lineage.headSha, ref: `${namespace}/head` };
+    const moved = { object: first, ref: `${namespace}/objects/${first}` };
+    git(root, ["update-ref", "--no-deref", head.ref, head.object]);
+    git(root, ["update-ref", "--no-deref", moved.ref, moved.object]);
+    // A pin that moved after it was written is not deleted and is named.
+    git(root, ["update-ref", "--no-deref", moved.ref, lineage.headSha]);
+    const leftovers = deleteTrackedPins(root, [head, moved]);
+    expect(leftovers).toHaveLength(1);
+    expect(leftovers[0]).toMatch(MOVED_PIN_PATTERN);
+    expect(git(root, ["rev-parse", "--verify", "--quiet", moved.ref])).toBe(
+      lineage.headSha
+    );
+    expect(
+      spawnSync([
+        "git",
+        "-C",
+        root,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        head.ref,
+      ]).exitCode
+    ).not.toBe(0);
   });
 
   test("worktree archives names a restore marker it cannot read", () => {

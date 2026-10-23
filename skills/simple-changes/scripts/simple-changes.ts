@@ -4931,7 +4931,7 @@ const renderArchivePruning = (
   // sees what the pruning applied.
   if (lines.length > 0 || pruning.totalBytesBefore > 0) {
     lines.push(
-      `Archives hold ${pruning.totalBytesAfter} bytes of the ${pruning.appliedRetention.maxTotalBytes}-byte cap; each expires after ${pruning.appliedRetention.days} day(s), by repository policy.`
+      `Archives hold ${pruning.totalBytesAfter} bytes of the ${pruning.appliedRetention.maxTotalBytes}-byte cap; by the current repository policy a new archive expires after ${pruning.appliedRetention.days} day(s), and an existing one keeps the expiry its manifest records.`
     );
   }
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";

@@ -57,6 +57,10 @@ const REPOSITORY_ID = "c".repeat(64);
 const REMOVAL_ID = "lineage-12345678-1234-4234-8234-123456789abc";
 const DAY = 86_400_000;
 const RETENTION_DAYS_NOTE_PATTERN = /archiveRetention\.days/u;
+const DEFAULT_POLICY_SUMMARY_PATTERN =
+  /by the current repository policy a new archive expires after 14 day\(s\), and an existing one keeps the expiry its manifest records/u;
+const CHANGED_POLICY_SUMMARY_PATTERN =
+  /a new archive expires after 3 day\(s\), and an existing one keeps the expiry its manifest records/u;
 const MIB = 1024 ** 2;
 const decoder = new TextDecoder();
 const CLI_PATH = resolve(
@@ -670,6 +674,32 @@ describe("worktree archive retention at natural cleanup points", () => {
       manifest: { expiresAt: current.manifest.expiresAt },
       restoring: null,
     });
+
+    // The summary names the current policy for new archives; an existing
+    // archive keeps the expiry its manifest records, whatever the policy
+    // says now.
+    const dryRun = (): string =>
+      runCli([
+        "worktree",
+        "prune-archives",
+        "--older-than",
+        "30",
+        "--approved-by",
+        "u",
+        "--reason",
+        "r",
+        "--dry-run",
+        "--repo",
+        retention.root,
+      ]).stdout;
+    expect(dryRun()).toMatch(DEFAULT_POLICY_SUMMARY_PATTERN);
+    writePolicy(retention.root, { days: 3 });
+    expect(dryRun()).toMatch(CHANGED_POLICY_SUMMARY_PATTERN);
+    const relisted = JSON.parse(
+      runCli(["worktree", "archives", "--json", "--repo", retention.root])
+        .stdout
+    ) as Array<{ manifest: { expiresAt: string } | null }>;
+    expect(relisted[0]?.manifest?.expiresAt).toBe(current.manifest.expiresAt);
 
     const pruned = runCli([
       "worktree",

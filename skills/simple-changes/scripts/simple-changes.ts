@@ -4904,7 +4904,10 @@ const renderReviewedReplacement = (
   const archived = archive.archiveId
     ? `archived as ${archive.archiveId} at ${archive.path} (${retention}); ${outcome.pinRefs.length} pin(s) under refs/simple-changes/archives/${archive.archiveId}/`
     : "not archived";
-  return `Reviewed replacement: ${outcome.worktreeRemoved ? "removed" : "kept"} ${outcome.path}${outcome.branch ? `, branch ${outcome.branch} ${outcome.branchDeleted ? "deleted" : "kept"}` : ""}; ${archived} (${proof}). Restore it with \`simple-changes worktree restore-archive --archive ${archive.archiveId ?? "<id>"}\`.${fallbacks}\n`;
+  const restore = archive.archiveId
+    ? ` Restore it with \`simple-changes worktree restore-archive --archive ${archive.archiveId}\`.`
+    : "";
+  return `Reviewed replacement: ${outcome.worktreeRemoved ? "removed" : "kept"} ${outcome.path}${outcome.branch ? `, branch ${outcome.branch} ${outcome.branchDeleted ? "deleted" : "kept"}` : ""}; ${archived} (${proof}).${restore}${fallbacks}\n`;
 };
 
 const renderArchivePruning = (
@@ -4917,7 +4920,7 @@ const renderArchivePruning = (
   const lines = [
     ...pruning.pruned.map(
       (entry) =>
-        `${dryRun ? "Would prune" : "Pruned"} archive ${entry.archiveId} (${entry.cause}, ${entry.bytes} bytes, ${entry.pinRefsDeleted.length} pin(s)${entry.pinRefsKept.length > 0 ? `, ${entry.pinRefsKept.length} pin(s) kept` : ""}).${entry.notes.map((note) => `\n  note: ${note}`).join("")}`
+        `${dryRun ? "Would prune" : "Pruned"} archive ${entry.archiveId} (${entry.cause}, ${entry.bytes} bytes, ${entry.pinRefsDeleted.length} pin(s)).${entry.notes.map((note) => `\n  note: ${note}`).join("")}`
     ),
     ...pruning.keptForAttention.map(
       (entry) =>

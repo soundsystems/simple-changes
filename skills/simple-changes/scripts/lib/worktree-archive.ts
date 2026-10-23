@@ -699,11 +699,30 @@ export const compareTrees = (
   actual: ArchiveTree
 ): string[] => treeDifferences(expected, actual, "");
 
-const isScannedForObjectIds = (item: WalkedEntry): boolean =>
+const isObjectNamingFile = (item: WalkedEntry): boolean =>
   item.type === "file" &&
   item.relative !== "index" &&
-  !item.relative.startsWith("logs/") &&
-  item.stats.size <= OBJECT_SCAN_LIMIT_BYTES;
+  !item.relative.startsWith("logs/");
+
+const isScannedForObjectIds = (item: WalkedEntry): boolean =>
+  isObjectNamingFile(item) && item.stats.size <= OBJECT_SCAN_LIMIT_BYTES;
+
+/** The most bytes of one Git state file the object scan reads. */
+export const OBJECT_SCAN_LIMIT = OBJECT_SCAN_LIMIT_BYTES;
+
+/**
+ * The regular files of a Git directory tree that the object scan would have
+ * to skip for their size (everything but the index and the reflogs is
+ * scanned). A caller that must pin every object such a file names refuses
+ * instead of pinning part of it.
+ */
+export const oversizedScanFiles = (gitTreeRoot: string): string[] =>
+  walkTree(gitTreeRoot)
+    .filter(
+      (item) =>
+        isObjectNamingFile(item) && item.stats.size > OBJECT_SCAN_LIMIT_BYTES
+    )
+    .map((item) => `${item.relative} (${item.stats.size} bytes)`);
 
 const readSmallFile = (path: string): string => {
   const descriptor = openRegularFile(path);
@@ -1693,7 +1712,6 @@ export interface ArchivePruneResult {
     /** What the run noticed about this archive, such as a failed re-check a manual prune overrode. */
     notes: string[];
     pinRefsDeleted: string[];
-    pinRefsKept: string[];
   }>;
   /** Null in a dry run or when nothing was pruned. */
   recordPath: string | null;
@@ -2010,23 +2028,21 @@ const namespaceRefs = (
   return refs;
 };
 
+// A pin is `deletable` when it still holds its recorded object, `gone` when
+// nothing is left to delete, and `blocked` when it cannot be deleted by
+// exact value (it moved, became a symbolic ref, lies outside the archive's
+// namespace, or Git could not list the namespace).
 interface PinPlan {
+  blocked: string[];
   deletable: ArchivePinRef[];
-  kept: string[];
+  gone: string[];
   notes: string[];
 }
 
-const pinKeptReason = (
+const pinBlockReason = (
   pin: ArchivePinRef,
-  namespace: string,
-  current: CurrentRef | undefined
+  current: CurrentRef
 ): string | null => {
-  if (!pin.ref.startsWith(`${namespace}/`)) {
-    return `${pin.ref} is outside the archive's namespace ${namespace}/, so it was left alone.`;
-  }
-  if (!current) {
-    return `${pin.ref} was already gone.`;
-  }
   if (current.symref !== "") {
     return `${pin.ref} is now a symbolic ref to ${current.symref}, so it was left alone rather than followed.`;
   }
@@ -2042,38 +2058,73 @@ const planPins = (
 ): PinPlan => {
   const namespace = archivePinNamespace(manifest.archiveId);
   const current = namespaceRefs(context, namespace);
-  const plan: PinPlan = { deletable: [], kept: [], notes: [] };
+  const plan: PinPlan = { blocked: [], deletable: [], gone: [], notes: [] };
   for (const pin of manifest.pinRefs) {
-    const reason = current
-      ? pinKeptReason(pin, namespace, current.get(pin.ref))
-      : `${pin.ref} was left alone because Git could not list the archive's pins.`;
-    if (reason === null) {
-      plan.deletable.push(pin);
+    // The listing covers only the archive's namespace, so a pin outside it
+    // is judged before the lookup; it is never "gone".
+    if (!pin.ref.startsWith(`${namespace}/`)) {
+      plan.blocked.push(pin.ref);
+      plan.notes.push(
+        `${pin.ref} is outside the archive's namespace ${namespace}/, so it was left alone.`
+      );
+      continue;
+    }
+    const ref = current?.get(pin.ref);
+    if (!current) {
+      plan.blocked.push(pin.ref);
+      plan.notes.push(
+        `${pin.ref} was left alone because Git could not list the archive's pins.`
+      );
+    } else if (ref) {
+      const reason = pinBlockReason(pin, ref);
+      if (reason === null) {
+        plan.deletable.push(pin);
+      } else {
+        plan.blocked.push(pin.ref);
+        plan.notes.push(reason);
+      }
     } else {
-      plan.kept.push(pin.ref);
-      plan.notes.push(reason);
+      plan.gone.push(pin.ref);
     }
   }
   return plan;
 };
 
-// Without a manifest there is no list of pins to delete exactly, so every
-// ref left in the archive's namespace is kept and reported.
+// Without a manifest there is no recorded value to delete by; the refs in
+// the archive's own namespace are deleted at the value they hold now, since
+// the user named this archive.
 const unlistedPins = (context: PruneContext, archiveId: string): PinPlan => {
   const namespace = archivePinNamespace(archiveId);
-  const kept = [...(namespaceRefs(context, namespace)?.keys() ?? [])].sort(
-    compareCodePoints
-  );
-  return {
-    deletable: [],
-    kept,
-    notes:
-      kept.length > 0
-        ? [
-            `Its pins under ${namespace}/ were left in place because the manifest that lists them did not parse.`,
-          ]
-        : [],
-  };
+  const current = namespaceRefs(context, namespace);
+  if (!current) {
+    return {
+      blocked: [`${namespace}/`],
+      deletable: [],
+      gone: [],
+      notes: [
+        `Its pins under ${namespace}/ were left alone because Git could not list them.`,
+      ],
+    };
+  }
+  const plan: PinPlan = { blocked: [], deletable: [], gone: [], notes: [] };
+  for (const [ref, state] of [...current].sort(([left], [right]) =>
+    compareCodePoints(left, right)
+  )) {
+    if (state.symref === "") {
+      plan.deletable.push({ object: state.object, ref });
+    } else {
+      plan.blocked.push(ref);
+      plan.notes.push(
+        `${ref} is a symbolic ref to ${state.symref}, so it was left alone rather than followed.`
+      );
+    }
+  }
+  if (plan.deletable.length > 0) {
+    plan.notes.push(
+      `Its pins under ${namespace}/ were deleted at the values they held, because the manifest that lists them did not parse.`
+    );
+  }
+  return plan;
 };
 
 const pinPlanFor = (context: PruneContext, item: PruneItem): PinPlan =>
@@ -2082,15 +2133,19 @@ const pinPlanFor = (context: PruneContext, item: PruneItem): PinPlan =>
     : unlistedPins(context, item.listing.archiveId);
 
 // Exact old value and no dereference: a pin that moved, or became a
-// symbolic ref, is reported rather than forced.
+// symbolic ref, is reported rather than forced. A plan with a blocked pin
+// deletes nothing, and a deletion that fails stops the run there, so an
+// archive that stays keeps every pin it still can.
 const deletePins = (
   context: PruneContext,
   plan: PinPlan
-): { deleted: string[]; kept: string[]; notes: string[] } => {
-  const deleted: string[] = [];
-  const kept = [...plan.kept];
+): { deleted: string[]; notes: string[]; unresolved: string[] } => {
   const notes = [...plan.notes];
-  for (const pin of plan.deletable) {
+  if (plan.blocked.length > 0) {
+    return { deleted: [], notes, unresolved: [...plan.blocked] };
+  }
+  const deleted: string[] = [];
+  for (const [index, pin] of plan.deletable.entries()) {
     const result = runGit(
       context.input.primaryCheckout,
       [
@@ -2105,12 +2160,21 @@ const deletePins = (
     );
     if (result.exitCode === 0) {
       deleted.push(pin.ref);
-    } else {
-      kept.push(pin.ref);
-      notes.push(`${pin.ref} could not be deleted: ${gitDetail(result)}.`);
+      continue;
     }
+    const remaining = plan.deletable.slice(index + 1).map((item) => item.ref);
+    notes.push(`${pin.ref} could not be deleted: ${gitDetail(result)}.`);
+    if (remaining.length > 0) {
+      notes.push(`${remaining.join(", ")} left alone after that failure.`);
+    }
+    if (deleted.length > 0) {
+      notes.push(
+        `${deleted.join(", ")} already deleted; the next prune skips them.`
+      );
+    }
+    return { deleted, notes, unresolved: [pin.ref, ...remaining] };
   }
-  return { deleted, kept, notes };
+  return { deleted, notes, unresolved: [] };
 };
 
 const pruneRecord = (
@@ -2179,19 +2243,31 @@ const appendPruneRecord = (
   ]);
 };
 
-// Pins, then the record, then the folder: a crash after the record leaves a
-// recorded archive that the next run prunes again, never an unrecorded
-// removal.
-const executePrune = (
-  context: PruneContext,
-  item: PruneItem
-): PrunedArchive & { folderRemoved: boolean } => {
+type PruneOutcome =
+  | { kept: ArchivePruneResult["keptForAttention"][number]; pruned?: never }
+  | { kept?: never; pruned: PrunedArchive & { folderRemoved: boolean } };
+
+// Pins first; the record and the folder only once every pin is gone. An
+// archive whose pins could not all be deleted stays whole, manifest
+// included, so the next prune (automatic or by ID) retries it, and is
+// reported. A crash after the record leaves a recorded archive that the
+// next run prunes again, never an unrecorded removal.
+const executePrune = (context: PruneContext, item: PruneItem): PruneOutcome => {
   const pins = deletePins(context, pinPlanFor(context, item));
+  const notes = [...item.notes, ...pins.notes];
+  if (pins.unresolved.length > 0) {
+    return {
+      kept: {
+        archiveId: item.listing.archiveId,
+        reason: `Its pins could not all be deleted (${pins.unresolved.join(", ")}): ${notes.join(" ")} The archive stays whole so the next prune retries it; delete the refs by hand with \`git update-ref --no-deref -d <ref>\` if they are not to be kept.`,
+        restoreCommand: restoreCommand(item.listing.archiveId),
+      },
+    };
+  }
   appendPruneRecord(
     context.input.commonGitDirectory,
     pruneRecord(context.input, item, pins.deleted)
   );
-  const notes = [...item.notes, ...pins.notes];
   let folderRemoved = true;
   try {
     removeTree(item.listing.directory);
@@ -2202,28 +2278,39 @@ const executePrune = (
     );
   }
   return {
-    archiveId: item.listing.archiveId,
-    bytes: item.bytes,
-    cause: item.cause,
-    folderRemoved,
-    notes,
-    pinRefsDeleted: pins.deleted,
-    pinRefsKept: pins.kept,
+    pruned: {
+      archiveId: item.listing.archiveId,
+      bytes: item.bytes,
+      cause: item.cause,
+      folderRemoved,
+      notes,
+      pinRefsDeleted: pins.deleted,
+    },
   };
 };
 
-const plannedPrune = (
-  context: PruneContext,
-  item: PruneItem
-): PrunedArchive => {
+// What a dry run would do: an archive with a pin that cannot be deleted
+// would be kept, like a real run keeps it.
+const plannedPrune = (context: PruneContext, item: PruneItem): PruneOutcome => {
   const pins = pinPlanFor(context, item);
+  if (pins.blocked.length > 0) {
+    return {
+      kept: {
+        archiveId: item.listing.archiveId,
+        reason: `Its pins could not all be deleted (${pins.blocked.join(", ")}): ${[...item.notes, ...pins.notes].join(" ")} The archive would stay whole.`,
+        restoreCommand: restoreCommand(item.listing.archiveId),
+      },
+    };
+  }
   return {
-    archiveId: item.listing.archiveId,
-    bytes: item.bytes,
-    cause: item.cause,
-    notes: [...item.notes, ...pins.notes],
-    pinRefsDeleted: pins.deletable.map((pin) => pin.ref),
-    pinRefsKept: pins.kept,
+    pruned: {
+      archiveId: item.listing.archiveId,
+      bytes: item.bytes,
+      cause: item.cause,
+      folderRemoved: true,
+      notes: [...item.notes, ...pins.notes],
+      pinRefsDeleted: pins.deletable.map((pin) => pin.ref),
+    },
   };
 };
 
@@ -2293,25 +2380,36 @@ export const pruneWorktreeArchives = (
     // A damaged log refuses before any pin or folder is touched.
     readArchivePruneLog(input.commonGitDirectory);
   }
-  const executed = plan.prune.map((item) =>
-    input.dryRun
-      ? { ...plannedPrune(context, item), folderRemoved: true }
-      : executePrune(context, item)
-  );
+  const outcomes = plan.prune.map((item) => ({
+    item,
+    outcome: input.dryRun
+      ? plannedPrune(context, item)
+      : executePrune(context, item),
+  }));
+  const keptForAttention = [
+    ...plan.keptForAttention,
+    ...outcomes.flatMap(({ outcome }) => (outcome.kept ? [outcome.kept] : [])),
+  ];
   // Only an archive whose folder is gone frees its bytes.
-  const prunedBytes = executed.reduce(
-    (sum, entry, index) =>
+  const prunedBytes = outcomes.reduce(
+    (sum, { item, outcome }) =>
       sum +
-      (entry.folderRemoved && plan.prune[index]?.manifest ? entry.bytes : 0),
+      (outcome.pruned?.folderRemoved && item.manifest
+        ? outcome.pruned.bytes
+        : 0),
     0
   );
-  const pruned = executed.map(({ folderRemoved: _removed, ...entry }) => entry);
+  const pruned = outcomes.flatMap(({ outcome }) =>
+    outcome.pruned
+      ? [(({ folderRemoved: _removed, ...entry }) => entry)(outcome.pruned)]
+      : []
+  );
   return {
     appliedRetention: {
       days: input.retention.days,
       maxTotalBytes: input.retention.maxTotalBytes,
     },
-    keptForAttention: plan.keptForAttention,
+    keptForAttention,
     pruned,
     recordPath:
       !input.dryRun && pruned.length > 0

@@ -57,6 +57,8 @@ const REPOSITORY_ID = "c".repeat(64);
 const REMOVAL_ID = "lineage-12345678-1234-4234-8234-123456789abc";
 const DAY = 86_400_000;
 const RETENTION_DAYS_NOTE_PATTERN = /archiveRetention\.days/u;
+const PIN_NOT_DELETED_PATTERN =
+  /Its pins could not all be deleted \(refs\/simple-changes\/archives\/[^)]+\/head\).*now points at .*The archive stays whole/u;
 const DEFAULT_POLICY_SUMMARY_PATTERN =
   /by the current repository policy a new archive expires after 14 day\(s\), and an existing one keeps the expiry its manifest records/u;
 const CHANGED_POLICY_SUMMARY_PATTERN =
@@ -314,7 +316,6 @@ const expectExpiredPruned = (
       cause: "expired",
       notes: [],
       pinRefsDeleted: archive.pinRefs.map((pin) => pin.ref),
-      pinRefsKept: [],
     },
   ]);
   expect(pruning?.recordPath).not.toBeNull();
@@ -413,7 +414,6 @@ describe("worktree archive retention at natural cleanup points", () => {
         cause: "expired",
         notes: [],
         pinRefsDeleted: old.pinRefs.map((pin) => pin.ref),
-        pinRefsKept: [],
       },
     ]);
     expect(planned.archivePruning?.recordPath).toBeNull();
@@ -726,6 +726,51 @@ describe("worktree archive retention at natural cleanup points", () => {
       command: "prune-archives",
       reason: "r",
     });
+  });
+
+  test("an archive whose pin cannot be deleted is kept whole and pruned once the pin is repaired", () => {
+    const retention = retentionFixture();
+    const old = syntheticArchive(retention, {
+      createdAt: daysFromNow(-20),
+      expiresAt: daysFromNow(-6),
+    });
+    const [headPin] = old.pinRefs;
+    if (!headPin) {
+      throw new Error("Expected the synthetic archive to pin its head");
+    }
+    // The pin moved after it was recorded, so its exact-value deletion fails.
+    git(retention.root, [
+      "update-ref",
+      "--no-deref",
+      headPin.ref,
+      retention.replacement,
+    ]);
+    const first = cleanUp(retention);
+    expect(first.archivePruning?.pruned).toEqual([]);
+    expect(first.archivePruning?.keptForAttention).toHaveLength(1);
+    expect(first.archivePruning?.keptForAttention[0]?.reason).toMatch(
+      PIN_NOT_DELETED_PATTERN
+    );
+    expect(existsSync(join(old.directory, "manifest.json"))).toBe(true);
+    expect(readArchivePruneLog(retention.common)).toEqual([]);
+    expect(
+      git(retention.root, ["rev-parse", "--verify", "--quiet", headPin.ref])
+    ).toBe(retention.replacement);
+    // Control: once the pin holds its recorded value again, the next prune
+    // removes the pins, then the folder, and records it.
+    git(retention.root, [
+      "update-ref",
+      "--no-deref",
+      headPin.ref,
+      headPin.object,
+    ]);
+    const second = cleanUp(retention);
+    expectExpiredPruned(
+      retention,
+      second.archivePruning,
+      old,
+      "worktree-cleanup"
+    );
   });
 
   test("an invalid retention value leaves the finalization receipt as persisted", () => {

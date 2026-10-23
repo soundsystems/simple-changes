@@ -42,6 +42,8 @@ import {
   discardArchiveDirectory,
   measureTree,
   newArchiveId,
+  OBJECT_SCAN_LIMIT,
+  oversizedScanFiles,
   type WorktreeArchiveManifest,
   worktreeArchivesRoot,
   writeWorktreeArchiveManifest,
@@ -1093,6 +1095,12 @@ const reviewedCheckoutDrift = (
   ) {
     return `its private Git directory is ${privateDirectory || "unknown"}, not ${verified.archive.privateGitDirectory}`;
   }
+  // A state file the object scan cannot read whole could name an object the
+  // pins would miss, so it refuses rather than pin part of it.
+  const oversized = oversizedScanFiles(verified.archive.privateGitDirectory);
+  if (oversized.length > 0) {
+    return `its private Git directory holds ${oversized.join(", ")}, larger than the ${OBJECT_SCAN_LIMIT} bytes the object scan reads, so the objects they name could not all be pinned; shrink or remove those files (for FETCH_HEAD, run \`git fetch\` without --append)`;
+  }
   return registrationDrift(verified, overrides);
 };
 
@@ -1102,7 +1110,7 @@ const registrationDrift = (
   verified: VerifiedReplacementLineage,
   overrides: readonly string[]
 ): string | null => {
-  const { path, branch } = verified.worktree;
+  const { path, branch, headSha } = verified.worktree;
   const worktrees = listedWorktrees(verified.primaryCheckout, overrides);
   const entry = worktrees.find((worktree) => worktree.path === path);
   if (!entry || entry.prunable) {
@@ -1110,6 +1118,9 @@ const registrationDrift = (
   }
   if (entry.locked) {
     return "it is locked";
+  }
+  if (entry.headSha !== headSha || entry.branch !== branch) {
+    return `Git registers it at ${entry.headSha ?? "no commit"} on ${entry.branch ?? "a detached HEAD"}, not the reviewed ${headSha} on ${branch ?? "detached HEAD"}`;
   }
   if (
     branch !== null &&
@@ -1593,6 +1604,25 @@ const undoArchive = (
   );
 };
 
+// A test-only seam: a clean commit in the checkout between the boundary
+// read and the archive copy, which the final registry check must catch.
+const commitBeforeArchiveForTests = (path: string): void => {
+  if (
+    process.env.NODE_ENV === "test" &&
+    process.env.SIMPLE_CHANGES_TEST_COMMIT_BEFORE_ARCHIVE === path
+  ) {
+    const commit = runGit(path, [
+      "commit-tree",
+      "HEAD^{tree}",
+      "-p",
+      "HEAD",
+      "-m",
+      "Clean unreviewed work",
+    ]).stdout.trim();
+    runGit(path, ["update-ref", "HEAD", commit]);
+  }
+};
+
 // A test-only seam: a change to the checkout between the archive copy and
 // the comparison that precedes removal, which the comparison must catch.
 const changeAfterArchiveForTests = (): void => {
@@ -1616,6 +1646,48 @@ const liveDrift = (
   }
   return registrationDrift(verified, overrides);
 };
+
+// The checkout is no longer the one the archive describes, so the archive is
+// undone (exactly its pins, then its folder) and the checkout kept; what
+// could not be undone is named. Returns the error line for the records.
+const keepAfterDrift = (
+  verified: VerifiedReplacementLineage,
+  archived: ArchivedSource,
+  overrides: readonly string[],
+  drift: string,
+  outcome: ReplacementLineageOutcome
+): string => {
+  const { manifest } = archived;
+  const leftovers = deleteTrackedPins(
+    verified.primaryCheckout,
+    manifest.pinRefs,
+    overrides
+  );
+  try {
+    discardArchiveDirectory(archived.directory);
+  } catch (removal) {
+    leftovers.push(
+      `${archived.directory} (${removal instanceof Error ? removal.message : String(removal)})`
+    );
+  }
+  if (leftovers.length === 0) {
+    outcome.archive = { ...outcome.archive, archiveId: null, path: null };
+    outcome.pinRefs = [];
+  }
+  const undone =
+    leftovers.length === 0
+      ? `Archive ${manifest.archiveId} and its ${manifest.pinRefs.length} pin(s) were removed again.`
+      : `Archive ${manifest.archiveId} could not be fully removed; still present: ${leftovers.join(", ")}. Remove them by hand.`;
+  return `Preserved reviewed replacement checkout ${verified.worktree.path}: ${drift}. ${undone} Review the checkout again and write a new receipt.`;
+};
+
+// After a full undo the completed record names no archive and no pins, so a
+// reader never looks for an archive that was removed again; after a partial
+// undo they stay, with the leftovers named in the errors.
+const undoneArchive = (
+  outcome: ReplacementLineageOutcome
+): Partial<Pick<ReplacementLineageRemovalRecord, "archive" | "pinRefs">> =>
+  outcome.archive.archiveId === null ? { archive: null, pinRefs: [] } : {};
 
 // Deletes the source branch only while no checkout has it checked out and it
 // still points at the pinned head, with an exact old-value ref update rather
@@ -1708,6 +1780,7 @@ export const removeReviewedReplacement = (
   const overrides = callbackFreeOverrides(primary, path);
   assertPlainGitEnvironment();
   const removalId = `lineage-${randomUUID()}`;
+  commitBeforeArchiveForTests(path);
   let archived: ArchivedSource;
   try {
     archived = archiveSource(verified, source, removalId, overrides);
@@ -1770,7 +1843,7 @@ export const removeReviewedReplacement = (
   const drift = liveDrift(verified, manifest, overrides);
   if (drift) {
     stepErrors.push(
-      `Preserved reviewed replacement checkout ${path}: ${drift}. Archive ${manifest.archiveId} and its pins stay until they expire (${manifest.expiresAt}); review the checkout again, or prune the archive with \`simple-changes worktree prune-archives --archive ${manifest.archiveId}\`.`
+      keepAfterDrift(verified, archived, overrides, drift, outcome)
     );
   } else {
     const removal = runGit(
@@ -1798,6 +1871,7 @@ export const removeReviewedReplacement = (
   outcome.recordPaths.push(
     writeRecord(options.commonGitDirectory, {
       ...base,
+      ...undoneArchive(outcome),
       outcome: {
         branchDeleted: outcome.branchDeleted,
         errors: stepErrors,

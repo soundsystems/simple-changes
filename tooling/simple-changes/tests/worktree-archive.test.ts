@@ -94,6 +94,12 @@ const UNPARSABLE_PATTERN = /Its state does not parse/u;
 const RECHECK_FAILED_PATTERN =
   /The re-check failed and the archive was pruned/u;
 const MOVED_PIN_PATTERN = /now points at [0-9a-f]{40}, not the pinned/u;
+const STAYS_WHOLE_PATTERN =
+  /The archive stays whole so the next prune retries it/u;
+const OUTSIDE_NAMESPACE_PATTERN = /is outside the archive's namespace/u;
+const SYMBOLIC_PIN_PATTERN = /is now a symbolic ref to refs\/heads\/main/u;
+const UNLISTED_PINS_PATTERN =
+  /deleted at the values they held, because the manifest that lists them did not parse/u;
 const LOG_NOT_LIST_PATTERN = /not an append-only record list/u;
 const NO_ARCHIVE_PATTERN = /There is no archive/u;
 
@@ -1071,7 +1077,6 @@ describe("pruning", () => {
         cause: "expired",
         notes: [],
         pinRefsDeleted: expired.manifest.pinRefs.map((pin) => pin.ref),
-        pinRefsKept: [],
       },
     ]);
     expect(result.keptForAttention).toEqual([]);
@@ -1288,10 +1293,13 @@ describe("pruning", () => {
       },
     });
 
+    // Without a manifest there is no recorded value, so the pins in the
+    // archive's own namespace are deleted at the values they hold.
     const pin = `${archivePinNamespace(unreadable.archiveId)}/head`;
     expect(manual.pruned).toHaveLength(1);
-    expect(manual.pruned[0]?.pinRefsKept).toEqual([pin]);
-    expect(refsUnder(fixture.root, pin)).toEqual([pin]);
+    expect(manual.pruned[0]?.pinRefsDeleted).toEqual([pin]);
+    expect(manual.pruned[0]?.notes.join(" ")).toMatch(UNLISTED_PINS_PATTERN);
+    expect(refsUnder(fixture.root, pin)).toEqual([]);
     expect(existsSync(unreadable.directory)).toBe(false);
     expect(readArchivePruneLog(common)).toEqual([
       expect.objectContaining({
@@ -1327,7 +1335,6 @@ describe("pruning", () => {
         cause: "expired",
         notes: [],
         pinRefsDeleted: [pin],
-        pinRefsKept: [],
       },
     ]);
     expect(result.recordPath).toBeNull();
@@ -1340,8 +1347,9 @@ describe("pruning", () => {
     expect(existsSync(archivePruneLogPath(common))).toBe(false);
   });
 
-  test("never deletes a pin that moved, became a symbolic ref, or lies outside the namespace", () => {
+  test("keeps an archive whole when a pin moved, became a symbolic ref, or lies outside the namespace", () => {
     const fixture = repository();
+    const common = commonDirectoryOf(fixture.root);
     const main = git(fixture.root, ["rev-parse", "main"]);
     writeFixture(fixture.root, "other.txt", "other\n");
     git(fixture.root, ["add", "."]);
@@ -1353,9 +1361,15 @@ describe("pruning", () => {
       payloadBytes: 10,
       replacement: main,
     };
-    const moved = syntheticArchive(fixture, { ...expired, pins: "head" });
+    // Two pins: the head pin moves, the object pin stays deletable and must
+    // survive with it.
+    const moved = syntheticArchive(fixture, {
+      ...expired,
+      pins: "head-and-object",
+    });
     const movedPin = `${archivePinNamespace(moved.archiveId)}/head`;
     git(fixture.root, ["update-ref", movedPin, other]);
+    const movedPins = moved.manifest.pinRefs.map((pin) => pin.ref);
 
     const symbolic = syntheticArchive(fixture, expired);
     const symbolicPin = `${archivePinNamespace(symbolic.archiveId)}/head`;
@@ -1372,18 +1386,19 @@ describe("pruning", () => {
 
     const result = prune(fixture);
 
-    const pruned = new Map(result.pruned.map((item) => [item.archiveId, item]));
-    expect(pruned.get(moved.archiveId)?.pinRefsDeleted).toEqual([]);
-    expect(pruned.get(moved.archiveId)?.pinRefsKept).toEqual([movedPin]);
-    expect(pruned.get(moved.archiveId)?.notes.join(" ")).toMatch(
-      MOVED_PIN_PATTERN
+    expect(result.pruned).toEqual([]);
+    expect(result.recordPath).toBeNull();
+    const kept = new Map(
+      result.keptForAttention.map((item) => [item.archiveId, item.reason])
     );
+    expect(kept.get(moved.archiveId)).toMatch(MOVED_PIN_PATTERN);
+    expect(kept.get(moved.archiveId)).toMatch(STAYS_WHOLE_PATTERN);
+    expect(kept.get(symbolic.archiveId)).toMatch(OUTSIDE_NAMESPACE_PATTERN);
+    expect(kept.get(symbolic.archiveId)).toMatch(SYMBOLIC_PIN_PATTERN);
     expect(git(fixture.root, ["rev-parse", movedPin])).toBe(other);
-    expect(pruned.get(symbolic.archiveId)?.pinRefsDeleted).toEqual([]);
-    expect(pruned.get(symbolic.archiveId)?.pinRefsKept).toEqual([
-      "refs/heads/outside-pin",
-      symbolicPin,
-    ]);
+    expect(
+      refsUnder(fixture.root, archivePinNamespace(moved.archiveId))
+    ).toEqual(movedPins);
     expect(git(fixture.root, ["symbolic-ref", symbolicPin])).toBe(
       "refs/heads/main"
     );
@@ -1391,8 +1406,9 @@ describe("pruning", () => {
     expect(git(fixture.root, ["rev-parse", "refs/heads/outside-pin"])).toBe(
       main
     );
-    expect(existsSync(moved.directory)).toBe(false);
-    expect(existsSync(symbolic.directory)).toBe(false);
+    expect(existsSync(join(moved.directory, "manifest.json"))).toBe(true);
+    expect(existsSync(join(symbolic.directory, "manifest.json"))).toBe(true);
+    expect(existsSync(archivePruneLogPath(common))).toBe(false);
   });
 
   test("a manual prune by age uses the given age instead of the expiry", () => {

@@ -134,15 +134,18 @@ pins the head and every object the checkout named under
 so an autostash, a rebase's original head or a per-worktree ref stays
 reachable; writes an intent record; compares the live files with the
 manifest once more, with no Git command in the checkout in between, and
-refuses to remove when anything changed (the archive stays until it
-expires); removes the checkout with plain `git worktree remove`; deletes
+checks that Git still registers the reviewed head and branch there; when
+anything changed it refuses, keeps the checkout, and removes the archive and
+its pins again; removes the checkout with plain `git worktree remove`; deletes
 the branch only while no checkout uses it and it still points at the pinned
 head, with its configuration section (the manifest keeps the entries for
 restore); and writes a completion record, both under
 `<git common dir>/simple-changes/replacement-lineage/`. It forces nothing.
 A failure before the archive is complete leaves no archive; a failure after
-it keeps the archive, and a removal Git could not finish is reported as "not
-removed by this run" with the restore command.
+it keeps the archive, except the final comparison's refusal, which removes
+the archive again and names no archive in its completion record; a removal
+Git could not finish is reported as "not removed by this run" with the
+restore command.
 
 The hardened boundary is unchanged: from the check before the archive
 through the branch deletion, every Git command runs with `--no-pager
@@ -150,7 +153,10 @@ through the branch deletion, every Git command runs with `--no-pager
 core.fsmonitor=false`, with every filter driver either checkout's effective
 configuration defines emptied and read back, and the command refuses a
 source with submodules, a partial clone, a hook configured through
-`hook.*`, and `core.virtualFilesystem`. These settings are hardening, not a
+`hook.*`, `core.virtualFilesystem`, and a Git state file in the checkout's
+private directory larger than the 1 MiB the object scan reads (such as a
+`FETCH_HEAD` grown by repeated `git fetch --append`), because the objects
+it names could not all be pinned. These settings are hardening, not a
 guarantee. As on the other removal paths, programs that the repository or
 the user configures are trusted (a filter driver whose name the command
 cannot read back exactly is a known case, tracked as issue #20). A run with
@@ -188,9 +194,13 @@ Archives never need managing. Each expires after the repository policy's
 `archiveRetention.days` (default 14), or sooner, oldest first, once the
 archives together exceed `archiveRetention.maxTotalBytes` (default 2 GiB).
 `prune`, `worktree cleanup` and `loop finalize` prune expired archives
-automatically, with their pins, at the end of a run whose removals
-succeeded (never the archive that run made, and never on a run that
-refused), and report what they pruned and what they kept. An archive is pruned only when its
+automatically, at the end of a run whose removals succeeded (never the
+archive that run made, and never on a run that refused), and report what
+they pruned and what they kept. A prune deletes the archive's pins first and
+removes the folder only once every pin is gone; an archive with a pin that
+cannot be deleted (it moved, became a symbolic ref, or Git refused) keeps
+its folder, manifest and remaining pins and is reported, so the next prune
+retries it. An archive is pruned only when its
 target still contains every replacement commit its receipt named and
 reverts none of them (Git's own revert message is recognized; a hand-written
 revert message is not); otherwise it is kept for attention and named in

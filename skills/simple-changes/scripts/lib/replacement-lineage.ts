@@ -1511,31 +1511,52 @@ const finishArchive = (
   return { directory: copy.directory, failure: pinFailure, manifest };
 };
 
-/**
- * Deletes pins by their exact recorded value, never following a symbolic
- * ref, and returns the refs that could not be deleted (with Git's reason),
- * so the caller reports exactly what remains.
- */
-export const deleteTrackedPins = (
+// A test-only seam: the deletion of the pin whose ref ends with the given
+// suffix throws, as a Git spawn does when the process table is exhausted.
+const throwForTests = (ref: string): void => {
+  const suffix = process.env.SIMPLE_CHANGES_TEST_THROW_PIN_DELETE;
+  if (process.env.NODE_ENV === "test" && suffix && ref.endsWith(`/${suffix}`)) {
+    throw new Error(`Simulated spawn failure while deleting ${ref}.`);
+  }
+};
+
+// One pin's deletion by exact value: null when it is gone, otherwise why it
+// is still there. Nothing thrown by Git escapes: a spawn that fails under
+// load is reported as a leftover like any other reason.
+const deleteTrackedPin = (
   primaryCheckout: string,
-  pins: readonly ArchivePinRef[],
-  overrides: readonly string[] = []
-): string[] => {
-  const leftovers: string[] = [];
-  for (const pin of pins) {
+  pin: ArchivePinRef,
+  overrides: readonly string[]
+): string | null => {
+  try {
+    throwForTests(pin.ref);
     const deleted = runGit(
       primaryCheckout,
       [...overrides, "update-ref", "--no-deref", "-d", pin.ref, pin.object],
       true
     );
-    if (deleted.exitCode !== 0) {
-      leftovers.push(
-        `${pin.ref} (${deleted.stderr.trim() || `exit ${deleted.exitCode}`})`
-      );
-    }
+    return deleted.exitCode === 0
+      ? null
+      : `${pin.ref} (${deleted.stderr.trim() || `exit ${deleted.exitCode}`})`;
+  } catch (error) {
+    return `${pin.ref} (${error instanceof Error ? error.message : String(error)})`;
   }
-  return leftovers;
 };
+
+/**
+ * Deletes pins by their exact recorded value, never following a symbolic
+ * ref, and returns the refs that could not be deleted with the reason, so
+ * the caller reports exactly what remains. It never throws: every pin is
+ * attempted, whatever happened to the ones before it.
+ */
+export const deleteTrackedPins = (
+  primaryCheckout: string,
+  pins: readonly ArchivePinRef[],
+  overrides: readonly string[] = []
+): string[] =>
+  pins
+    .map((pin) => deleteTrackedPin(primaryCheckout, pin, overrides))
+    .filter((leftover): leftover is string => leftover !== null);
 
 // Removes the archive folder and exactly the pins this run wrote (tracked
 // as they were made, never rediscovered), so a refusal that says no archive

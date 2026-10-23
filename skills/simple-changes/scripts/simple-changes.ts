@@ -4927,6 +4927,13 @@ const renderArchivePruning = (
       (entry) => `- skipped archive ${entry.archiveId}: ${entry.reason}`
     ),
   ];
+  // The cap and window are named whenever an archive exists, so the user
+  // sees what the pruning applied.
+  if (lines.length > 0 || pruning.totalBytesBefore > 0) {
+    lines.push(
+      `Archives hold ${pruning.totalBytesAfter} bytes of the ${pruning.appliedRetention.maxTotalBytes}-byte cap; each expires after ${pruning.appliedRetention.days} day(s), by repository policy.`
+    );
+  }
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 };
 

@@ -1679,6 +1679,8 @@ export interface ArchivePruneInput {
   retention: { days: number; maxTotalBytes: number };
 }
 export interface ArchivePruneResult {
+  /** The retention this run applied: the policy's, as the output names it. */
+  appliedRetention: { days: number; maxTotalBytes: number };
   keptForAttention: Array<{
     archiveId: string;
     reason: string;
@@ -2305,6 +2307,10 @@ export const pruneWorktreeArchives = (
   );
   const pruned = executed.map(({ folderRemoved: _removed, ...entry }) => entry);
   return {
+    appliedRetention: {
+      days: input.retention.days,
+      maxTotalBytes: input.retention.maxTotalBytes,
+    },
     keptForAttention: plan.keptForAttention,
     pruned,
     recordPath:

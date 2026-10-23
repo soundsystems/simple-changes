@@ -116,6 +116,10 @@ const PATH_EXISTS_PATTERN = /already exists/u;
 const NO_ARCHIVE_PATTERN =
   /no archive was made.*partial archive .* and its [0-9]+ pin\(s\) were removed/u;
 const MOVED_PIN_PATTERN = /objects\/[0-9a-f]{40} \(/u;
+const THROWN_DELETE_PATTERN =
+  /\/head \(Simulated spawn failure while deleting/u;
+const LEFTOVER_PIN_PATTERN =
+  /could not be fully removed; still present: refs\/simple-changes\/archives\/archive-[^ ]+\/head \(Simulated spawn failure/u;
 const ONE_PIN_REMOVED_PATTERN =
   /no archive was made.*partial archive .* and its 1 pin\(s\) were removed/u;
 const MARKER_UNREADABLE_PATTERN = /not a restore marker/u;
@@ -2231,6 +2235,65 @@ describe("reviewed replacement lineage cleanup", () => {
     expect(worktreePaths(root)).toContain(lineage.path);
     expect(pinRefs(root)).toBe("");
     expect(listWorktreeArchives(commonDirectory(root))).toEqual([]);
+  });
+
+  test("a pin whose deletion throws is named as left behind, and the rest still go", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const namespace =
+      "refs/simple-changes/archives/archive-20261023T000000Z-00000000-00000000";
+    const first = lineage.commits[0] ?? "";
+    const head = { object: lineage.headSha, ref: `${namespace}/head` };
+    const other = { object: first, ref: `${namespace}/objects/${first}` };
+    git(root, ["update-ref", "--no-deref", head.ref, head.object]);
+    git(root, ["update-ref", "--no-deref", other.ref, other.object]);
+    const leftovers = withEnvironment(
+      { NODE_ENV: "test", SIMPLE_CHANGES_TEST_THROW_PIN_DELETE: "head" },
+      () => deleteTrackedPins(root, [head, other])
+    );
+    expect(leftovers).toHaveLength(1);
+    expect(leftovers[0]).toMatch(THROWN_DELETE_PATTERN);
+    expect(git(root, ["rev-parse", "--verify", "--quiet", head.ref])).toBe(
+      lineage.headSha
+    );
+    expect(
+      spawnSync([
+        "git",
+        "-C",
+        root,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        other.ref,
+      ]).exitCode
+    ).not.toBe(0);
+    // Control: without the seam the same deletion removes both pins.
+    git(root, ["update-ref", "--no-deref", other.ref, other.object]);
+    expect(deleteTrackedPins(root, [head, other])).toEqual([]);
+    expect(pinRefs(root)).toBe("");
+  });
+
+  test("an undo whose pin deletion throws still removes the folder and names the pin", () => {
+    const lineage = lineageFixture(false);
+    const receipt = receiptFor(lineage);
+    const { root } = lineage.fixture;
+    expectRefusal(
+      () =>
+        withEnvironment(
+          {
+            NODE_ENV: "test",
+            SIMPLE_CHANGES_TEST_FAIL_ARCHIVE_MANIFEST: lineage.path,
+            SIMPLE_CHANGES_TEST_THROW_PIN_DELETE: "head",
+          },
+          () => prune(lineage, receipt)
+        ),
+      LEFTOVER_PIN_PATTERN
+    );
+    expect(worktreePaths(root)).toContain(lineage.path);
+    expect(listWorktreeArchives(commonDirectory(root))).toEqual([]);
+    const pins = pinRefs(root).split("\n").filter(Boolean);
+    expect(pins).toHaveLength(1);
+    expect(pins[0]).toMatch(PIN_REF_PATTERN);
   });
 
   test("worktree archives names a restore marker it cannot read", () => {

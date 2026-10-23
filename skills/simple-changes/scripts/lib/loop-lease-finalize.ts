@@ -2173,11 +2173,15 @@ const loopCompletionBlockers = (
 
 export interface LoopFinalizationResult {
   /**
-   * Expired worktree archives pruned once the run closed, or null when the
-   * run was relinquished or pruning could not run (then `cleanup.notes`
-   * says why). Not part of the finalization receipt.
+   * Expired worktree archives pruned once the run closed, with notes that
+   * belong to the result only (a policy value that fell back, a pruning
+   * failure); null when the run was relinquished. Never part of the
+   * finalization receipt, which is persisted before pruning runs.
    */
-  archivePruning: ArchivePruneResult | null;
+  archivePruning: {
+    notes: string[];
+    result: ArchivePruneResult | null;
+  } | null;
   blockers: string[];
   cleanup: FinalizationCleanupResult;
   closedWithoutMutation?: LoopUnmutatedClose;
@@ -2988,34 +2992,34 @@ const finalizeRun = (
   }
 };
 
-// Reported in the result and its notes, never in the strict receipt, and a
-// pruning failure never undoes a finished run.
+// Reported in the result only: the finalization receipt is already
+// persisted, and a pruning failure never undoes a finished run.
 const pruneArchivesAtFinalize = (
-  inventory: RepositoryInventory,
-  result: LoopFinalizationResult
-): ArchivePruneResult | null => {
+  inventory: RepositoryInventory
+): NonNullable<LoopFinalizationResult["archivePruning"]> => {
   const retention = archiveRetentionPolicy(inventory.policy.value);
-  result.cleanup.notes.push(
-    ...retention.fallbacks.map((fallback) => `Archive retention: ${fallback}.`)
+  const notes = retention.fallbacks.map(
+    (fallback) => `Archive retention: ${fallback}.`
   );
   try {
-    return pruneWorktreeArchives({
-      command: "loop-finalize",
-      commonGitDirectory: inventory.repository.commonGitDirectory,
-      dryRun: false,
-      now: new Date(),
-      primaryCheckout: inventory.repository.primaryCheckout,
-      retention: {
-        days: retention.days,
-        maxTotalBytes: retention.maxTotalBytes,
-      },
-    });
+    return {
+      notes,
+      result: pruneWorktreeArchives({
+        command: "loop-finalize",
+        commonGitDirectory: inventory.repository.commonGitDirectory,
+        dryRun: false,
+        now: new Date(),
+        primaryCheckout: inventory.repository.primaryCheckout,
+        retention: {
+          days: retention.days,
+          maxTotalBytes: retention.maxTotalBytes,
+        },
+      }),
+    };
   } catch (error) {
     if (error instanceof SimpleChangesError) {
-      result.cleanup.notes.push(
-        `Expired worktree archives were not pruned: ${error.message}`
-      );
-      return null;
+      notes.push(`Expired worktree archives were not pruned: ${error.message}`);
+      return { notes, result: null };
     }
     throw error;
   }
@@ -3066,7 +3070,7 @@ export const finalizeLoop = (
             ? result
             : {
                 ...result,
-                archivePruning: pruneArchivesAtFinalize(inventory, result),
+                archivePruning: pruneArchivesAtFinalize(inventory),
               };
         }
       )

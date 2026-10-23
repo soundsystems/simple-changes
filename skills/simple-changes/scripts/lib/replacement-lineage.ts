@@ -32,12 +32,14 @@ import type {
 } from "./types.ts";
 import {
   type ArchiveBranchConfig,
+  type ArchiveCopy,
   type ArchivePinRef,
   archivePinNamespace,
   assertArchiveCapacity,
   compareLiveWithManifest,
   copyWorktreeIntoArchive,
   DEFAULT_MAX_ARCHIVE_BYTES,
+  discardArchiveDirectory,
   measureTree,
   newArchiveId,
   type WorktreeArchiveManifest,
@@ -1153,6 +1155,8 @@ const PSEUDO_REFS = [
 const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const EXTENDED_REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/gu;
 
+// A read that Git could not complete refuses: an object these refs name
+// that went unpinned could be lost to a later gc.
 const namedObjectsOf = (
   path: string,
   overrides: readonly string[]
@@ -1168,12 +1172,16 @@ const namedObjectsOf = (
     ],
     true
   );
-  if (refs.exitCode === 0) {
-    for (const line of refs.stdout.split("\n")) {
-      const [name, object] = line.split("\0");
-      if (name && object && OBJECT_ID_PATTERN.test(object)) {
-        found.push({ name, object });
-      }
+  if (refs.exitCode !== 0) {
+    throw boundaryRefusal(
+      path,
+      `Git could not list the checkout's own refs (${refs.stderr.trim() || `exit ${refs.exitCode}`}), so the objects they name could not be pinned.`
+    );
+  }
+  for (const line of refs.stdout.split("\n")) {
+    const [name, object] = line.split("\0");
+    if (name && object && OBJECT_ID_PATTERN.test(object)) {
+      found.push({ name, object });
     }
   }
   for (const name of PSEUDO_REFS) {
@@ -1185,13 +1193,20 @@ const namedObjectsOf = (
     const object = resolved.stdout.trim();
     if (resolved.exitCode === 0 && OBJECT_ID_PATTERN.test(object)) {
       found.push({ name, object });
+    } else if (resolved.exitCode !== 1) {
+      throw boundaryRefusal(
+        path,
+        `Git could not read ${name} (${resolved.stderr.trim() || `exit ${resolved.exitCode}`}), so the object it may name could not be pinned.`
+      );
     }
   }
   return found;
 };
 
 // The branch's configuration section in the shared local configuration,
-// which branch deletion removes and restore puts back.
+// which branch deletion removes and restore puts back. A key written
+// without `=` (true to Git) is kept as null. A read Git could not complete
+// refuses: the section would be deleted with nothing to restore it from.
 const branchConfigurationOf = (
   primary: string,
   branch: string | null,
@@ -1212,8 +1227,14 @@ const branchConfigurationOf = (
     ],
     true
   );
-  if (listed.exitCode !== 0) {
+  if (listed.exitCode === 1) {
     return [];
+  }
+  if (listed.exitCode !== 0) {
+    throw boundaryRefusal(
+      primary,
+      `Git could not read the configuration of branch ${branch} (${listed.stderr.trim() || `exit ${listed.exitCode}`}), which the archive must keep.`
+    );
   }
   return listed.stdout
     .split("\0")
@@ -1221,7 +1242,7 @@ const branchConfigurationOf = (
     .map((entry) => {
       const split = entry.indexOf("\n");
       return split < 0
-        ? { key: entry, value: "" }
+        ? { key: entry, value: null }
         : { key: entry.slice(0, split), value: entry.slice(split + 1) };
     })
     .filter((entry) => entry.key.startsWith(`branch.${branch}.`));
@@ -1336,19 +1357,28 @@ const pinArchive = (
   if (headFailure) {
     return { failure: headFailure, pinRefs };
   }
-  const objects = new Set<string>([
-    ...source.namedObjects.map((named) => named.object),
-    ...candidates,
-  ]);
+  const named = new Map(
+    source.namedObjects.map((entry) => [entry.object, entry.name] as const)
+  );
+  const objects = new Set<string>([...named.keys(), ...candidates]);
   objects.delete(headSha);
   for (const object of [...objects].sort()) {
+    // `cat-file -e` exits 1 for a missing object and 128 when Git could not
+    // answer; a scanned candidate may be missing, a named object may not.
     const known = runGit(
       primary,
-      [...overrides, "cat-file", "-t", object],
+      [...overrides, "cat-file", "-e", object],
       true
     );
-    if (known.exitCode !== 0) {
+    const name = named.get(object);
+    if (known.exitCode === 1 && name === undefined) {
       continue;
+    }
+    if (known.exitCode !== 0) {
+      return {
+        failure: `Could not confirm that ${object}${name ? `, named by ${name},` : ""} is in the repository (${known.stderr.trim() || `exit ${known.exitCode}`}), so it was not pinned.`,
+        pinRefs,
+      };
     }
     const failure = write(`${namespace}/objects/${object}`, object);
     if (failure) {
@@ -1368,8 +1398,7 @@ const archiveSource = (
   removalId: string,
   overrides: readonly string[]
 ): ArchivedSource => {
-  const { archive, commonGitDirectory, receipt, receiptDigest, worktree } =
-    verified;
+  const { archive, commonGitDirectory, receiptDigest, worktree } = verified;
   const bytes =
     measureTree(worktree.path).bytes +
     measureTree(archive.privateGitDirectory).bytes;
@@ -1386,6 +1415,29 @@ const archiveSource = (
     commonGitDirectory,
     privateGitDirectory: archive.privateGitDirectory,
   });
+  try {
+    return finishArchive(verified, source, removalId, overrides, {
+      archiveId,
+      copy,
+      createdAt,
+    });
+  } catch (error) {
+    return undoArchive(verified, archiveId, copy.directory, overrides, error);
+  }
+};
+
+// Pins and the manifest, after the copy is complete. A failure here (for
+// example no space left for the manifest) is undone by `undoArchive`.
+const finishArchive = (
+  verified: VerifiedReplacementLineage,
+  source: ReviewedSourceState,
+  removalId: string,
+  overrides: readonly string[],
+  copied: { archiveId: string; copy: ArchiveCopy; createdAt: Date }
+): ArchivedSource => {
+  const { archive, commonGitDirectory, receipt, receiptDigest, worktree } =
+    verified;
+  const { archiveId, copy, createdAt } = copied;
   const pins = pinArchive(
     verified,
     source,
@@ -1393,6 +1445,15 @@ const archiveSource = (
     archiveId,
     overrides
   );
+  if (
+    process.env.NODE_ENV === "test" &&
+    process.env.SIMPLE_CHANGES_TEST_FAIL_ARCHIVE_MANIFEST === worktree.path
+  ) {
+    throw new SimpleChangesError(
+      "Simulated failure while writing the archive manifest.",
+      EXIT_CODES.unsafe
+    );
+  }
   const manifest: WorktreeArchiveManifest = {
     archiveId,
     branchConfig: source.branchConfig,
@@ -1425,6 +1486,59 @@ const archiveSource = (
   };
   writeWorktreeArchiveManifest(copy.directory, manifest);
   return { directory: copy.directory, failure: pins.failure, manifest };
+};
+
+// Removes the archive folder and the pins already written under its
+// namespace, so a refusal that says no archive was made is exact; what
+// could not be undone is named.
+const undoArchive = (
+  verified: VerifiedReplacementLineage,
+  archiveId: string,
+  directory: string,
+  overrides: readonly string[],
+  error: unknown
+): never => {
+  const leftovers: string[] = [];
+  const namespace = archivePinNamespace(archiveId);
+  const listed = runGit(
+    verified.primaryCheckout,
+    [
+      ...overrides,
+      "for-each-ref",
+      "--format=%(refname)%00%(objectname)",
+      `${namespace}/`,
+    ],
+    true
+  );
+  for (const line of listed.exitCode === 0 ? listed.stdout.split("\n") : []) {
+    const [ref, object] = line.split("\0");
+    if (
+      ref &&
+      object &&
+      runGit(
+        verified.primaryCheckout,
+        [...overrides, "update-ref", "--no-deref", "-d", ref, object],
+        true
+      ).exitCode !== 0
+    ) {
+      leftovers.push(ref);
+    }
+  }
+  try {
+    discardArchiveDirectory(directory);
+  } catch (removal) {
+    leftovers.push(
+      `${directory} (${removal instanceof Error ? removal.message : String(removal)})`
+    );
+  }
+  const detail = error instanceof Error ? error.message : String(error);
+  throw SimpleChangesError.withCause(
+    leftovers.length === 0
+      ? `${detail} The partial archive ${archiveId} and its pins were removed.`
+      : `${detail} The partial archive ${archiveId} could not be fully removed; still present: ${leftovers.join(", ")}. Remove them by hand.`,
+    error instanceof SimpleChangesError ? error.exitCode : EXIT_CODES.unsafe,
+    error
+  );
 };
 
 // A test-only seam: a change to the checkout between the archive copy and

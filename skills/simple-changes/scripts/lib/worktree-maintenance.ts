@@ -1297,14 +1297,14 @@ export const restoreArchivedWorktree = (
         };
       }
       assertPlainGitEnvironment();
-      const { primaryCheckout } = captureInventory(
-        options.repositoryPath
-      ).repository;
+      // The inventory's status runs with optional locks off too, so a
+      // refusal below has refreshed no live index.
       return withOptionalLocksOff(() => ({
         ...restoreWorktreeArchive({
           archiveId: options.archiveId,
           commonGitDirectory,
-          primaryCheckout,
+          primaryCheckout: captureInventory(options.repositoryPath).repository
+            .primaryCheckout,
         }),
         extracted: false as const,
       }));

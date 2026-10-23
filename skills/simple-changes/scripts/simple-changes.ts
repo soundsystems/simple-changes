@@ -110,6 +110,7 @@ import {
   withLoopStateLock,
   withLoopStateLockWaiting,
 } from "./lib/loop-lease.ts";
+import type { LoopFinalizationResult } from "./lib/loop-lease-finalize.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
   applyMigrationAuthorization,
@@ -4079,7 +4080,7 @@ const runLoopFinalizationAction = (
       writeOutput(
         { ...result, manifestDigest: null, removedWorkDirectories },
         options.json,
-        `Closed ${runId} without changing anything: the repository changed after the loop started, so its shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderRemovedWorkDirectories(removedWorkDirectories)}`
+        `Closed ${runId} without changing the repository's work: it changed after the loop started, so the loop's shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderFinalizeArchivePruning(result.archivePruning)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
       );
       return true;
     }
@@ -4090,7 +4091,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderArchivePruning(result.archivePruning, false)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderFinalizeArchivePruning(result.archivePruning)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -4929,6 +4930,14 @@ const renderArchivePruning = (
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 };
 
+const renderNoteLines = (notes: readonly string[]): string =>
+  notes.map((note) => `  note: ${note}\n`).join("");
+
+const renderFinalizeArchivePruning = (
+  pruning: LoopFinalizationResult["archivePruning"]
+): string =>
+  `${renderArchivePruning(pruning?.result ?? null, false)}${renderNoteLines(pruning?.notes ?? [])}`;
+
 const renderArchiveListing = (
   archives: ReturnType<typeof listArchivedWorktrees>
 ): string => {
@@ -4941,9 +4950,11 @@ const renderArchiveListing = (
         return `${entry.archiveId}: unreadable (${entry.error ?? "no manifest"})`;
       }
       const { manifest } = entry;
-      const state = entry.restoring
-        ? `; a restore started ${entry.restoring.startedAt} has not finished`
-        : "";
+      const state = `${
+        entry.restoring
+          ? `; a restore started ${entry.restoring.startedAt} has not finished`
+          : ""
+      }${entry.error ? `; ${entry.error}` : ""}`;
       return `${entry.archiveId}: ${manifest.source.path} (${manifest.source.branch ?? "detached"} at ${manifest.source.headSha}), ${manifest.checkout.bytes + manifest.gitDirectory.bytes} bytes, created ${manifest.createdAt}, expires ${manifest.expiresAt}, ${manifest.pinRefs.length} pin(s)${state}`;
     })
     .join("\n")}\n`;
@@ -5123,7 +5134,7 @@ const runWorktreeCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "worktree requires status, observe, equivalence, refresh-index, cleanup, request, claim, pause, detach, attach, resume-ready, release, or takeover",
+      "worktree requires status, observe, equivalence, refresh-index, cleanup, archives, restore-archive, prune-archives, request, claim, pause, detach, attach, resume-ready, release, or takeover",
       EXIT_CODES.usage
     );
   }

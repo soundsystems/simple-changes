@@ -96,10 +96,14 @@ export interface ArchivePinRef {
   object: string;
   ref: string;
 }
-/** One `branch.<name>.*` entry, as `{ key: "branch.old.description", value }`. */
+/**
+ * One `branch.<name>.*` entry, as `{ key: "branch.old.description", value }`.
+ * A `null` value is a key written without `=`, which Git reads as true;
+ * restore writes it back as `true`, the same meaning in a form Git can write.
+ */
 export interface ArchiveBranchConfig {
   key: string;
-  value: string;
+  value: string | null;
 }
 export interface WorktreeArchiveManifest {
   archiveId: string;
@@ -497,6 +501,13 @@ const removeTree = (path: string): void => {
   makeRemovable(path);
   rmSync(path, { force: true, recursive: true });
 };
+
+/**
+ * Removes an archive folder that is not worth keeping (its manifest could
+ * not be written), making read-only folders removable first.
+ */
+export const discardArchiveDirectory = (directory: string): void =>
+  guarded(`remove ${directory}`, () => removeTree(directory));
 
 const discardPartial = (path: string, error: unknown): never => {
   try {
@@ -1397,7 +1408,7 @@ const restoreBranchConfig = (context: RestoreContext, branch: string): void => {
         "--local",
         "--add",
         entry.key,
-        entry.value,
+        entry.value ?? "true",
       ],
       true
     );
@@ -1514,6 +1525,10 @@ export const restoreWorktreeArchive = (
     manifest,
     primaryCheckout: input.primaryCheckout,
   };
+  // A marker left by an earlier restore that stopped half way stays through
+  // a refusal here, so the archive keeps its protection from pruning until
+  // a restore succeeds or it is pruned by ID.
+  const earlierMarker = readRestoringMarker(directory) !== null;
   writeRestoringMarker(directory);
   let plan: BranchPlan;
   try {
@@ -1522,7 +1537,9 @@ export const restoreWorktreeArchive = (
       createBranch(context, manifest.source.branch);
     }
   } catch (error) {
-    removeRestoringMarker(directory);
+    if (!earlierMarker) {
+      removeRestoringMarker(directory);
+    }
     throw error;
   }
   try {
@@ -2166,24 +2183,27 @@ const appendPruneRecord = (
 const executePrune = (
   context: PruneContext,
   item: PruneItem
-): PrunedArchive => {
+): PrunedArchive & { folderRemoved: boolean } => {
   const pins = deletePins(context, pinPlanFor(context, item));
   appendPruneRecord(
     context.input.commonGitDirectory,
     pruneRecord(context.input, item, pins.deleted)
   );
   const notes = [...item.notes, ...pins.notes];
+  let folderRemoved = true;
   try {
     removeTree(item.listing.directory);
   } catch (error) {
+    folderRemoved = false;
     notes.push(
-      `The prune record was written, but ${item.listing.directory} could not be removed (${errorText(error)}); the next prune removes it.`
+      `The prune record was written, but ${item.listing.directory} could not be removed (${errorText(error)}); its bytes are still held and the next prune removes it.`
     );
   }
   return {
     archiveId: item.listing.archiveId,
     bytes: item.bytes,
     cause: item.cause,
+    folderRemoved,
     notes,
     pinRefsDeleted: pins.deleted,
     pinRefsKept: pins.kept,
@@ -2271,13 +2291,19 @@ export const pruneWorktreeArchives = (
     // A damaged log refuses before any pin or folder is touched.
     readArchivePruneLog(input.commonGitDirectory);
   }
-  const pruned = plan.prune.map((item) =>
-    input.dryRun ? plannedPrune(context, item) : executePrune(context, item)
+  const executed = plan.prune.map((item) =>
+    input.dryRun
+      ? { ...plannedPrune(context, item), folderRemoved: true }
+      : executePrune(context, item)
   );
-  const prunedBytes = plan.prune.reduce(
-    (sum, item) => sum + (item.manifest ? item.bytes : 0),
+  // Only an archive whose folder is gone frees its bytes.
+  const prunedBytes = executed.reduce(
+    (sum, entry, index) =>
+      sum +
+      (entry.folderRemoved && plan.prune[index]?.manifest ? entry.bytes : 0),
     0
   );
+  const pruned = executed.map(({ folderRemoved: _removed, ...entry }) => entry);
   return {
     keptForAttention: plan.keptForAttention,
     pruned,

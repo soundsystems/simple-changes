@@ -4,6 +4,7 @@ import {
   existsSync,
   lstatSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
@@ -55,6 +56,7 @@ const CHANGE_DIGEST = "b".repeat(64);
 const REPOSITORY_ID = "c".repeat(64);
 const REMOVAL_ID = "lineage-12345678-1234-4234-8234-123456789abc";
 const DAY = 86_400_000;
+const RETENTION_DAYS_NOTE_PATTERN = /archiveRetention\.days/u;
 const MIB = 1024 ** 2;
 const decoder = new TextDecoder();
 const CLI_PATH = resolve(
@@ -371,9 +373,14 @@ describe("worktree archive retention at natural cleanup points", () => {
 
     const result = finalizeOneLoop(retention);
 
-    expectExpiredPruned(retention, result.archivePruning, old, "loop-finalize");
+    expectExpiredPruned(
+      retention,
+      result.archivePruning?.result ?? null,
+      old,
+      "loop-finalize"
+    );
     expectArchiveKept(retention, recent);
-    expect(result.archivePruning?.totalBytesAfter).toBe(recent.bytes);
+    expect(result.archivePruning?.result?.totalBytesAfter).toBe(recent.bytes);
   });
 
   test("worktree cleanup prunes an expired archive with its pins and records it", () => {
@@ -422,7 +429,7 @@ describe("worktree archive retention at natural cleanup points", () => {
     });
 
     const results = [
-      finalizeOneLoop(retention).archivePruning,
+      finalizeOneLoop(retention).archivePruning?.result ?? null,
       cleanUp(retention).archivePruning,
       pruneNow(retention).archivePruning,
     ];
@@ -689,5 +696,19 @@ describe("worktree archive retention at natural cleanup points", () => {
       command: "prune-archives",
       reason: "r",
     });
+  });
+
+  test("an invalid retention value leaves the finalization receipt as persisted", () => {
+    const retention = retentionFixture({ days: 0 });
+    const result = finalizeOneLoop(retention);
+    expect(result.archivePruning?.notes.join(" ")).toMatch(
+      RETENTION_DAYS_NOTE_PATTERN
+    );
+    const persisted = JSON.parse(readFileSync(result.receiptPath, "utf8")) as {
+      receipt: unknown;
+    };
+    expect(JSON.stringify(persisted.receipt)).toBe(
+      JSON.stringify(result.receipt)
+    );
   });
 });

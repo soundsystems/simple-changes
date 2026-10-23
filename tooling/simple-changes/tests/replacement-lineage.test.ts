@@ -111,6 +111,10 @@ const PARTIAL_CLONE_PATTERN = /is a partial clone/u;
 const CONFIGURED_HOOK_PATTERN =
   /configures a hook through hook\.audit\.command/u;
 const STAMP = "2026-10-08T12:00:00.000Z";
+const PATH_EXISTS_PATTERN = /already exists/u;
+const NO_ARCHIVE_PATTERN =
+  /no archive was made.*partial archive .* and its pins were removed/u;
+const MARKER_UNREADABLE_PATTERN = /not a restore marker/u;
 const DAY = 86_400_000;
 const ADAPTER = "test-adapter";
 const HEAD_PIN_PATTERN = /\/head$/u;
@@ -1925,8 +1929,8 @@ describe("reviewed replacement lineage cleanup", () => {
     });
   }
 
-  // Todo: pruneRepository runs Git (locateRepository) before the environment
-  // check, so a value Git cannot use surfaces Git's own error instead.
+  // The environment is checked before any Git command runs, so even a
+  // redirect that names no repository refuses in plain words.
   for (const variable of [
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -2079,8 +2083,8 @@ describe("reviewed replacement lineage cleanup", () => {
     }
   });
 
-  // Todo: prune runs the automatic archive prune before the boundary check,
-  // so a refusal that says nothing was written has already pruned an archive.
+  // Automatic pruning runs at the end of a successful run, so a refusal
+  // earlier in the run prunes nothing.
   test("a reviewed removal the boundary refuses prunes no expired archive", () => {
     const lineage = lineageFixture(false);
     const { root } = lineage.fixture;
@@ -2099,5 +2103,98 @@ describe("reviewed replacement lineage cleanup", () => {
 
     expect(existsSync(first.path)).toBe(true);
     expect(readArchivePruneLog(commonDirectory(root))).toEqual([]);
+  });
+
+  test("a valueless branch setting is restored with its meaning", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const config = join(commonDirectory(root), "config");
+    writeFileSync(
+      config,
+      `${readFileSync(config, "utf8")}[branch "source-unit"]\n\trebase\n`
+    );
+    expect(git(root, ["config", "--bool", "branch.source-unit.rebase"])).toBe(
+      "true"
+    );
+    const archive = reportedArchive(prune(lineage, receiptFor(lineage)));
+    expect(configValues(root, "branch.source-unit.rebase")).toEqual([]);
+    expect(
+      readWorktreeArchiveManifest(archive.path).branchConfig
+    ).toContainEqual({ key: "branch.source-unit.rebase", value: null });
+    restoreLineage(lineage, archive.archiveId);
+    expect(git(root, ["config", "--bool", "branch.source-unit.rebase"])).toBe(
+      "true"
+    );
+  });
+
+  test("a restore that refuses keeps the marker an earlier restore left", () => {
+    const lineage = lineageFixture(false);
+    const archive = reportedArchive(prune(lineage, receiptFor(lineage)));
+    const marker = restoringMarkerPath(archive.path);
+    writeFileSync(marker, `${JSON.stringify({ pid: 1, startedAt: STAMP })}\n`);
+    mkdirSync(lineage.path);
+    expectRefusal(
+      () => restoreLineage(lineage, archive.archiveId),
+      PATH_EXISTS_PATTERN
+    );
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  test("a manifest that cannot be written leaves no archive and no pins", () => {
+    const lineage = lineageFixture(false);
+    const receipt = receiptFor(lineage);
+    expectRefusal(
+      () =>
+        withEnvironment(
+          {
+            NODE_ENV: "test",
+            SIMPLE_CHANGES_TEST_FAIL_ARCHIVE_MANIFEST: lineage.path,
+          },
+          () => prune(lineage, receipt)
+        ),
+      NO_ARCHIVE_PATTERN
+    );
+    const { root } = lineage.fixture;
+    expect(worktreePaths(root)).toContain(lineage.path);
+    expect(pinRefs(root)).toBe("");
+    expect(listWorktreeArchives(commonDirectory(root))).toEqual([]);
+    expect(readWorktreeCleanups(commonDirectory(root))).toEqual([]);
+  });
+
+  test("a restore that refuses has refreshed no live index", () => {
+    const lineage = lineageFixture(false);
+    const archive = reportedArchive(prune(lineage, receiptFor(lineage)));
+    const { root } = lineage.fixture;
+    // The primary checkout's index needs a stat refresh, which an ordinary
+    // status would write back.
+    const future = new Date(Date.now() + 365 * 24 * 60 * MINUTE);
+    utimesSync(join(root, "README.md"), future, future);
+    const indexPath = join(commonDirectory(root), "index");
+    const before = readFileSync(indexPath);
+    mkdirSync(lineage.path);
+    expectRefusal(
+      () => restoreLineage(lineage, archive.archiveId),
+      PATH_EXISTS_PATTERN
+    );
+    expect(readFileSync(indexPath).equals(before)).toBe(true);
+  });
+
+  test("worktree archives names a restore marker it cannot read", () => {
+    const lineage = lineageFixture(false);
+    const archive = reportedArchive(prune(lineage, receiptFor(lineage)));
+    writeFileSync(restoringMarkerPath(archive.path), "{}\n");
+    const result = spawnSync(
+      [
+        process.execPath,
+        CLI_PATH,
+        "worktree",
+        "archives",
+        "--repo",
+        lineage.fixture.root,
+      ],
+      { stderr: "pipe", stdout: "pipe" }
+    );
+    expect(result.exitCode).toBe(0);
+    expect(decoder.decode(result.stdout)).toMatch(MARKER_UNREADABLE_PATTERN);
   });
 });

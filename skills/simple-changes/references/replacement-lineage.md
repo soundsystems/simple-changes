@@ -82,10 +82,13 @@ removal is reversible: the checkout is archived before it is removed, and
 - `approval`: the user's `approvedBy`, `approvalReference`, `approvedAt`, and
   `reason`, given after the review.
 
-Build it from `branch audit` and the reviewer's verdict, then run `prune
---dry-run` first and show the user its plan before they approve: the plan
-states the archive's size, when it expires, and the repository's retention
-policy, so the approval covers them. The command checks every fact against
+Build it from `branch audit` and the reviewer's verdict. Before asking for
+the approval, tell the user what the removal keeps and for how long: the
+checkout is archived whole, and the archive expires after the repository
+policy's `archiveRetention.days` (default 14) or sooner once the archives
+together exceed `archiveRetention.maxTotalBytes` (default 2 GiB), so the
+approval covers that. Then run `prune --dry-run` with the receipt: its plan
+confirms the archive's size and expiry before anything is written. The command checks every fact against
 live Git and refuses, writing nothing, when the checkout is dirty, locked,
 claimed (any claim not released), or registered by an open lease; another
 checkout has its branch checked out; its branch or head differs from the
@@ -185,8 +188,9 @@ Archives never need managing. Each expires after the repository policy's
 `archiveRetention.days` (default 14), or sooner, oldest first, once the
 archives together exceed `archiveRetention.maxTotalBytes` (default 2 GiB).
 `prune`, `worktree cleanup` and `loop finalize` prune expired archives
-automatically, with their pins, before writing any new archive, and report
-what they pruned and what they kept. An archive is pruned only when its
+automatically, with their pins, at the end of a run whose removals
+succeeded (never the archive that run made, and never on a run that
+refused), and report what they pruned and what they kept. An archive is pruned only when its
 target still contains every replacement commit its receipt named and
 reverts none of them (Git's own revert message is recognized; a hand-written
 revert message is not); otherwise it is kept for attention and named in

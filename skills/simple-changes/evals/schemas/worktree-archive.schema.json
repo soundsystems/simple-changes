@@ -79,7 +79,7 @@
         "required": ["key", "value"],
         "properties": {
           "key": { "type": "string", "pattern": "^branch\\..+\\.[^.]+$" },
-          "value": { "type": "string" }
+          "value": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
         }
       }
     },

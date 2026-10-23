@@ -1,5 +1,496 @@
 # Developer changelog
 
+## 0.33.0 - 2026-10-23
+
+- Git location guard (new `lib/git-location.ts`, proposal "Fail closed on
+  inconsistent shared review-ledger location"): `gitReportedPath(output,
+  question, context?)` moved here from `inventory.ts` and also refuses a
+  NUL byte. `verifiedGitDirectories(root, answers, repository)` turns
+  Git's raw answers into real paths and refuses unless the common
+  directory exists, is not the checkout root, and is a repository Git
+  directory (`HEAD`, `objects`, `refs`, no `commondir`), the checkout's Git
+  directory is the common directory or a linked worktree directory whose
+  `commondir` resolves to it, and a `.git` entry, when present, points at
+  that directory (parsed as Git does: the text after `gitdir: ` with only
+  trailing line ends removed). `assertStateDestination` checks the common
+  directory and that `<common>/simple-changes`, if present, is a plain
+  directory; `ensureStateDirectory(common, directory)` and
+  `ensureStateDirectoryOf(directory)` create state directories one
+  component at a time without following links and refuse a link, a
+  non-directory, an inspection error other than ENOENT, or a path outside
+  `<common>/simple-changes`. Refusals exit 4 (`inventory`) and end with a
+  `Diagnostics:` line (Git executable, working directory, repository, raw
+  `--absolute-git-dir` and `--git-common-dir` answers, each JSON-quoted
+  and cut to 240 characters). `isCommonGitDirectory` and
+  `gitLocationDiagnostics` are exported.
+- `inventory.ts`: `locateRepository` and `captureInventory` resolve
+  through `repositoryDirectories`, which verifies every answer;
+  `locateRepository` now asks `rev-parse --is-bare-repository
+  --absolute-git-dir --git-common-dir` in one call (same call count), and
+  answers lose only trailing line ends. Every state writer that used
+  `mkdirSync(..., { recursive: true })` under the state directory now uses
+  the contained helpers: the loop lock and lease, controller binding,
+  receipt sidecars, recovery and replan history, coordination, takeovers,
+  ready receipts, ship holds, cleanups, policy trust, work-directory
+  bindings, migration authorizations, and the review ledger
+  (`loop-lease-core.ts`, `loop-lease-recovery.ts`,
+  `worktree-coordination.ts`, `ready-work.ts`, `ship-holds.ts`,
+  `worktree-maintenance.ts`, `policy.ts`, `work-directory.ts`,
+  `migration-automation.ts`, `review-ledger.ts`). `withLedgerTransaction`
+  calls `assertStateDestination` before the loop lock. Left alone on
+  purpose: `status --all` (reads `.git` files, read-only),
+  `update-local-forks` (uses the answers only to detect a linked
+  worktree), and `tooling/merge-gate` (already refuses a non-absolute
+  answer). The remaining recursive `mkdirSync` calls (policy files,
+  authoring sidecar, `harness-session.ts`, `turn-guard.ts`, `fork.ts`, the
+  GitLab raw inventory) write outside `<common>/simple-changes`.
+- Lost Git answers (`process.ts`): new `gitAnswerIsRequired(args)` names
+  the read-only questions that always have an answer (`rev-parse` paths,
+  booleans, and revisions, `symbolic-ref` reads, `config --get`,
+  `remote get-url`, `worktree list`). `runGit` asks again once on exit 0
+  with zero bytes and then throws a retryable `SimpleChangesError` (exit
+  4) with bounded diagnostics; `runGitConcurrently` re-runs such worker
+  results through `runGit`. The cause was seen under load (about 286 to
+  386) but not reproduced: Bun 1.3.14 `spawnSync` reports a signal-killed
+  child as `exitCode: null`, and 3,600 direct and 3,600 worker
+  `rev-parse --show-toplevel` calls at load 386 returned no empty answer,
+  so the change fails closed instead.
+- Listings that may legitimately be empty, integration d28046f and
+  4a5b668: `exact-byte-proof.ts` refuses an empty `rev-list base..head`
+  when base differs from head, confirms an empty per-commit `diff-tree`
+  with `diff-tree --quiet` and an empty tip-to-target `diff --name-only`
+  with `diff --quiet`, refusing on exit 1; `source-worktree-delta.ts`
+  fails "its index cannot be read" on an empty `ls-files --cached
+  --others --exclude-standard` beside a non-empty HEAD tree;
+  `targetTreeEntry` confirms an empty `ls-tree` with
+  `rev-parse --verify --quiet <rev>:<path>` and refuses with exit 4 when
+  the path exists. New `lost-answer-proofs.test.ts` (a fake Git on `PATH`
+  loses one answer).
+- Test isolation (08d4ae3, session sc-preserve-cleanup):
+  `tooling/simple-changes/tests/preload.ts` clears inherited
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_DIR`,
+  `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_QUARANTINE_PATH`, and
+  `GIT_WORK_TREE`, sets `GIT_CEILING_DIRECTORIES`, and moves the test
+  process into an empty temporary directory, so a test that falls back to
+  the working directory fails instead of reading the host repository.
+  `review-ledger.test.ts` (reviewer resolution) and
+  `proposal-signatures.test.ts` use fixture repositories, and an empty
+  `rev-parse --show-toplevel` is refused through `gitReportedPath`. New
+  `test-isolation.test.ts` and `git-location.test.ts` (linked-worktree
+  resolution, seven wrong `--git-common-dir` answers through a fake Git,
+  a `.git` entry for another worktree, bounded diagnostics, symlinked and
+  unreadable state directories, a line break inside a Git directory path,
+  and the lost-answer table and re-asks).
+- Finalize policy (`loop-lease-finalize.ts`, proposal "Preserve approved
+  policy and retire semantically equivalent authors"): new
+  `trustBoundPolicyPaths(primaryCheckout, commonGitDirectory)` in
+  `policy.ts` returns `.simple-changes.json` plus any primary-relative
+  `policyPath` the trust receipt names. `reconcileTargetEquivalentPrimaryChanges`
+  takes `targetBranch` and returns `CarriedPolicyPaths | null`.
+  `withoutPolicyPaths` always removes policy paths and their rename
+  partners from the restore set; when every other dirty path normalizes
+  and `primaryCanFastForwardInPlace`, `stagePolicyPathsAtTarget`
+  (`git restore --source=<target> --staged`, index only) lets
+  `fastForwardCleanPrimary` (now `--no-autostash`, optional `carried`)
+  carry them unwritten, and `settleCarriedPolicyPaths` notes the result
+  and returns an entry this run staged to its old HEAD entry when the
+  fast-forward did not land. Every path-taking Git call in primary
+  normalization (`diffMatchesRevision`, `indexHasOnlyOrdinaryEntries`,
+  each `git restore`) runs with `--literal-pathspecs`. New non-blocking
+  notes ("Kept <path> in the primary checkout byte for byte: ...",
+  "Carried <path> through the fast-forward to <target> without rewriting
+  it; ...") and a cleanup error when staging fails.
+- Run-created retirement (new `lib/exact-byte-proof.ts` and
+  `lib/run-created-retirement.ts`):
+  `proveExactByteTargetContainment(repositoryPath, { sourceHead,
+  targetRevision, sourceBase?, maxCommits? })` is read-only and proves
+  that every path a commit in `sourceBase..sourceHead` touched has the
+  same tree entry at the tip and the target (per-commit `diff-tree
+  --no-renames`, one `diff --name-only --no-renames`); it refuses an
+  unresolved revision, no merge base, a base that is not an ancestor of
+  both, a merge commit, more than `EXACT_BYTE_PROOF_MAX_COMMITS` (200), or
+  any differing path, and proves byte containment only, never origin.
+  `retireAbsentWorktree` (`loop-lease-recovery.ts`) branches to
+  `retireRunCreatedWorktree` for a run-created `author` or `preserved`
+  registration and writes
+  `history/<run>/run-created-retirement-<sha256>.json` (`kind:
+  "run-created-retirement"`, `schemaVersion: 1`, `runId`, `retirement`
+  with `proof { baseRevision, commits, method: "exact-byte-target",
+  touchedPaths }`); a record applies only when its name matches its
+  digest and the branch still points at `branchHeadSha`
+  (`currentRunCreatedRetirement`). `proveNothingLeftToShip`,
+  `recoverPostCleanup`, and `retiredAbsentPaths` (`loop-lease-verify.ts`)
+  honor it; `removeTargetContainedBranches` and
+  `repositoryCleanupBlockers` skip `retirementBackedBranches`. New
+  `missingObligatedWorktree` message helper points close-equivalent at
+  `loop retire-absent-worktree`. Integration 34e3344 refuses either kind
+  of retirement for a held unit's source.
+- Preserved-source handoff (new `lib/preserved-source-handoff.ts` and
+  `lib/source-worktree-delta.ts`, proposal "Reconcile reviewed detached
+  preserved source"): `preservedSourceHandoffFailure(context, recordedAt)`
+  is the pure check (registration, supported-source contract, ownership,
+  approval, review, binding, paths, copy provenance);
+  `sourceWorktreeDelta(sourceWorktree, headRevision, symlinkEntry)` reads
+  a checkout's changes against HEAD from the file system, hashing regular
+  files with `git hash-object` in batches of 200 and taking modes from
+  their own executable bits, never from status or index flags. In
+  `preserved-source-override.ts`, `composeShipmentOutcome(receipt,
+  overrides, handoffs = [])` allows one kind per unit,
+  `splitShipmentOutcomeInput` also returns `handoffs`, and
+  `recordedPreservedSourceOverrides` is replaced by
+  `recordedPreservedSourceEvidence(overrideSidecar, handoffSidecar, runId,
+  receipt, digest, holdDigests = [])` returning `{ handoffs, overrides }`.
+  `loop-lease-shipment.ts` adds `handoffCopy` (`rev-list --parents`,
+  `diff-tree`, `merge-base --is-ancestor`, `ls-tree`) and the exported
+  `preservedSourceHandoffIssue`; the approval flags must match every
+  override and handoff ("Manual approval flags require a preserved-source
+  override or handoff in the outcome."). `storedPreservedSources` and
+  `preservedSourceIssue` feed the completion blockers,
+  `hasVerifiedDelivery`, and `recordedOutcomeIntact`. New
+  `PRESERVED_SOURCE_HANDOFF_DIRECTORY`, types
+  `PreservedSourceHandoffReceipt` and `PreservedSourceHandoffRecord`, and
+  schema `preserved-source-handoff.schema.json`; the sidecar
+  `<common>/simple-changes/preserved-source-handoff/<run>.json` is written
+  only when the outcome has a handoff and removed otherwise. The outcome
+  digest without handoffs is unchanged. Docs: "Preserved-source handoff"
+  in `references/focused-units.md`.
+- Bounded lock waits (`loop-lease-core.ts`): new
+  `withLoopStateLockBounded(commonGitDirectory, operationName, operation,
+  wait?)`, exactly `withLoopStateLock` without `wait`, and
+  `LoopLockWait`, `LoopLockWaitOutcome`, `LoopLockWaitReport`,
+  `LoopLockOwnerSummary`, `LoopLockWaitError` (exit 5, carries
+  `lockWait`), `LOOP_LOCK_WAIT_DEFAULT_MS` (60000), and
+  `LOOP_LOCK_WAIT_MAX_MS` (600000). It polls every 100 ms plus up to 100
+  ms of jitter with an `Atomics.wait` sleep, checks the deadline before
+  every acquisition, and ends early for a dead owner (only when the lock
+  still holds that owner's token after the liveness check), for a caller
+  inside the owner (owner or recorded child PID is an ancestor, or the
+  same recorded process group, from one cached `ps -A -o pid=,ppid=,pgid=`
+  read), and, when the process list cannot be read, for an owner running
+  a child. `withLedgerTransaction` takes optional `wait` and skips
+  `assertOutsideLoopExec` only then; `recordShipmentScope`,
+  `recordShipmentOutcome`, and `ReadyWorkOptions` take `lockWait`. CLI:
+  `--wait-lock` and `--timeout-ms` (`LOCK_WAIT_COMMANDS`,
+  `assertLockWaitApplies`: usage exit 2 for `--timeout-ms` alone, another
+  command, or `worktree release` without `--ready-receipt`), and `runCli`
+  adds `lockWait` (`executed: false`, `operation`, `outcome` of
+  `timed-out`, `owner-not-running`, `caller-inside-owner`, or
+  `caller-ancestry-unknown`, `owner`, `timeoutMs`, `waitedMs`) to the JSON
+  error. Test switch `SIMPLE_CHANGES_TEST_PROCESS_LIST=unavailable` under
+  `NODE_ENV=test`. Docs: "Bounded lock waits" in
+  `references/inventory-and-concurrency.md`.
+- Held units (new `lib/held-units.ts` and `lib/loop-lease-hold.ts`, issue
+  #4): `holdScopedUnit` observes, and with approval re-observes under the
+  loop and coordination locks, pins the head at
+  `refs/simple-changes/held/<run>/<unit>`, writes
+  `<common>/simple-changes/held-units/<run>.json` (schema `held-units`,
+  `HELD_UNITS_DIRECTORY`), the lease key `heldUnits: { holdsDigest }`, and
+  an immutable `history/<run>/held-unit-<hold digest>.json` event.
+  `readinessEvidenceFailure` requires `<unit id>:` attribution.
+  `readHeldUnits` validates the sidecar, each hold's `holdDigest` and
+  `observationDigest`, its unit, source, path, and exclusion binding, the
+  unit against the frozen scope, every history event, and the lease key;
+  `assertHeldScopeConservation` keeps every original scope path delivered,
+  preserved, or excluded exactly once. `loop-lease.schema.json` gains
+  optional `heldUnits` (user-approved exception to the new-file rule, for
+  held runs only); the pinned 0.22.0 lease-schema test allows exactly that
+  key. `boundOutcomeDigest` binds the holds into the outcome digest
+  (unchanged without holds). `loop-lease-shipment.ts` refuses a held unit
+  in `units` and requires only unheld ones; `shipment-outcome-draft.ts`
+  omits held units and adds held-path warnings and `summary.heldUnits`.
+  `loop-lease-finalize.ts` feeds `heldProtection` to every cleanup step,
+  skips primary synchronization for a held primary, stops all automatic
+  cleanup on an unreadable hold record or a changed outcome digest, adds
+  held, omitted, and all-held pinned-target blockers, and adds optional
+  receipt `heldUnits[]`. `assertNoHeldUnits` guards
+  `closeLoopTargetEquivalent` and `recoverPostCleanupLoop`. CLI
+  `loop hold-unit` with `--readiness-evidence` (repeatable, at most 20,
+  500 characters each) and `--observation-digest`; record-scope,
+  refresh-scope, record-outcome, and hold-unit dispatch moved into
+  `runLoopShipmentAction`. Integration 7ddc71d adds
+  `recordedHeldSourcePaths(commonGitDirectory)` and passes it as
+  `keepPaths` from `standaloneWorktreeCleanup`, so a later
+  `worktree cleanup` keeps a removed held checkout's claim; an unreadable
+  record releases no absent claim and adds a cleanup error.
+- Held-unit limits: the "already in the target" rule counts a unit only
+  when every path matches its opening entry and each original path of its
+  own renames that is not an opening change of its own is absent from the
+  target, and `loop hold-unit` refuses and asks for a replan when such an
+  original exists again (82400bd, 7b7fcd3, 5446e43). A unit that shares a
+  non-primary source checkout with a held unit cannot be verified
+  delivered while the held bytes keep it dirty. Deferred by the user:
+  `loop record-outcome` still accepts `delivered` for an unheld
+  primary-packaged unit whose reviewed target result differs from its
+  opening bytes.
+- Replan delta (new `lib/replan-approval-delta.ts`, issue #18 item 3):
+  `ReplanObservation`, `replanApprovalDelta(approved, current,
+  worktrees)`, `replanDeltaAccepted`, and `describeReplanDelta` compare
+  claims by ID (a release moves its claim to the end), require events to
+  extend the approved list exactly, and require receipts unchanged.
+  `worktree-coordination.ts` exports `isLiveClaimState` and
+  `releaseEventRecordedState(claimId)`. `loopReplanStatus` stores
+  `history/<run>/status-observations/<status digest>.json` (content
+  addressed); `createReplanIntent` checks the manifest digest first, then
+  loads the stored approved observation, computes the delta, and refuses
+  with it unless accepted; `archivePendingReplan` re-proves the delta at
+  the move and publishes `replan-approval-delta.json` (also under
+  `archive-recorded-<digest>/`) before the atomic lease move, and every
+  later read re-derives `acceptedReleases` from the intent's observation,
+  the recorded current observation, and the recorded inventory text
+  (`inventoryDigestInput`, new in `inventory.ts`, same bytes as before).
+  `replanLoop` returns `LoopReplanResult` with optional `approvalDelta`.
+  Integration 5bce4f8 and fa117ae: `publishReplanFile(path,
+  commonGitDirectory, value, replace = false)` creates its directory with
+  `ensureStateDirectory`. Refusal prefixes are unchanged. Docs:
+  `references/recovery.md`.
+- Reviewer room (new `lib/reviewer-room.ts`, issue #17):
+  `reviewerRoom(input)` reads Git, the ledger, and the authoring
+  resolution and writes nothing; `parseWouldAuthor`,
+  `parseVerifiedRoute`, and `renderReviewerRoom`. A route is ruled out
+  only by a proven same model ID in the same harness; a display name, an
+  ID differing only by trailing effort words (stacked ones included), a
+  review model that is not an ID (`most-capable` included), an attested
+  author with neither instance nor session, a named proposal with no
+  recorded head and no range, an unattributed commit, a malformed ledger,
+  or a sidecar needing repair leaves it `unknown`, and a `null` harness
+  entry rules it out. `review-ledger.ts` exports `targetDistinctness`,
+  `ReviewerTarget`, and `primaryCheckoutOf` unchanged. CLI
+  `reviewer room` under `withReadOnlyGit`, with repeatable
+  `--would-author` and `--verified-route`; `skill-check.ts` adds
+  `reviewer-room.ts` to the vendor-neutral files. The room is stricter
+  than the post-return gate (effort-word IDs, no coverage waivers), which
+  is unchanged. Docs: `review-and-merge.md`,
+  `inventory-and-concurrency.md` delegation step 1, and
+  `setup-and-policy.md` (`--authoring-request`). 19efbf3 reads
+  `git status --porcelain` outside the test's write snapshots, which
+  removed a load flake from the "writes nothing" test.
+- Renamed changelog providers (`changelog-coordination.ts`): new
+  `markedRepositoryProviders(repositoryRoot)` skips a
+  `REPOSITORY_SKILL_ROOTS` entry whose real path leaves the repository,
+  lists direct children of the rest except installation names, and keeps
+  `<child>/SKILL.md` only when the folder, `SKILL.md`, and marker all stay
+  inside the real repository root (`staysInside`, settled before any
+  marker is read) and `readProviderMarker` accepts the marker.
+  `inspectChangelogCoordination` appends them after installation-name
+  repository candidates and before global ones, under the unchanged
+  stable handoff-capable sort. `uniqueByRealPath` keys on the installation
+  folder's real path, so two folders whose `SKILL.md` files link to one
+  file stay two installations. `providerDistribution` falls back through
+  `installationDistribution`, which reads only own keys of
+  `DISTRIBUTION_BY_INSTALLATION` (a folder named `constructor`,
+  `__proto__`, or `toString` reports `null`). Global roots still match by
+  installation name only.
+- Remote-branch prune gap (new `lib/remote-branch-prune.ts`):
+  `mergedHeadDeletionCandidate(entry, targetBranch)`;
+  `remoteBranchHolds({ claims, inventory, targetBranch, targetRevision })`
+  collects holds by name and by fork-point revision and throws in a
+  shallow clone; `remoteBranchNameHolds` holds the upstream of every live
+  branch, the target's included, read by `trackedProviderBranch` from
+  `branch.<name>.remote` and `branch.<name>.merge` (falling back to the
+  full `%(upstream)` refname, never `%(upstream:short)`); `mayBeShallow`
+  counts anything but an explicit "false" as shallow; and
+  `remoteBranchCleanupReport` applies holds, settles ancestry and the
+  merge base itself, then runs patch equivalence on that base
+  (`commitEquivalenceAgainstTarget` takes an optional `mergeBase`).
+  `remote-inventory.ts`: pages may carry `openProposalTargets` (known only
+  when every page lists them and each names every open proposal it
+  carries), the final build takes `resolveHolds` and adds
+  `deletionProposals` and `heldBranches`, `presentDecisionProposal` builds
+  the entry exactly as `deletedEntry` will record it and judges it with
+  the receipt validator, and `assertDecisionsUsed` accepts approved
+  present branches. `remote-branch-reconciliation.ts` splits and
+  validates the top-level `openProposalTargets` and adds
+  `openProposalTargetsForReceipt` and `validateLedgerBranchEntry`.
+  `loop-lease-remote.ts` writes or removes
+  `remote-branch-open-targets/<run>.json`, bound to the receipt digest.
+  `finalizationDecision` adds receipt `remoteBranches` (`pending`,
+  `held`, `openProposalTargets` of `recorded` or `unknown`, `errors`);
+  any pending entry or error makes `cleanupStatus` `pending` without a
+  blocker. The GitLab fetcher lists every open or locked MR with its
+  `target_branch`, forks included. New schema
+  `remote-branch-open-targets.schema.json`; `remote-inventory-pages`
+  adds optional `openProposalTargets`. Docs: `cleanup-and-completion.md`
+  ("Deletion proposals and held branches") and `providers/gitlab.md`.
+- Known limit, issue #19: `trackedProviderBranch` reads the last of
+  several `branch.<name>.merge` values while Git uses the first, so a
+  hand-added second value can turn the really tracked branch into a
+  deletion proposal and a pending report. The fix (use
+  `%(upstream:remotename)` and `%(upstream:remoteref)`, falling back to
+  holding every value) is in the issue.
+<!-- lineage -->
+- Replacement lineage (new `lib/replacement-lineage.ts`, proposal
+  "Support reviewed replacement lineage in worktree cleanup"):
+  `parseReplacementLineageReceipt`, read-only `verifyReplacementLineage`
+  (also plans the archive: private Git directory, size, cap, free space,
+  expiry), `assertReviewedReplacementUnchanged`, and
+  `removeReviewedReplacement` (measure, archive, pin, intent record, live
+  comparison, `git worktree remove`, exact old-value branch deletion and
+  `branch.<name>` section removal, completion record).
+  `REPLACEMENT_LINEAGE_MAX_COMMITS` (200),
+  `REPLACEMENT_LINEAGE_APPROVAL_MAX_AGE_MS` (24 hours), and
+  `assertPlainGitEnvironment` over `GIT_ENVIRONMENT_REDIRECTS` (seven
+  variables). The receipt (schema `replacement-lineage-receipt`) binds
+  `source { path, branch, headRevision, changeDigest, authorAgentId }`,
+  `targetRef`, `targetRevision`, `commits [{ sourceCommit,
+  replacementCommits }]`, `review` (`decision: "replaced-in-target"`), and
+  `approval`. Independence is proportionate: the reviewer and approver
+  must not be the controller, the declared author, any recorded owner of
+  a claim on the path or branch (released included), either side of a
+  reassign takeover of such a claim, or an attested author of a unique
+  commit. The exact-byte proof is reused and recorded as `byteProof`, not
+  required. Records: `replacement-lineage/lineage-<uuid>-intent.json` and
+  `-completed.json` (schema `replacement-lineage-removal`).
+<!-- lineage -->
+- Worktree archive (new `lib/worktree-archive.ts`): `scanTree`,
+  `copyTree`, `compareTrees`, `copyWorktreeIntoArchive`,
+  `compareLiveWithManifest` (no Git), `verifyWorktreeArchive`,
+  `restoreWorktreeArchive`, `extractWorktreeArchive`,
+  `listWorktreeArchives`, and `pruneWorktreeArchives`. The archive
+  `<common>/simple-changes/archives/<archive id>/` (mode 0700) holds
+  `manifest.json` (schema `worktree-archive`), `checkout/`, `git/`, and
+  during a restore `restoring.json`. The copy never follows a link, keeps
+  modes, refuses a FIFO, socket, or device, and is re-walked and hashed.
+  Pins: `refs/simple-changes/archives/<id>/head` and `objects/<oid>` for
+  every object the per-worktree refs and pseudo-refs name (read through
+  Git, confirmed with `cat-file -e`) and every 40 or 64 hex ID in the
+  archived state files. `pinArchive` tracks a pin the moment `update-ref`
+  exits 0, and the private `undoArchive` deletes exactly that list through
+  `deleteTrackedPins` (exact value, `--no-deref`). Constants
+  `DEFAULT_MAX_ARCHIVE_BYTES` (2147483648),
+  `ARCHIVE_FREE_SPACE_MARGIN_BYTES` (64 MiB), and `ARCHIVE_ID_PATTERN`.
+  Pruning re-checks each archive's target ref, replacement commits, and
+  Git's own revert message, keeps a failing archive for attention, skips
+  one with a restore marker or an unparsable manifest, applies the size
+  cap oldest first and then expiry, deletes only the manifest's pins in
+  its own namespace by exact value, and appends to
+  `archives/prune-log.json` (schema `worktree-archive-prune`) before the
+  folder is removed.
+<!-- lineage -->
+- Lineage wiring: `policy.ts` adds `DEFAULT_ARCHIVE_RETENTION_DAYS` (14),
+  `DEFAULT_ARCHIVE_TOTAL_BYTES` (2147483648), and
+  `archiveRetentionPolicy(policy)` (`days` 1 to 3650, `maxTotalBytes` 1
+  MiB to 1 TiB, otherwise the default plus a reported fallback, read
+  whatever the policy's trust state); `RepoPolicy.archiveRetention` is
+  optional and never written by setup. `worktree-maintenance.ts`:
+  `PruneOptions` and `WorktreeCleanupOptions` gain `lineageReceipt`,
+  `maxArchiveBytes`, and `now` (`PruneOptions` also `agentId`); a run with
+  a receipt refuses the redirecting environment, runs under
+  `GIT_OPTIONAL_LOCKS=0` (`withOptionalLocksOff`), removes the reviewed
+  checkout first, and throws when it did not; new
+  `pruneArchivesAtCleanup`, `restoreArchivedWorktree`,
+  `pruneArchivedWorktrees`, and `listArchivedWorktrees`.
+  `LoopFinalizationResult` gains `archivePruning`, pruned after the
+  receipt is persisted and only for a closed run. `cleanup-core.ts` adds
+  `REVIEWED_REPLACEMENT_METHOD` and `LocalRemovalMethod`. CLI:
+  `--lineage-receipt`, `--max-archive-bytes`, `--archive`,
+  `--extract-to`, `--older-than`, and `worktree archives`,
+  `worktree restore-archive`, and `worktree prune-archives`. The
+  persisted cleanup receipt and finalization receipt are unchanged. Docs:
+  `references/replacement-lineage.md` and `references/recovery.md`.
+<!-- lineage -->
+- Lineage boundary: from the check before the archive through branch
+  deletion, every Git command runs with `--no-pager --no-lazy-fetch
+  --no-optional-locks -c core.hooksPath=/dev/null -c core.fsmonitor=false`
+  and every filter driver either checkout defines emptied and not
+  required, read back in both; a source with submodules, a partial clone
+  (a valueless `remote.<name>.promisor` included), `hook.*`, or
+  `core.virtualFilesystem` is refused. It is hardening under the threat
+  model, not a guarantee. Known gap, issue #20: a filter driver whose name
+  does not read back exactly (empty, containing U+2028 or U+2029, or not
+  valid UTF-8) is not emptied. Tests: `worktree-archive.test.ts` (22),
+  `archive-retention.test.ts` (13), and `replacement-lineage.test.ts`
+  (88).
+- Docs prune (`docs/0-33-0-prune-skill-docs`): rules repeated across
+  references now live in one canonical section that the others link to,
+  in `SKILL.md` and seventeen references. `SKILL.md` went from 17,499 to
+  17,281 of its 17,500-byte budget and the packaged references from
+  351,676 to 338,089 bytes. No heading, anchor, Contents list, or pinned
+  test sentence changed. Two rules gained detail where they now live:
+  finalization holds the loop and worktree-coordination locks and
+  re-reads each candidate before persisting a removal intent, and the
+  ready-work receipt's not-authority sentence names ownership. Forks that
+  copied a removed duplicate see an ordinary text conflict on their next
+  `update-local-forks` run.
+- Threat model (`SECURITY.md`, `CONTRIBUTING.md`, b25e65e): in scope are
+  losing work, shipping the wrong thing, agents interfering, self-review,
+  unreliable tools, leftover state, and untrusted text; out of scope are
+  the user's machine and tools, Git configuration and the programs it
+  runs, Simple Changes' own state files, the provider, and a process
+  deliberately racing a command. Design principles: reversible beats
+  provable, fail toward keeping, clean up without being asked, and hide
+  Git but not its safety. Independent reviews grade severity against it:
+  a finding that needs a trusted part to be hostile is a nit or an issue.
+- Integration (`integration/0.33.0`, merges 00e3fc5 through ca37532):
+  `withLedgerTransaction` runs `assertStateDestination` first, then the
+  bounded-lock body; `withLoopStateLockBounded` acquires through
+  `acquireStateLock`, which already uses `ensureStateDirectory`. The
+  hold-unit merge kept `targetEquivalentPrimaryPaths` with its held-path
+  skip ahead of the policy decision, so a held path also keeps a policy
+  file byte for byte, and fixed the handoff sidecar to bind the hold-bound
+  `outcomeDigest` instead of the unbound receipt digest, without which a
+  run with a handoff and a held sibling could never finalize (pinned by
+  af52e2f). The three shipment commands moved into `runLoopShipmentAction`
+  pass `lockWaitOption(options)`; `loop hold-unit` takes no lock wait.
+- Compatibility: no key is added to the coordination state, review
+  ledger, authoring sidecar, cleanup history, finalization receipt
+  schema, or any shipped receipt, and the lease is unchanged except
+  `heldUnits` on a run with holds, which runtimes before 0.33.0 reject.
+  New files that older runtimes ignore: `held-units/`,
+  `preserved-source-handoff/`, `run-created-retirement-*.json`,
+  `status-observations/`, `replan-approval-delta.json`,
+  `remote-branch-open-targets/`, and the `refs/simple-changes/held/` ref
+  namespace. Older
+  runtimes then fail stricter: a handoff outcome's digest cannot match
+  without its sidecar, so they refuse to finish, end, or archive it (and a
+  stale handoff file left by an older re-record is refused by 0.33.0 until
+  it records again); a delta-accepted replan retried before the lease move
+  refuses; an absent run-created checkout stays unproven; a missing
+  open-targets sidecar reads as `unknown`, which counts more branches as
+  pending. Older builders reject pages with `openProposalTargets`, a final
+  receipt file holding it, and a present-branch decision. Older runtimes
+  reject `--wait-lock`, `--timeout-ms`, `--would-author`,
+  `--verified-route`, `--readiness-evidence`, and
+  `--observation-digest` as unknown options, and they lack
+  `reviewer room` and `loop hold-unit`.
+<!-- lineage -->
+- Lineage compatibility: the archives, the prune log, and the lineage
+  records are new files under `<common>/simple-changes/`, and the pins are
+  the new `refs/simple-changes/archives/` namespace, which older runtimes
+  never read; they see one fewer checkout and branch, and the pins keep
+  the objects reachable for every runtime and from `gc`. `archivePruning`
+  and `reviewedReplacement` exist only in command results. Older runtimes
+  reject `--lineage-receipt`, `--max-archive-bytes`, `--archive`,
+  `--extract-to`, `--older-than`, and the new `worktree` actions, so a
+  receipt is never silently ignored, and a policy that sets
+  `archiveRetention` needs 0.33.0 or later.
+- Tests: new `git-location.test.ts`, `test-isolation.test.ts`,
+  `lost-answer-proofs.test.ts`, `finalize-policy.test.ts` (6),
+  `run-created-retirement.test.ts` (8), `preserved-source-handoff.test.ts`
+  (34), `lock-wait.test.ts` (14, holder fixture
+  `fixtures/lock-wait/holder.ts`), `held-units.test.ts` (30 plus the
+  integration cases), `replan-approval-delta.test.ts` (17 plus fa117ae),
+  `reviewer-room.test.ts`, and `remote-branch-prune.test.ts` (26), and new
+  blocks in `changelog-coordination.test.ts` ("repository-owned renamed
+  changelog providers"), `remote-inventory.test.ts`, and
+  `loop-lease.test.ts`. Each behavior test was confirmed to fail on the
+  code before it. The last full suite on `integration/0.33.0` before the
+  threat-model merge (7ddc71d, load up to about 214) passed: 1574 pass, 1
+  skip, publish-skill 19, update-local-forks 103.
+- Filed for later: #19 (upstream hold reads the last `merge` value),
+  <!-- lineage -->#20 (filter driver names that do not read back
+  exactly),<!-- /lineage --> #21 (one versioned state store with history
+  retention), #22 (record outcomes, reconcile branches, and remove proven
+  worktrees inside finalize), and #23 (a local refusal log to measure
+  guard payoff).
+- Guidance 33 adds behavior changes for the Git location guard, held
+  units, the preserved-source handoff, bounded lock waits, replan deltas,
+  the reviewer room, and remote-branch deletion proposals and pending
+  reports<!-- lineage -->, and archived reviewed removals with automatic
+  expiry<!-- /lineage -->, and an integration change for renamed
+  changelog providers, with three notice bullets<!-- lineage --> plus one for
+  archived removals<!-- /lineage --> and no required answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-23T12:51:46-05:00" -->
+
 ## 0.32.0 - 2026-10-20
 
 - Flat prepared layout (new `lib/managed-worktrees.ts`): `slug` moved here

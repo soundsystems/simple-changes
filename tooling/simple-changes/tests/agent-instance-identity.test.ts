@@ -460,6 +460,35 @@ describe("identity receipts on other commands", () => {
     expect(cli(fixture.root, parentOnly, release).exitCode).toBe(5);
     expect(cli(fixture.root, childOnly, release).exitCode).toBe(0);
   });
+
+  test("a disputed receipt stops a command that does not use it, before it writes", () => {
+    const { childOnly } = sessions();
+    const fixture = repository();
+    const codexHome = join(fixture.base, "codex-home");
+    const receiptPath = join(fixture.base, "stale-identity.json");
+    writeFileSync(
+      receiptPath,
+      JSON.stringify({
+        harness: "codex",
+        model: "model-child",
+        schemaVersion: 1,
+        session: "stale-thread",
+      })
+    );
+    const result = cli(fixture.root, { ...childOnly, CODEX_HOME: codexHome }, [
+      "harness",
+      "stop-hook",
+      "--harness",
+      "codex",
+      "--write",
+      "--identity-receipt",
+      `@${receiptPath}`,
+      "--json",
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("identity receipt");
+    expect(existsSync(codexHome)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -705,10 +734,17 @@ describe("the controller binding and the turn-end guard", () => {
       fixture.root,
     ];
     const leasePath = loopLeasePath(commonDirectory(fixture.root));
-    const refused = cli(fixture.root, nested, start);
+    // The refusal comes before anything is created, a work root included.
+    const workRoot = join(fixture.base, "work-root");
+    const refused = cli(
+      fixture.root,
+      { ...nested, SIMPLE_CHANGES_WORK_ROOT: workRoot },
+      start
+    );
     expect(refused.exitCode).toBe(2);
     expect(refused.stderr).toContain("--harness");
     expect(existsSync(leasePath)).toBe(false);
+    expect(existsSync(workRoot)).toBe(false);
     expect(
       cli(fixture.root, nested, [...start, "--harness", "codex"]).exitCode
     ).toBe(0);

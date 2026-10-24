@@ -4744,9 +4744,9 @@ const readHookInput = async (): Promise<string> => {
  */
 const runLoopTurnCheck = async (options: CliOptions): Promise<void> => {
   if (!options.hook) {
-    // Run directly, it reports on this session, so it must know which one;
-    // the hook reads the ending session from the harness instead.
-    requireHarnessSession("loop turn-check");
+    // Run directly, it reports on this session, which the identity
+    // preflight made sure is clear; the hook reads the ending session from
+    // the harness instead.
     const result = turnCheck({ sessionId: null, stopHookActive: false });
     writeOutput(
       result,
@@ -6377,29 +6377,56 @@ const lockWaitInput = (options: CliOptions): { lockWait?: LoopLockWait } => {
   return lockWait ? { lockWait } : {};
 };
 
-// The harness this command runs in, when it names one: an identity receipt,
-// checked against the environment before anything else runs, or else
-// `--harness`. `harness stop-hook --harness <id>` names the harness to
-// install for instead, so that command names none.
+// Commands that always record or bind the executing session. With sessions
+// of two harnesses in the environment, they ask which is theirs before they
+// take a lock or touch a directory or file. Commands that need the session
+// only sometimes (an owner command on a bound claim, `workdir` inside a run,
+// a controller transfer) ask where they need it, in the library, which also
+// guards direct callers.
+const SESSION_BINDING_COMMANDS = new Set([
+  "author attest",
+  "loop start",
+  "loop takeover",
+  "loop turn-check",
+  "proposal record-authors",
+  "worktree claim",
+  "worktree takeover",
+]);
+
+// The identity preflight every command runs before dispatch. A receipt is
+// checked against the environment and against every argument that states an
+// identity, whether or not the command uses it, so a disputed receipt stops
+// any command before it acts. The harness it returns is the one this
+// command runs in: the receipt's, or else `--harness`. `harness stop-hook
+// --harness <id>` names the harness to install for instead, so that command
+// names none and its `--harness` is not compared.
 const invocationHarnessFor = (
   command: string,
   options: CliOptions
 ): string | null => {
-  if (command === "harness") {
-    return null;
-  }
-  if (options.identityReceipt) {
-    // Every argument that states an identity must agree with the receipt,
-    // whether or not this command uses it, before anything runs.
-    receiptSession(options.identityReceipt, process.env, {
+  const named = command === "harness" ? null : (options.harness ?? null);
+  const receipt = options.identityReceipt;
+  if (receipt) {
+    receiptSession(receipt, process.env, {
       agent: options.agentName ?? null,
-      harness: options.harness ?? null,
+      harness: named,
       instance: options.instanceId ?? null,
       session: options.sessionId ?? null,
     });
-    return options.identityReceipt.harness;
   }
-  return options.harness ?? null;
+  if (command === "harness") {
+    return null;
+  }
+  const harness = receipt?.harness ?? named;
+  const name = `${command} ${options.positional[0] ?? ""}`.trim();
+  // The Stop hook names its ending session itself and must never fail.
+  if (
+    SESSION_BINDING_COMMANDS.has(name) &&
+    !(name === "loop turn-check" && options.hook)
+  ) {
+    requireHarnessSession(name, process.env, harness);
+  }
+  return harness;
 };
 
 const dispatchCommand = async (

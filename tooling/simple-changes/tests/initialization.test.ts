@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { inspectGuidanceUpdate } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
+import {
+  guidanceNotice,
+  inspectGuidanceUpdate,
+} from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { classifyEmergencyShipping } from "../../../skills/simple-changes/scripts/lib/triggers.ts";
@@ -74,10 +77,8 @@ describe("first-run initialization", () => {
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
       26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30,
-      31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32,
-      // <!-- lineage -->: guidance 33 has ten changes with the archived
-      // reviewed removal and nine without it; drop one 33 from each list.
-      33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
@@ -130,7 +131,7 @@ describe("first-run initialization", () => {
     );
     expect(from29.changes.map((item) => item.version)).toEqual([
       30, 30, 31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32,
-      32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from29.summaryBullets.join(" ")).toContain(
       "`author attest --complete-identity`"
@@ -144,7 +145,7 @@ describe("first-run initialization", () => {
     );
     expect(from30.changes.map((item) => item.version)).toEqual([
       31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32, 33,
-      33, 33, 33, 33, 33, 33, 33, 33, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from30.requiredAnswers).toEqual([]);
     const from31 = inspectGuidanceUpdate(
@@ -156,6 +157,7 @@ describe("first-run initialization", () => {
     );
     expect(from31.changes.map((item) => item.version)).toEqual([
       32, 32, 32, 32, 32, 32, 32, 32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      33, 33, 33,
     ]);
     expect(from31.requiredAnswers).toEqual([]);
     expect(from31.summaryBullets.join(" ")).toContain(
@@ -169,15 +171,21 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from32.changes.map((item) => item.version)).toEqual([
-      33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from32.requiredAnswers).toEqual([]);
     expect(from32.summaryBullets).toHaveLength(3);
+    expect(from32.summaryBullets[0]).toContain("`--harness <id>`");
     expect(from32.summaryBullets.join(" ")).toContain("`loop hold-unit`");
     expect(from32.summaryBullets.join(" ")).toContain(
       "reports cleanup as pending"
     );
-    expect(from32.summaryBullets.join(" ")).toContain("`reviewer room`");
+    expect(from32.summaryBullets.join(" ")).not.toContain("`reviewer room`");
+    expect(guidanceNotice(33)).toHaveLength(5);
+    expect(guidanceNotice(33).join(" ")).toContain("`reviewer room`");
+    expect(guidanceNotice(33).join(" ")).toContain(
+      "`worktree restore-archive`"
+    );
     expect(from30.summaryBullets.join(" ")).toContain(
       "compares the model IDs your coding agents report"
     );

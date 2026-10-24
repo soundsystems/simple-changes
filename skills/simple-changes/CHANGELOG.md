@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.33.0 - 2026-10-23
+## 0.33.0 - 2026-10-24
 
 - Finishing a run no longer leaves merged branches on your Git host while
   saying cleanup is complete. In 0.31.0 and 0.32.0, every branch on the
@@ -38,6 +38,21 @@
   head moved during the run, when an open merge request comes from it or
   goes into it, when live work holds it, or when it is a merged head, which
   needs no entry.
+- A branch on your Git host that someone else deleted during a run no
+  longer stops the run from finishing. Before, when a branch from the
+  opening inventory disappeared and no merged merge request proved it
+  finished, the final `remote-inventory build` refused, so the run could
+  not record its host branches or end. Now the build records the branch
+  as deleted outside the run, and never counts it as delivered, merged,
+  or obsolete. `loop reconcile-remote-branches` keeps the branch's last
+  commit reachable under `refs/simple-changes/external/` when that commit
+  is on this machine, so the work can still be recovered. `loop finalize`
+  names the branch under `remoteBranches.deletedExternally` and in its
+  plain output, with a note giving its last commit, keeps
+  `cleanupStatus` at `pending`, and still closes the run. The kept
+  reference removes itself the next time a run closes, once 14 days have
+  passed since it was made. A branch deleted while its merge request is
+  still open still stops the build.
 - Commands that record review and shipment details can now wait for a
   busy lock instead of failing at once. When another Simple Changes command
   is in the middle of writing, these commands used to exit 5 right away.
@@ -143,6 +158,37 @@
   configured reviewer stays eligible and a real run proves it at both
   efforts; `unverified`, `alternative-only`, `closed`, and `unknown` exit
   3. It writes nothing.
+- When one coding agent starts another, each one is now recorded as
+  itself. The agent that was started can see its parent's session
+  variable beside its own, and Simple Changes used to pick one by a fixed
+  order, so the child could be recorded as its parent and then pass review
+  of its own work. Now, when the environment shows the sessions of two
+  different harnesses, every command that records or checks which session
+  is running stops with exit 2, before it takes a lock or writes anything,
+  and asks for `--harness <id>` naming the harness it runs in. These are
+  `author attest`, `proposal record-authors`, `worktree claim`,
+  `takeover`, `pause`, `detach`, `attach`, and `release`,
+  `initialize --mode handoff --agent-id`, every `loop start`,
+  `loop takeover`, a direct `loop turn-check`, and `workdir` inside a run.
+  A `--harness` that names a harness with no session here exits 5. With
+  only one session in view, nothing changes.
+- A harness, or a wrapper around it, can instead pass
+  `--identity-receipt <JSON or @file>`, which states the harness, the
+  session, the model ID, and optionally the agent instance and the parent
+  session. It must agree with the environment, and with `--harness`,
+  `--session`, `--agent`, and `--instance` on any command; otherwise the
+  command stops with exit 2 and does nothing. It is never stored. It fixes
+  a confused identity; it does not prove anything against a forged one.
+- Review independence is now decided per agent instance. The same model,
+  even in the same harness, may review work as long as it is a different
+  instance, and the same instance never may, even when its records name
+  different sessions, harnesses, or models. A record that shows neither
+  an instance nor a session is still refused. None of the checks became
+  more permissive. In setup, naming the author's own model under "A
+  different model in the same agent" still asks for a different model,
+  but the message no longer calls that self-review: it says a separate
+  session of that model is an independent reviewer under "Any independent
+  reviewer".
 - Finishing a run no longer undoes approved repository settings. When the
   primary checkout had uncommitted changes and already held the target's
   `.simple-changes.json`, for example an approved migration setting,
@@ -168,6 +214,12 @@
   missing, checked out, or shared, when a touched file differs, or when
   the branch holds a merge commit or more than 200 commits. It deletes
   nothing.
+- A checkout that `loop rebaseline` added to a run as a late arrival is no
+  longer removed when `loop end`, `loop finalize`, or
+  `loop close-equivalent` cleans up, even when it is clean and the target
+  already holds its work, and it no longer stops the run from ending. The
+  recovery guide already promised this. A later run that registers the
+  checkout when it starts treats it like any other checkout.
 - Simple Changes no longer writes its records to the wrong place when Git
   gives a wrong or empty answer. Under heavy load, Git sometimes printed
   nothing when asked where the repository's shared Git folder is, and that
@@ -200,7 +252,6 @@
   the marker, with a marker for another provider, or that links outside
   the repository is ignored, and a helper that can only be discovered
   never outranks one that can take the release handoff.
-<!-- lineage -->
 - A clean checkout whose work shipped as reworked commits can now be
   removed, and the removal can be undone. When review refines a change,
   the commits that ship differ from the originals, so `prune` and
@@ -214,42 +265,50 @@
   remove exactly what they removed before. `prune --dry-run` with a
   receipt shows the archive's size, when it would expire, and what else
   the run would prune, and changes nothing.
-<!-- lineage -->
 - Before anything is removed, the checkout and its private Git folder are
   copied whole into an archive under
   `<shared Git folder>/simple-changes/archives/<archive ID>/`, with a
   `manifest.json` listing every file and its checksum, and the commit and
   every other object the checkout refers to, such as a saved stash, are
   kept reachable under `refs/simple-changes/archives/<archive ID>/`. The
-  copy is checked against the live checkout right before removal; any
-  difference keeps the checkout. If the archive cannot be completed, it is
-  removed again and the refusal says so. The branch's settings, such as
-  its description and upstream, are saved in the manifest.
-<!-- lineage -->
+  branch's settings, such as its description and upstream, are saved in
+  the manifest. Right before removal, the live checkout is compared with
+  the copy, and Git must still list it at the reviewed commit and branch.
+  Any difference keeps the checkout, and keeps the complete archive until
+  it expires. If the archive cannot be completed, it is removed again and
+  the refusal says so. A Git state file in the checkout's private folder
+  larger than 1 MiB, such as a `FETCH_HEAD` grown by repeated fetches,
+  refuses the removal and leaves no archive, naming the file and its size,
+  because Simple Changes cannot read every commit such a file names.
 - `simple-changes worktree restore-archive --archive <archive ID>` puts
   the checkout and its branch back exactly as they were and confirms that
   Git sees the checkout clean at the recorded commit. It refuses, changing
   nothing, when anything is in the way. `--extract-to <folder>` copies the
   archive to an empty folder instead, for when the original location is
   taken, and `simple-changes worktree archives` lists every archive with
-  its size and expiry.
-<!-- lineage -->
+  its size and expiry. A restore that stops part way leaves a marker, and
+  automatic pruning leaves that archive alone until a restore succeeds.
 - Archives clean themselves up. Each one expires after 14 days, and all
-  archives together are kept under 2 GiB, oldest pruned first; set
-  `archiveRetention.days` and `archiveRetention.maxTotalBytes` in
-  `.simple-changes.json` to change that. A value that is not a whole number
-  in range falls back to the default, and the output says so. `prune`,
-  `worktree cleanup`, and a `loop finalize` that closes its run prune
-  expired archives at the end of a run whose own removals succeeded, never
-  the archive that run made. An archive whose reworked commits the target
-  no longer holds, or reverted, is kept for your attention and named with
-  its restore command in every report. Each pruned archive is recorded in
-  `archives/prune-log.json`. To prune by hand, run
+  archives together are kept under 2 GiB; set `archiveRetention.days` and
+  `archiveRetention.maxTotalBytes` in `.simple-changes.json` to change
+  that. A value that is not a whole number in range falls back to the
+  default, and the output says so. `prune`, `worktree cleanup`, and a
+  `loop finalize` that closes its run prune archives at the end of a run
+  whose own removals succeeded, never the archive that run made. While
+  the archives are over the size limit, the oldest goes first, whatever
+  its expiry. An archive that cannot be pruned, for example because Git
+  left a lock file behind, frees nothing, so the next oldest goes instead
+  until the total fits; then the expired archives go. An archive whose
+  reworked commits the target no longer holds, or reverted, or whose kept
+  references cannot all be deleted, stays whole for your attention, named
+  with its restore command in every report, and is tried again next time.
+  Each pruned archive is recorded in `archives/prune-log.json`, and the
+  output says how many bytes the archives hold and which limit applied.
+  To prune by hand, run
   `simple-changes worktree prune-archives --archive <archive ID>` or
   `--older-than <days>`, with `--approved-by` and `--reason`, and
   `--dry-run` to preview. A repository whose `.simple-changes.json` sets
   `archiveRetention` needs 0.33.0 or later.
-<!-- lineage -->
 - The removal of a reworked checkout runs every Git command with hooks,
   file-system monitors, and filter programs switched off, and refuses a
   checkout with submodules, a partial clone, or a hook set through
@@ -280,9 +339,9 @@
   request you started it for. Before, run-only setup saved nothing and
   told the agent nothing, so every later check in the same run still said
   setup was required and `loop start --changelog-required` stopped with
-  exit 5. Now setup prints the exact value to pass on as `runRequest`, and
-  the agent passes setup's `policy` as `--policy-request` to each later
-  `initialize` and `loop start` of that run. It applies only when no
+  exit 5. Now setup prints, as `runRequest`, the exact value to pass on,
+  and the agent passes setup's `policy` as `--policy-request` to each
+  later `initialize` and `loop start` of that run. It applies only when no
   repository or personal policy is saved, is never written anywhere, and
   never turns on automatic pushes, production deploys, non-standard
   shipping, or automatic migrations, which stay at ask. A saved policy
@@ -295,17 +354,26 @@
   refuse. Every other new record is a new file that older copies ignore,
   which leaves them stricter, not looser: they cannot finish a run with a
   handoff, they still refuse an approval that only a verified release
-  changed, and they treat a renamed changelog helper as absent. They
-  reject the new flags and commands, such as `--wait-lock` and
-  `reviewer room`, as unknown, and an older builder rejects proposal pages
-  that list `openProposalTargets`.
+  changed, they treat a renamed changelog helper as absent, and an older
+  `loop end` refuses a run whose host branch was deleted outside it. They
+  reject the new flags and commands, such as `--wait-lock`,
+  `--identity-receipt`, and `reviewer room`, as unknown, and an older
+  builder rejects proposal pages that list `openProposalTargets`. Older
+  copies still remove a clean rebaselined checkout.
+- Older copies also still record whichever harness session comes first in
+  their fixed order, which for an agent started by another agent may be
+  its parent's, so update every copy that such agents use. A claim one of them made that way is bound to
+  the parent's session: with 0.33.0 the started agent passes `--harness`
+  and is refused as another session, and the existing approved
+  `worktree takeover` moves the claim. A review that an older copy
+  accepted from the author's own instance under another session is
+  refused when 0.33.0 resumes the run.
 - Filed for a later release:
   - soundsystems/simple-changes#19: a local branch with more than one
     `branch.<name>.merge` value, which only a hand edit or
     `git config --add` writes, can make the build propose deleting the
     host branch it really tracks. The deletion still needs the guarded
     steps.
-  <!-- lineage -->
   - soundsystems/simple-changes#20: during the removal of a reworked
     checkout, a filter program whose name Simple Changes cannot read back
     exactly, such as an empty name or one that is not valid UTF-8, is not
@@ -317,10 +385,17 @@
     worktrees inside `loop finalize`.
   - soundsystems/simple-changes#23: keep a small local log of refusals, so
     it is clear which safety checks fire and how often.
-- The guidance 33 update notice describes held units, finished host
-  branches, and the reviewer room<!-- lineage -->, and archived removals
-  of reworked checkouts<!-- /lineage -->, and needs no answer.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-23T12:51:46-05:00" -->
+  - soundsystems/simple-changes#24: judge reviewer independence by agent
+    instance, not only by agent ID, in the receipts for removing a
+    reworked checkout and for preserved sources.
+  - soundsystems/simple-changes#25: follow-ups for host branches deleted
+    outside a run, such as expiring their records with their kept
+    references and pruning those references in `loop close-equivalent`.
+- The guidance 33 update notice asks agents started by other agents to
+  pass `--harness`, and describes held units, finished host branches, the
+  reviewer room, and archived removals of reworked checkouts. It needs no
+  answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-24T01:34:00-05:00" -->
 
 ## 0.32.0 - 2026-10-20
 

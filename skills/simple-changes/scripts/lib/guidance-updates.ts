@@ -1154,11 +1154,28 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
           "Run-only setup can now finish the request it was started for. `initialize` and `loop start` accept `--policy-request <json-or-@path>`, the `policy` object run-only `setup` printed, unchanged: when no repository or personal policy is saved it applies with policy source `request` for that one command, so onboarding no longer blocks the run, and nothing is written. A saved policy always wins and the request is reported as ignored, consequential settings (automatic push configuration, production allow, non-standard shipping, automatic migration apply) fall back to their safe values with `policyTrust: untrusted`, and a malformed, partial, or stale-guidance request is a usage error, exit 2, that changes nothing. `setup --scope run` and the `initialize` hand-off print the exact value to pass on as `runRequest`, and the hand-off also prints the resulting initialization status. Every other check stays the same, and a plain `initialize` still asks again on the next run.",
         version: 33,
       },
-      // <!-- lineage -->
       {
         kind: "behavior",
         summary:
-          "`prune --agent-id <ID> --lineage-receipt <file>` and `worktree cleanup --lineage-receipt <file>` remove one clean checkout whose work shipped through changed replacement commits when the receipt maps every commit the reviewed target lacks to replacement commits in it, an independent reviewer checked the mapping, and the user approved within 24 hours afterwards, reported as `reviewed-replacement`. The checkout and its private Git directory are archived first under `<common Git directory>/simple-changes/archives/<archive ID>/` with a manifest, its head and every object it names are pinned under `refs/simple-changes/archives/<archive ID>/`, and `worktree restore-archive --archive <archive ID>` brings it back; `worktree archives` lists archives. Archives expire after policy `archiveRetention.days` (default 14) and are kept under `archiveRetention.maxTotalBytes` (default 2147483648), pruned automatically at the end of a successful `prune`, `worktree cleanup`, or closed `loop finalize` except when the target no longer holds the replacement commits, and `worktree prune-archives` prunes by hand. A policy that sets `archiveRetention` needs 0.33.0 or later.",
+          "`prune --agent-id <ID> --lineage-receipt <file>` and `worktree cleanup --lineage-receipt <file>` remove one clean checkout whose work shipped through changed replacement commits when the receipt maps every commit the reviewed target lacks to replacement commits in it, an independent reviewer checked the mapping, and the user approved within 24 hours afterwards, reported as `reviewed-replacement`. The checkout and its private Git directory are archived first under `<common Git directory>/simple-changes/archives/<archive ID>/` with a manifest, its head and every object it names are pinned under `refs/simple-changes/archives/<archive ID>/`, and the live checkout is compared with the archive right before `git worktree remove`; on any difference, or a registered head or branch that moved, the checkout is kept and the verified archive stays until it expires. A Git state file in the private directory over the 1 MiB the object scan reads, other than the index and reflogs, refuses the removal and leaves no archive. `worktree restore-archive --archive <archive ID>` brings the checkout back, and `worktree archives` lists archives. Archives expire after policy `archiveRetention.days` (default 14) and are kept under `archiveRetention.maxTotalBytes` (default 2147483648), pruned automatically at the end of a successful `prune`, `worktree cleanup`, or closed `loop finalize`, never the archive that run made: the size cap is applied while the prune queue runs, oldest first, and an archive kept because a pin cannot be deleted frees nothing, so the next-oldest goes; an archive whose target no longer holds or reverted its replacement commits is kept for attention, and `worktree prune-archives` prunes by hand. A policy that sets `archiveRetention` needs 0.33.0 or later.",
+        version: 33,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "When the environment names the sessions of two harnesses, as when one agent starts another and the child inherits its parent's session variable, every command that records, binds, or checks the running session (`author attest`, `proposal record-authors`, `worktree claim`, `takeover`, `pause`, `detach`, `attach`, and `release`, `initialize --mode handoff --agent-id`, every `loop start`, `loop takeover`, a direct `loop turn-check`, and `workdir` inside a run) refuses with exit 2 before any lock or write until `--harness <id>` names the harness it runs in, and a `--harness` with no session variable here exits 5; elsewhere an unclear session counts as none. `--identity-receipt <json-or-@path>` (schema `identity-receipt`: harness, session, model ID, optional instance and parent session) is used first but must agree with the environment and with `--harness`, `--session`, `--agent`, and `--instance` on any command, or exits 2; it is never stored. Review independence is judged per agent instance: the same model or harness may review a different instance's work, and the same instance never counts as independent, under any session, harness, or model. No check became more permissive. Older runtimes reject `--identity-receipt` and still record the first session variable, so update every runtime nested agents use; a claim a nested agent made under its parent's session moves only by an approved `worktree takeover`.",
+        version: 33,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "Automatic cleanup in `loop end`, `loop finalize`, and `loop close-equivalent` never removes a checkout `loop rebaseline` registered as a late arrival, even when it is clean and the target contains it, and such a checkout no longer blocks the run from ending. An opening provider branch deleted during the run with no merged proposal or decision proving it finished is recorded by the final `remote-inventory build` as deleted outside the run (`externalDeletion { lastHeadRevision }`, summary `externallyDeletedBranches`) instead of refusing, and never counts as delivered, merged, or obsolete; a deletion while its proposal is still open still stops the build. `loop reconcile-remote-branches` pins its last head at `refs/simple-changes/external/<run>/<head>/<ms>` when Git has it and writes an immutable per-receipt record, and `loop finalize` reports it under `remoteBranches.deletedExternally` with a note, keeps `cleanupStatus` pending, and still closes the run; a closing run removes such pins 14 days after they were made. Older runtimes refuse to end a run whose receipt records one and still remove a clean rebaselined checkout.",
+        version: 33,
+      },
+      {
+        kind: "behavior",
+        summary:
+          "`loop finalize` and `loop close-equivalent` never rewrite the bytes of a dirty `.simple-changes.json` in the primary checkout, or of any path its trust receipt binds: when every other dirty primary path normalizes and the primary can fast-forward in place, the policy path is staged at the target's index entry and carried through the fast-forward unwritten, otherwise it is kept byte for byte, with a note either way; a target that committed different policy is still adopted, with consequential settings reduced until `setup` confirms it. `loop retire-absent-worktree` now accepts a removed run-created `author` or `preserved` checkout after the user approved its removal and while its branch is kept, when every path the branch's commits touched since the merge base equals the current target byte for byte; the retirement counts in `loop verify`, `loop close-equivalent`, and `loop recover-post-cleanup` while the branch stays at the proven head, and automatic cleanup keeps that branch. It refuses, recording nothing, a missing, renamed, checked-out, or shared branch or the target branch, a differing path, a merge commit, more than 200 commits, or a base outside the target, and deletes nothing.",
         version: 33,
       },
       {
@@ -1169,6 +1186,11 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       },
     ],
     noticeBullets: [
+      {
+        priority: 190,
+        summary:
+          "When one coding agent starts another, commands that record or check which agent is running now stop and ask for `--harness <id>` whenever both agents' sessions are in view, so the started agent is never recorded as its parent. Pass the harness the agent runs in, and update every copy of Simple Changes those agents use.",
+      },
       {
         priority: 190,
         summary:
@@ -1184,7 +1206,6 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
         summary:
           "Before starting an agent on work that needs an independent review, run `reviewer room` to check that a different reviewer will still be available afterwards, instead of finding out once the work is written.",
       },
-      // <!-- lineage -->
       {
         priority: 180,
         summary:

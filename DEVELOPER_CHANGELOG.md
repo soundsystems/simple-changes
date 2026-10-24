@@ -1,6 +1,6 @@
 # Developer changelog
 
-## 0.33.0 - 2026-10-23
+## 0.33.0 - 2026-10-24
 
 - Git location guard (new `lib/git-location.ts`, proposal "Fail closed on
   inconsistent shared review-ledger location"): `gitReportedPath(output,
@@ -264,6 +264,43 @@
   `setup-and-policy.md` (`--authoring-request`). 19efbf3 reads
   `git status --porcelain` outside the test's write snapshots, which
   removed a load flake from the "writes nothing" test.
+- Agent instance identity (`harness-session.ts`, new
+  `lib/identity-receipt.ts`, branch
+  `fix/0-33-0-agent-instance-identity`): `currentHarnessSession` no longer
+  picks by a fixed order. New `harnessSessionsIn`, `resolveHarnessSession`
+  (statuses `none`, `detected`, `selected`, `ambiguous`, `mismatch`),
+  `requireHarnessSession(command, environment, requested)` (exit 2 on
+  ambiguity, exit 5 on a `--harness` with no session variable),
+  `selectInvocationHarness` (kept in the process for one command, never in
+  an environment variable a nested harness would inherit),
+  `ambiguousSessionMessage`, `mismatchedSessionMessage`,
+  `isSessionHarness`, and `isHarnessSessionId`. The CLI runs one identity
+  preflight in `executeCommand` before dispatch (`invocationHarnessFor`,
+  `checksSession`, `SESSION_COMMANDS`): `author attest`,
+  `proposal record-authors`, `worktree claim`, `takeover`, `pause`,
+  `detach`, `attach`, `release`, `initialize --mode handoff --agent-id`,
+  every `loop start`, `loop takeover`, a `loop turn-check` without
+  `--hook`, and `workdir` inside a run ask before any lock or directory.
+  Elsewhere an unclear session counts as none: the Stop hook allows the
+  turn and `refreshControllerSession` keeps the recorded binding.
+  `--identity-receipt JSON|@FILE` (schema `identity-receipt`:
+  `schemaVersion` 1, `harness`, `session`, `model`, optional `instance`
+  and `parentSession`, no other keys) is checked by `parseIdentityReceipt`
+  and `receiptSession` against the environment and every `StatedIdentity`
+  argument (`--harness`, `--session`, `--agent`, `--instance`) on any
+  command, exit 2 on conflict, and is never stored. `review-ledger.ts`:
+  `executingIdentity` takes the command name and an optional
+  `identityReceipt`, `proposal record-authors` now passes `--harness`, and
+  `executorIndependence` compares instances first, then sessions, so the
+  same instance is `reviewer-not-independent` under any session, harness,
+  or model (also with `adversarial: true`), while the same model in
+  another instance is independent. No check became more permissive; the
+  setup reviewer-model question still refuses the author's own model under
+  "A different model in the same agent", with new wording
+  (`authoring-onboarding.ts`). `skill-check.ts` lists
+  `identity-receipt.ts` and its schema as vendor neutral. Docs:
+  `change-requests.md`, `inventory-and-concurrency.md`,
+  `review-and-merge.md`, `onboarding.md`.
 - Renamed changelog providers (`changelog-coordination.ts`): new
   `markedRepositoryProviders(repositoryRoot)` skips a
   `REPOSITORY_SKILL_ROOTS` entry whose real path leaves the repository,
@@ -317,7 +354,53 @@
   deletion proposal and a pending report. The fix (use
   `%(upstream:remotename)` and `%(upstream:remoteref)`, falling back to
   holding every value) is in the issue.
-<!-- lineage -->
+- Branches deleted outside the run (branch
+  `fix/0-33-0-rebaseline-and-external-deletes`): `deletedEntry` in
+  `remote-inventory.ts` no longer throws for a deleted opening branch with
+  no merged proof and no decision; it records classification `ambiguous`,
+  disposition `deleted-proven-obsolete`, `obsoleteProof: null`, and the
+  input key `externalDeletion: { lastHeadRevision }`, and the final build
+  summary gains `externallyDeletedBranches` (`[]` on an opening build). A
+  deletion while a proposal is still open still stops the build.
+  `remote-branch-reconciliation.ts` adds `isExternalDeletionShape`,
+  `validateExternalDeletion`, `externalDeletionsByBranch`,
+  `externalDeletionsForReceipt`, `splitExternalDeletion`, and
+  `splitSupersession`; `validateRemoteBranchReconciliation` takes
+  `externalDeletions` as a fourth argument, and an external deletion must
+  name the exact opening head, have no final ref or open final proposal,
+  and cannot combine with ancestry proof or a supersession.
+  `recordRemoteBranchReconciliation` (`loop-lease-remote.ts`) pins each
+  last head `git cat-file -e` finds at
+  `refs/simple-changes/external/<run>/<head>/<ms>` (`<ms>` is when the pin
+  was made) unless a pin of the run already keeps it, then writes the
+  immutable per-receipt record
+  `remote-branch-external-deletions/<run>/<receipt digest>.json` (schema
+  `remote-branch-external-deletions`); a failed `update-ref` refuses the
+  record and leaves nothing. `receiptSidecarPath`, `readReceiptSidecar`,
+  and `writeReceiptSidecar` take an optional receipt digest. The
+  finalization receipt gains `remoteBranches.deletedExternally [{ name,
+  lastHeadRevision, pinRef, pinExpiresAt?, note }]`, which makes
+  `cleanupStatus` pending without blocking the close. `finalizeLoop` runs
+  `pruneExpiredExternalDeletionPins` for every closed run and adds the
+  unpersisted `expiredExternalDeletionPins { removed, errors }` when it
+  touched a pin; `remote-branch-prune.ts` adds
+  `EXTERNAL_DELETION_REF_PREFIX`, `EXTERNAL_DELETION_PIN_RETENTION_DAYS`
+  (14, fixed), `externalDeletionPinRef`, `parseExternalDeletionPin`,
+  `listExternalDeletionPins`, and `liveExternalDeletionPin`, which checks
+  each pin live. `renderRemoteBranchCleanup` and the new
+  `renderExpiredExternalDeletionPins` print the branches and removed pins
+  in the plain finalize output. Test-only
+  `SIMPLE_CHANGES_TEST_FAIL_BEFORE_RECONCILIATION_LEASE_WRITE` under
+  `NODE_ENV=test`. Docs: `recovery.md` and `cleanup-and-completion.md`
+  ("Branches deleted outside the run").
+- Rebaselined late arrivals (`loop-lease-finalize.ts`): new
+  `rebaselinedPaths(lease)`; `automaticCleanupCandidates` skips those
+  paths (live removal, stale metadata pruning, finalize, and
+  close-equivalent all use it) and `repositoryCleanupBlockers` skips them
+  in the contained-worktree blocker, as `references/recovery.md` already
+  promised. A rebaselined checkout whose directory is gone is not a
+  candidate, so stale metadata pruning defers as for any unaudited missing
+  checkout.
 - Replacement lineage (new `lib/replacement-lineage.ts`, proposal
   "Support reviewed replacement lineage in worktree cleanup"):
   `parseReplacementLineageReceipt`, read-only `verifyReplacementLineage`
@@ -339,13 +422,28 @@
   reassign takeover of such a claim, or an attested author of a unique
   commit. The exact-byte proof is reused and recorded as `byteProof`, not
   required. Records: `replacement-lineage/lineage-<uuid>-intent.json` and
-  `-completed.json` (schema `replacement-lineage-removal`).
-<!-- lineage -->
+  `-completed.json` (schema `replacement-lineage-removal`), both naming
+  the archive and its pins. The boundary read refuses a state file in the
+  private Git directory, other than the index and the reflogs, over the
+  1 MiB the object scan reads, and the registry check, at the boundary
+  read and at the final comparison, also compares the head and branch Git
+  registers for the checkout. A difference at the final comparison runs
+  the private `keepAfterDrift`, which deletes nothing: the checkout, the
+  complete archive, and its pins stay, and the error names the archive,
+  its pin count, its expiry, and the `prune-archives --archive` command.
+  `deleteTrackedPins` catches anything a pin deletion throws, attempts
+  every pin, and returns those it could not delete. Six test-only seams
+  under `NODE_ENV=test` (`SIMPLE_CHANGES_TEST_MUTATE_AFTER_ARCHIVE`,
+  `_FAIL_ARCHIVE_MANIFEST`, `_FAIL_PIN_READBACK`, `_THROW_PIN_DELETE`,
+  `_COMMIT_BEFORE_ARCHIVE`, `_GROW_BEFORE_ARCHIVE`).
 - Worktree archive (new `lib/worktree-archive.ts`): `scanTree`,
   `copyTree`, `compareTrees`, `copyWorktreeIntoArchive`,
   `compareLiveWithManifest` (no Git), `verifyWorktreeArchive`,
   `restoreWorktreeArchive`, `extractWorktreeArchive`,
-  `listWorktreeArchives`, and `pruneWorktreeArchives`. The archive
+  `listWorktreeArchives`, and `pruneWorktreeArchives`, plus
+  `OBJECT_SCAN_LIMIT` (1048576) and `oversizedScanFiles`, so the copy
+  refuses, and removes the whole archive folder, when its Git tree holds a
+  state file the scan would have to skip. The archive
   `<common>/simple-changes/archives/<archive id>/` (mode 0700) holds
   `manifest.json` (schema `worktree-archive`), `checkout/`, `git/`, and
   during a restore `restoring.json`. The copy never follows a link, keeps
@@ -359,13 +457,22 @@
   `DEFAULT_MAX_ARCHIVE_BYTES` (2147483648),
   `ARCHIVE_FREE_SPACE_MARGIN_BYTES` (64 MiB), and `ARCHIVE_ID_PATTERN`.
   Pruning re-checks each archive's target ref, replacement commits, and
-  Git's own revert message, keeps a failing archive for attention, skips
-  one with a restore marker or an unparsable manifest, applies the size
-  cap oldest first and then expiry, deletes only the manifest's pins in
-  its own namespace by exact value, and appends to
-  `archives/prune-log.json` (schema `worktree-archive-prune`) before the
-  folder is removed.
-<!-- lineage -->
+  Git's own revert message, keeps a failing archive for attention, and
+  skips one with a restore marker or an unparsable manifest.
+  `automaticPlan` only classifies, into a creation-ordered queue with a
+  `due` flag per item, and the private `runQueue` executes it: while the
+  total is over `maxTotalBytes` it prunes the oldest for the size cap,
+  crediting `freedBytes` only once the folder is gone, so an archive kept
+  because a pin is blocked in the plan or its deletion fails when tried
+  (such as a stale `head.lock`) frees nothing and the next-oldest goes;
+  then every due archive. A dry run walks the same queue with the pin
+  plans. Each prune deletes only the manifest's pins in its own namespace
+  by exact value, and only once every pin is gone appends to
+  `archives/prune-log.json` (schema `worktree-archive-prune`) and removes
+  the folder; otherwise the archive stays whole in `keptForAttention`. A
+  damaged prune log refuses only a run that would prune
+  (`queueWouldPrune`). `ArchivePruneResult` gains `appliedRetention {
+  days, maxTotalBytes }`, and `pruned[]` no longer carries `pinRefsKept`.
 - Lineage wiring: `policy.ts` adds `DEFAULT_ARCHIVE_RETENTION_DAYS` (14),
   `DEFAULT_ARCHIVE_TOTAL_BYTES` (2147483648), and
   `archiveRetentionPolicy(policy)` (`days` 1 to 3650, `maxTotalBytes` 1
@@ -387,7 +494,6 @@
   `worktree restore-archive`, and `worktree prune-archives`. The
   persisted cleanup receipt and finalization receipt are unchanged. Docs:
   `references/replacement-lineage.md` and `references/recovery.md`.
-<!-- lineage -->
 - Lineage boundary: from the check before the archive through branch
   deletion, every Git command runs with `--no-pager --no-lazy-fetch
   --no-optional-locks -c core.hooksPath=/dev/null -c core.fsmonitor=false`
@@ -397,9 +503,9 @@
   `core.virtualFilesystem` is refused. It is hardening under the threat
   model, not a guarantee. Known gap, issue #20: a filter driver whose name
   does not read back exactly (empty, containing U+2028 or U+2029, or not
-  valid UTF-8) is not emptied. Tests: `worktree-archive.test.ts` (22),
-  `archive-retention.test.ts` (13), and `replacement-lineage.test.ts`
-  (88).
+  valid UTF-8) is not emptied. Tests: `worktree-archive.test.ts` (25),
+  `archive-retention.test.ts` (14), and `replacement-lineage.test.ts`
+  (94).
 - Docs prune (`docs/0-33-0-prune-skill-docs`): rules repeated across
   references now live in one canonical section that the others link to,
   in `SKILL.md` and seventeen references. `SKILL.md` went from 17,499 to
@@ -452,7 +558,21 @@
   `--verified-route`, `--readiness-evidence`, and
   `--observation-digest` as unknown options, and they lack
   `reviewer room` and `loop hold-unit`.
-<!-- lineage -->
+- Identity and external-deletion compatibility: `--identity-receipt` is
+  read for one command and never stored, and attestations, claims,
+  leases, and controller bindings keep their shapes. Older runtimes reject
+  `--identity-receipt`, ignore `--harness` outside `author attest`, and
+  under two session variables still record and bind the first one; a
+  claim a nested child made that way is bound to the parent's session, and
+  the existing approved `worktree takeover` moves it. `loop start --mode
+  resume` revalidates accepted attempts, so a review an older runtime
+  accepted from an equal instance under another session is refused. The
+  lease and embedded receipt keep their strict schemas; an older runtime
+  rejects a receipt entry for a branch deleted outside the run (it expects
+  `preserved-ambiguous` for an ambiguous branch, so `loop end` refuses),
+  its `loop reconcile-remote-branches` rejects the `externalDeletion` key,
+  and it ignores the new sidecar and never prunes the new refs. An older
+  runtime still removes a clean contained rebaselined checkout.
 - Lineage compatibility: the archives, the prune log, and the lineage
   records are new files under `<common>/simple-changes/`, and the pins are
   the new `refs/simple-changes/archives/` namespace, which older runtimes
@@ -490,28 +610,38 @@
   (34), `lock-wait.test.ts` (14, holder fixture
   `fixtures/lock-wait/holder.ts`), `held-units.test.ts` (30 plus the
   integration cases), `replan-approval-delta.test.ts` (17 plus fa117ae),
-  `reviewer-room.test.ts`, and `remote-branch-prune.test.ts` (26), and new
-  blocks in `changelog-coordination.test.ts` ("repository-owned renamed
-  changelog providers"), `remote-inventory.test.ts`, and
-  `loop-lease.test.ts`. Each behavior test was confirmed to fail on the
+  `reviewer-room.test.ts`, `remote-branch-prune.test.ts` (32, six of them
+  "branches deleted outside the run"), and `agent-instance-identity.test.ts`
+  (15), and new blocks in `changelog-coordination.test.ts`
+  ("repository-owned renamed changelog providers"),
+  `remote-inventory.test.ts`, `loop-lease.test.ts`,
+  `worktree-maintenance.test.ts` (rebaselined checkouts survive finalize
+  and close-equivalent), `turn-guard.test.ts` (session resolution), and
+  `onboarding.test.ts` (reviewer-model wording). Each behavior test was confirmed to fail on the
   code before it. The last full suite on `integration/0.33.0` before the
   threat-model merge (7ddc71d, load up to about 214) passed: 1574 pass, 1
   skip, publish-skill 19, update-local-forks 103.
-- Filed for later: #19 (upstream hold reads the last `merge` value),
-  <!-- lineage -->#20 (filter driver names that do not read back
-  exactly),<!-- /lineage --> #21 (one versioned state store with history
-  retention), #22 (record outcomes, reconcile branches, and remove proven
-  worktrees inside finalize), and #23 (a local refusal log to measure
-  guard payoff).
+- Filed for later: #19 (upstream hold reads the last `merge` value), #20
+  (filter driver names that do not read back exactly), #21 (one versioned
+  state store with history retention), #22 (record outcomes, reconcile
+  branches, and remove proven worktrees inside finalize), #23 (a local
+  refusal log to measure guard payoff), #24 (judge independence by agent
+  instance in the lineage, override, and handoff receipts, which still
+  compare agent IDs), and #25 (follow-ups for remote branches deleted
+  outside a run: sidecar write ordering, a deletion with its proposal
+  still open, pin pruning in close-equivalent, expiring the per-receipt
+  records, and configurable pin retention).
 - Guidance 33 adds behavior changes for the Git location guard, held
   units, the preserved-source handoff, bounded lock waits, replan deltas,
-  the reviewer room, and remote-branch deletion proposals and pending
-  reports<!-- lineage -->, and archived reviewed removals with automatic
-  expiry<!-- /lineage -->, an integration change for renamed changelog
-  providers, and an onboarding change for run-only policy requests, with
-  three notice bullets<!-- lineage --> plus one for
-  archived removals<!-- /lineage --> and no required answer.
-<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-23T12:51:46-05:00" -->
+  the reviewer room, remote-branch deletion proposals and pending reports,
+  archived reviewed removals with automatic expiry, agent instance
+  identity, rebaselined late arrivals and branches deleted outside the
+  run, and finalize policy preservation with run-created retirement, an
+  integration change for renamed changelog providers, and an onboarding
+  change for run-only policy requests. It has five notice bullets (nested
+  agents passing `--harness`, held units, pending host branches, the
+  reviewer room, and archived removals) and no required answer.
+<!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-24T01:34:00-05:00" -->
 
 ## 0.32.0 - 2026-10-20
 

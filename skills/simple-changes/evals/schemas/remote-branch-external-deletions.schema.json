@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/remote-branch-external-deletions.schema.json",
+  "title": "Simple Changes remote branches deleted outside the run",
+  "description": "Sidecar beside the loop lease, one immutable file per remote-branch reconciliation receipt at remote-branch-external-deletions/<runId>/<receiptDigest>.json. It names the opening branches that receipt records as deleted outside the run: absent from the final inventory with no merged proposal or decision that proves them obsolete, so this run never proposed or approved deleting them. The receipt records each one as deleted with classification ambiguous and a null obsoleteProof; it never counts as delivered or obsolete, and finalization reports it as needing attention. A later record never reads, rewrites, or removes an earlier file, so no failed or interrupted record can take evidence away from the receipt the lease holds. Kept out of the lease so older clients can still read the lease.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "receiptDigest", "deletions"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "receiptDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "deletions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/deletion"
+      }
+    }
+  },
+  "$defs": {
+    "deletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "lastHeadRevision"],
+      "properties": {
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastHeadRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        }
+      }
+    }
+  }
+}

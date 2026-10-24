@@ -324,7 +324,9 @@ as an audited re-baseline. Registered late arrivals stay owner-controlled and
 untouched; if one changes afterward, verification blocks again until its owner
 coordinates or an exact `loop allow` override is approved. Re-baseline grants
 no mutation, cleanup, or shipping authority over the registered worktrees and
-never obligates them in a later `close-equivalent` proof.
+never obligates them in a later `close-equivalent` proof. Automatic cleanup in
+`loop end` and `loop close-equivalent` leaves them in place even when they are
+clean and the target contains them, and they do not block the run from ending.
 
 **Standalone cleanup.** When no loop record exists at all and orphaned
 worktrees remain, `worktree cleanup --agent-id <you> --approved-by <who>

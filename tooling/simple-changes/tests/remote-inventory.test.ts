@@ -304,7 +304,7 @@ describe("remote-inventory build", () => {
     });
   });
 
-  test("refuses an unproven deletion until a decision names its proof", () => {
+  test("records an unproven deletion as deleted outside the run until a decision names its proof", () => {
     const opening = buildRemoteInventory(openingPages()).receipt;
     const final = finalPages();
     const [page] = final.branchPages;
@@ -315,9 +315,49 @@ describe("remote-inventory build", () => {
       (branch) => branch.name !== "old/closed"
     );
 
-    expect(() => buildRemoteInventory(final, { opening })).toThrow(
-      "old/closed (opening head"
+    // Nothing proves it obsolete and the run never approved deleting it, so
+    // the build records it as deleted outside the run, claiming nothing.
+    const external = buildRemoteInventory(final, { opening });
+    expect(
+      external.receipt.branches.find((branch) => branch.name === "old/closed")
+    ).toMatchObject({
+      classification: "ambiguous",
+      disposition: "deleted-proven-obsolete",
+      externalDeletion: { lastHeadRevision: SHA.closed },
+      finalHeadRevision: null,
+      initialHeadRevision: SHA.closed,
+      obsoleteProof: null,
+    });
+    expect(external.summary.deletedBranches).toEqual([
+      "fix/merged",
+      "old/closed",
+    ]);
+    expect(external.summary.externallyDeletedBranches).toEqual([
+      { lastHeadRevision: SHA.closed, name: "old/closed" },
+    ]);
+    const externalSplit = splitRemoteBranchReconciliationInput(
+      external.receipt
     );
+    expect(externalSplit.externalDeletions).toEqual([
+      { branch: "old/closed", lastHeadRevision: SHA.closed },
+    ]);
+    // Without its record, the same entry is refused, as an older runtime
+    // that cannot read the record refuses it.
+    expect(() =>
+      validateRemoteBranchReconciliation(
+        externalSplit.receipt,
+        externalSplit.ancestryProofs,
+        externalSplit.supersessions
+      )
+    ).toThrow("expected disposition preserved-ambiguous");
+    expect(
+      validateRemoteBranchReconciliation(
+        externalSplit.receipt,
+        externalSplit.ancestryProofs,
+        externalSplit.supersessions,
+        externalSplit.externalDeletions
+      ).targetBranch
+    ).toBe("main");
     const decided = buildRemoteInventory(final, {
       decisions: {
         deletedBranches: [

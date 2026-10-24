@@ -222,8 +222,10 @@ branch deleted during the run is recorded as `deleted-merged` only from
 provider records: a final merged proposal at its exact opening head, or the
 one proposal open at that head that later merged at another head, which adds
 `mergedHeadAncestry` for `loop reconcile-remote-branches` to check with Git.
-Any other deletion stops the build and names the branch: decide it from
-evidence or the user's approval, then pass `--decisions FILE`
+Any other deletion was not proposed or approved by this run, so the build
+records it as deleted outside the run (see
+[Branches deleted outside the run](#branches-deleted-outside-the-run)). When
+evidence or the user's approval does prove it obsolete, pass `--decisions FILE`
 (`evals/schemas/remote-inventory-decisions.schema.json`) with one
 `deletedBranches` entry naming either `obsoleteProof`
 (`target-contains-head` or `provider-diff-empty`) or a `supersession`, plus
@@ -232,6 +234,39 @@ command still checks every proof. It also refuses a branch or proposal listed
 twice (the listing shifted while paging; fetch again), a broken cursor chain,
 a missing target, a deleted branch with an open proposal, and a branch whose
 protection changed during the run.
+
+### Branches deleted outside the run
+
+An opening branch that is absent from the final inventory, with no merged
+proposal that proves it obsolete and no decision for it, was deleted by
+someone else: this run never proposed or approved deleting it. The build
+records it with classification `ambiguous`, disposition
+`deleted-proven-obsolete`, a null `obsoleteProof`, and `externalDeletion: {
+lastHeadRevision }` naming its opening head, and lists it under
+`externallyDeletedBranches` in the summary. It never counts as delivered,
+merged, or obsolete. A branch deleted while a proposal on it is still open
+still stops the build.
+
+`loop reconcile-remote-branches` keeps the record beside the lease in its own
+immutable file per receipt,
+`remote-branch-external-deletions/<run-id>/<receipt digest>.json` (a later
+record never rewrites it, so a failed or interrupted record never takes it
+from the receipt the lease holds), and pins each last head that
+Git has locally at `refs/simple-changes/external/<run-id>/<head>/<ms>`, where
+`<ms>` is when the pin was made. A head that is not local is recorded without
+a pin. `loop finalize` lists each branch under
+`remoteBranches.deletedExternally` with `lastHeadRevision`, `pinRef` (null
+unless the pin exists now at that head), `pinExpiresAt`, and a `note` that
+starts "This branch was deleted outside this run; its last head was ...". Any
+entry makes `cleanupStatus` `pending`; it never blocks closing the run. Tell
+the user, and restore the branch from the pin or fetch its head (GitLab keeps
+a merge request's head at `refs/merge-requests/<iid>/head`) if the work is
+still needed. When a later run closes, `loop finalize` removes each pin of
+another run 14 days after the time in its name, by exact value, and reports
+what it removed under `expiredExternalDeletionPins`.
+
+Older runtimes cannot read the record, so they refuse that receipt at `loop
+end` and cannot record it; they still read the lease.
 
 ### Deletion proposals and held branches
 
@@ -518,6 +553,10 @@ run-created and opening worktree removals remain in the historical audit.
 Because Git prunes stale registrations together, finalization defers all
 metadata pruning if any missing checkout is outside the freshly audited set.
 Unique work, retained checkouts, and active claims keep their registrations.
+A late arrival that `loop rebaseline` registered is never a cleanup candidate,
+even when it is clean and the target contains it, and it never blocks the run
+from ending; a later run that registers it at its opening treats it like any
+other opening checkout.
 `prepare-agent` creates each worktree directly beside the primary checkout, so
 removing it with Git leaves nothing behind. Finalization never removes a
 worktree's parent folder, including the managed

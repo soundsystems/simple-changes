@@ -85,6 +85,13 @@ type ProposalRecord = RemoteBranchReconciliationEntry["proposals"][number];
 
 /** A receipt branch entry as `loop reconcile-remote-branches` accepts it. */
 export type RemoteInventoryBranchEntry = RemoteBranchReconciliationEntry & {
+  /**
+   * An opening branch deleted outside the run: no merged proposal or decision
+   * proves it obsolete, so the build records it without claiming delivery,
+   * merge, or obsolescence. `loop reconcile-remote-branches` keeps it in a
+   * sidecar and pins the last head when it is present locally.
+   */
+  externalDeletion?: { lastHeadRevision: string };
   mergedHeadAncestry?: {
     initialHeadRevision: string;
     mergedHeadRevision: string;
@@ -129,6 +136,14 @@ export interface RemoteInventoryBuild {
     branches: number;
     deletedBranches: string[];
     deletionProposals: RemoteInventoryDeletionProposal[];
+    /**
+     * Opening branches deleted outside the run, which no merged proposal or
+     * decision proves obsolete. Also listed in `deletedBranches`.
+     */
+    externallyDeletedBranches: Array<{
+      lastHeadRevision: string;
+      name: string;
+    }>;
     /** Merged-proposal heads not proposed, with every reason. */
     heldBranches: Array<{
       headRevision: string;
@@ -459,6 +474,7 @@ const buildOpening = (snapshot: Snapshot): RemoteInventoryBuild => {
       branches: branches.length,
       deletedBranches: [],
       deletionProposals: [],
+      externallyDeletedBranches: [],
       heldBranches: [],
       movedBranches: [],
       proposals: branches.reduce(
@@ -614,9 +630,19 @@ const deletedEntry = (
     return { ...base, ...merged };
   }
   if (!decision) {
-    return fail(
-      `branch ${opening.name} (opening head ${initialHead}) was deleted without a merged proposal that proves it obsolete; add a --decisions entry naming target-contains-head, provider-diff-empty, or a user-approved supersession, or report it to the user`
-    );
+    // Nothing proves the work obsolete and this run never proposed or
+    // approved deleting it, so it was deleted outside the run. Record that
+    // truthfully: ambiguous, with no proof, and never delivered or obsolete.
+    return {
+      ...base,
+      classification: "ambiguous",
+      disposition: "deleted-proven-obsolete",
+      evidence: [
+        `Deleted outside this run: present at ${initialHead} in the opening inventory and absent from the final inventory, with no merged proposal or decision that proves it obsolete. This records no delivery, merge, or obsolescence; its last known head is ${initialHead}.`,
+      ],
+      externalDeletion: { lastHeadRevision: initialHead },
+      obsoleteProof: null,
+    };
   }
   // The validator judges an audited deletion by the final proposal records.
   const states = new Set(finalRecords.map((proposal) => proposal.state));
@@ -779,7 +805,11 @@ const presentDecisionProposal = (
       `once it is deleted, the build would refuse it (${reason(error)})`
     );
   }
-  const { mergedHeadAncestry, supersession, ...entry } = deleted;
+  const { externalDeletion, mergedHeadAncestry, supersession, ...entry } =
+    deleted;
+  if (externalDeletion) {
+    return refuse("it has no decision to record its deletion");
+  }
   if (mergedHeadAncestry || entry.disposition === "deleted-merged") {
     return refuse("its merged proposal already proves it; remove its decision");
   }
@@ -977,7 +1007,8 @@ const buildFinal = (
   const validated = validateRemoteBranchReconciliation(
     split.receipt,
     split.ancestryProofs,
-    split.supersessions
+    split.supersessions,
+    split.externalDeletions
   );
   if (
     remoteInventoryDigest(opening, "final") !==
@@ -999,6 +1030,10 @@ const buildFinal = (
       branches: snapshot.branches.size,
       deletedBranches: [...deleted],
       deletionProposals: [...merged.deletionProposals, ...approved],
+      externallyDeletedBranches: split.externalDeletions.map((deletion) => ({
+        lastHeadRevision: deletion.lastHeadRevision,
+        name: deletion.branch,
+      })),
       heldBranches: merged.heldBranches,
       movedBranches: moved,
       proposals: branches.reduce(

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   lstatSync,
@@ -24,6 +25,7 @@ import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/polic
 import {
   deleteTrackedPins,
   GIT_ENVIRONMENT_REDIRECTS,
+  REFLOG_PIN_LIMIT,
   type ReplacementLineageOutcome,
   type ReplacementLineageReceipt,
   replacementLineageDirectory,
@@ -37,6 +39,7 @@ import { validateSchema } from "../../../skills/simple-changes/scripts/lib/schem
 import {
   ARCHIVE_ID_PATTERN,
   type ArchivePinRef,
+  archivePinNamespace,
   compareTrees,
   listWorktreeArchives,
   readArchivePruneLog,
@@ -52,6 +55,7 @@ import {
   worktreeTakeoversPath,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import {
+  pruneArchivedWorktrees,
   pruneRepository,
   readWorktreeCleanups,
   restoreArchivedWorktree,
@@ -2451,5 +2455,164 @@ describe("reviewed replacement lineage cleanup", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(decoder.decode(result.stdout)).toMatch(MARKER_UNREADABLE_PATTERN);
+  });
+});
+
+describe("commits only the checkout's reflogs keep", () => {
+  const privateDirectory = (lineage: LineageFixture): string =>
+    git(lineage.path, ["rev-parse", "--absolute-git-dir"]);
+
+  // A commit on the source branch that was then dropped by moving the
+  // branch back: only the HEAD and branch reflogs name it, like an
+  // amended-away unpushed commit. ORIG_HEAD, which `git worktree add`
+  // wrote and which gets a pin of its own, is removed, so the draft's pin
+  // is the only object pin.
+  const reflogOnlyDraft = (lineage: LineageFixture): string => {
+    writeFixture(lineage.path, "draft.ts", "export const draft = 1;\n");
+    git(lineage.path, ["add", "draft.ts"]);
+    git(lineage.path, ["commit", "-m", "Unpushed draft"]);
+    const draft = git(lineage.path, ["rev-parse", "HEAD"]);
+    git(lineage.path, ["checkout", "-q", "-B", "source-unit", lineage.headSha]);
+    rmSync(join(privateDirectory(lineage), "ORIG_HEAD"), { force: true });
+    return draft;
+  };
+
+  // `count` commits, written by one fast-import on a ref deleted at once,
+  // that only the HEAD reflog names, as if each had been checked out.
+  const reflogOnlyCommits = (lineage: LineageFixture, count: number) => {
+    const stream: string[] = [];
+    for (let index = 1; index <= count; index += 1) {
+      stream.push(
+        "commit refs/drafts/series",
+        `mark :${index}`,
+        `committer Draft <draft@example.com> ${1_700_000_000 + index} +0000`,
+        `data ${`Draft ${index}`.length}`,
+        `Draft ${index}`,
+        ...(index === 1 ? [`from ${lineage.headSha}`] : []),
+        ""
+      );
+    }
+    const marks = join(lineage.fixture.base, `draft-marks-${count}`);
+    const imported = spawnSync(
+      [
+        "git",
+        "-C",
+        lineage.path,
+        "fast-import",
+        "--quiet",
+        `--export-marks=${marks}`,
+      ],
+      { stdin: Buffer.from(`${stream.join("\n")}\n`) }
+    );
+    expect(imported.exitCode).toBe(0);
+    git(lineage.path, ["update-ref", "-d", "refs/drafts/series"]);
+    const commits = readFileSync(marks, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => line.split(" ")[1] ?? "");
+    const lines = commits.map(
+      (commit, index) =>
+        `${commits[index - 1] ?? lineage.headSha} ${commit} Draft <draft@example.com> ${1_700_000_000 + index} +0000\tcheckout: moving to draft ${index}`
+    );
+    lines.push(
+      `${commits.at(-1) ?? lineage.headSha} ${lineage.headSha} Draft <draft@example.com> 1700099999 +0000\tcheckout: moving back`
+    );
+    const log = join(privateDirectory(lineage), "logs", "HEAD");
+    mkdirSync(dirname(log), { recursive: true });
+    appendFileSync(log, `${lines.join("\n")}\n`);
+    // `git worktree add` wrote ORIG_HEAD, whose object gets a pin of its
+    // own; without it every object pin is one of these commits.
+    rmSync(join(privateDirectory(lineage), "ORIG_HEAD"), { force: true });
+    return commits;
+  };
+
+  const objectPinsOf = (report: {
+    reviewedReplacement: ReplacementLineageOutcome | null;
+  }): string[] =>
+    (report.reviewedReplacement?.pinRefs ?? []).filter((ref) =>
+      ref.includes("/objects/")
+    );
+
+  test("a dropped commit is pinned with the archive, outlives gc, and is pruned with it", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const draft = reflogOnlyDraft(lineage);
+    expect(git(root, ["branch", "--all", "--contains", draft])).toBe("");
+
+    const report = prune(lineage, receiptFor(lineage));
+
+    expect(report.errors).toEqual([]);
+    expect(report.reviewedReplacement?.worktreeRemoved).toBe(true);
+    expect(branchExists(root, "source-unit")).toBe(false);
+    const archive = reportedArchive(report);
+    const pin = `${archivePinNamespace(archive.archiveId)}/objects/${draft}`;
+    // The commits the head already keeps get no pin of their own.
+    expect(objectPinsOf(report)).toEqual([pin]);
+    expect(readWorktreeArchiveManifest(archive.path).pinRefs).toContainEqual({
+      object: draft,
+      ref: pin,
+    });
+    // The checkout and its branch are gone with their reflogs, so only the
+    // pin keeps the draft through an aggressive gc.
+    git(root, [
+      "reflog",
+      "expire",
+      "--expire=now",
+      "--expire-unreachable=now",
+      "--all",
+    ]);
+    git(root, ["gc", "--quiet", "--prune=now"]);
+    expect(git(root, ["cat-file", "-t", draft])).toBe("commit");
+
+    const pruned = pruneArchivedWorktrees({
+      approvedBy: APPROVER,
+      archiveId: archive.archiveId,
+      dryRun: false,
+      reason: "The draft is not needed.",
+      repositoryPath: root,
+    });
+    expect(pruned.pruned[0]?.pinRefsDeleted).toContain(pin);
+    expect(pinRefs(root)).toBe("");
+  });
+
+  test(`reflogs that keep more than ${REFLOG_PIN_LIMIT} commits refuse the removal and keep the checkout`, () => {
+    const lineage = lineageFixture(false);
+    reflogOnlyCommits(lineage, REFLOG_PIN_LIMIT + 1);
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      new RegExp(
+        `its reflogs name ${REFLOG_PIN_LIMIT + 1} commits that no branch, tag, remote branch or other ref keeps, more than the ${REFLOG_PIN_LIMIT} one archive pins`,
+        "u"
+      )
+    );
+    expectNothingWritten(lineage);
+  });
+
+  test(`reflogs that keep exactly ${REFLOG_PIN_LIMIT} commits are all pinned, and pruned in one go`, () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const commits = reflogOnlyCommits(lineage, REFLOG_PIN_LIMIT);
+
+    const report = prune(lineage, receiptFor(lineage));
+
+    expect(report.errors).toEqual([]);
+    expect(report.reviewedReplacement?.worktreeRemoved).toBe(true);
+    const archive = reportedArchive(report);
+    const namespace = archivePinNamespace(archive.archiveId);
+    const byName = (left: string, right: string) => left.localeCompare(right);
+    expect(objectPinsOf(report).sort(byName)).toEqual(
+      commits.map((commit) => `${namespace}/objects/${commit}`).sort(byName)
+    );
+    const pruned = pruneArchivedWorktrees({
+      approvedBy: APPROVER,
+      archiveId: archive.archiveId,
+      dryRun: false,
+      reason: "The drafts are not needed.",
+      repositoryPath: root,
+    });
+    expect(pruned.pruned[0]?.pinRefsDeleted).toHaveLength(
+      report.reviewedReplacement?.pinRefs.length ?? 0
+    );
+    expect(pinRefs(root)).toBe("");
   });
 });

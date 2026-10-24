@@ -700,6 +700,9 @@ export const compareTrees = (
   actual: ArchiveTree
 ): string[] => treeDifferences(expected, actual, "");
 
+// The reflogs are not scanned as text: the caller names the commits they
+// hold through Git, which also reads the branch's reflog in the common
+// directory and a ref backend that keeps no reflog files.
 const isObjectNamingFile = (item: WalkedEntry): boolean =>
   item.type === "file" &&
   item.relative !== "index" &&
@@ -735,8 +738,9 @@ const readSmallFile = (path: string): string => {
 /**
  * Distinct 40- and 64-digit hexadecimal tokens in the regular files of a Git
  * directory tree, sorted: the objects its state files may name (sequencer
- * and rebase state, autostash, pseudo-refs). The index, the reflogs and
- * files over 1 MiB are not read. The caller resolves each candidate.
+ * and rebase state, autostash, pseudo-refs). The index, the reflogs (which
+ * the caller reads through Git) and files over 1 MiB are not read. The
+ * caller resolves each candidate.
  */
 export const objectIdCandidates = (gitTreeRoot: string): string[] => {
   const found = new Set<string>();

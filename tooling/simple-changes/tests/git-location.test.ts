@@ -526,6 +526,8 @@ describe("lost Git answers", () => {
       ["config", "--get", "branch.main.remote"],
       ["remote", "get-url", "--all", "origin"],
       ["worktree", "list", "--porcelain"],
+      ["merge-base", "a^{commit}", "b^{commit}"],
+      ["-c", "core.quotePath=false", "merge-base", "--all", "a", "b"],
     ]) {
       expect([args, gitAnswerIsRequired(args)]).toEqual([args, true]);
     }
@@ -539,6 +541,7 @@ describe("lost Git answers", () => {
       ["symbolic-ref", "HEAD", "refs/heads/main"],
       ["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
       ["config", "--remove-section", "branch.x"],
+      ["merge-base", "--is-ancestor", "a", "b"],
     ]) {
       expect([args, gitAnswerIsRequired(args)]).toEqual([args, false]);
     }

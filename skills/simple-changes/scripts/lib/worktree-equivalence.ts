@@ -108,6 +108,44 @@ const revisionList = (cwd: string, range: string): string[] =>
     .map((line) => line.trim())
     .filter(Boolean);
 
+const COUNT_PATTERN = /^[0-9]+$/u;
+
+const lostCount = (range: string, what: string): SimpleChangesError =>
+  new SimpleChangesError(
+    `git rev-list ${what} for ${range} twice, so its answer was lost on its way to this process (seen under heavy load). Refusing to act on a partial answer; retry the command.`,
+    EXIT_CODES.inventory
+  );
+
+// How many commits `range` holds. Git always prints a number for this, so
+// a missing or partial one is asked once more, then refused.
+const revisionCount = (cwd: string, range: string): number => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const counted = runGit(cwd, ["rev-list", "--count", range]).stdout.trim();
+    if (COUNT_PATTERN.test(counted)) {
+      return Number.parseInt(counted, 10);
+    }
+  }
+  throw lostCount(range, "printed no count");
+};
+
+// The commits in `range`, which Git counted as `count`. A listing that
+// disagrees with the count lost its answer, or part of it, on the way here:
+// it is asked once more, then refused, so a lost listing never reads as
+// "every commit has a match".
+const countedRevisionList = (
+  cwd: string,
+  range: string,
+  count: number
+): string[] => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const listed = revisionList(cwd, range);
+    if (listed.length === count) {
+      return listed;
+    }
+  }
+  throw lostCount(range, `listed other than the ${count} commits it counted`);
+};
+
 const patchIdFor = (cwd: string, sha: string): string | null => {
   const diff = rawGit(cwd, [
     "diff-tree",
@@ -165,17 +203,9 @@ export const commitEquivalenceAgainstTarget = (
     };
   }
   const mergeBase = mergeBaseResult.stdout.trim();
-  const commitCount = Number.parseInt(
-    runGit(repositoryPath, [
-      "rev-list",
-      "--count",
-      `${mergeBase}..${headSha}`,
-    ]).stdout.trim(),
-    10
-  );
+  const commitCount = revisionCount(repositoryPath, `${mergeBase}..${headSha}`);
   if (
     typeof options.maxCommits === "number" &&
-    Number.isInteger(commitCount) &&
     commitCount > options.maxCommits
   ) {
     return {
@@ -198,9 +228,10 @@ export const commitEquivalenceAgainstTarget = (
     }
     options.targetPatchIdCache?.set(targetRange, targetPatchIds);
   }
-  const commits: WorktreeEquivalenceCommit[] = revisionList(
+  const commits: WorktreeEquivalenceCommit[] = countedRevisionList(
     repositoryPath,
-    `${mergeBase}..${headSha}`
+    `${mergeBase}..${headSha}`,
+    commitCount
   ).map((sha) => {
     const patchId = patchIdFor(repositoryPath, sha);
     const matchedTargetSha = patchId

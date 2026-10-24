@@ -618,12 +618,16 @@ const gitSubcommand = (args: readonly string[]): readonly string[] => {
  * question: an empty value still prints a line break. Zero bytes with exit 0
  * then means the answer was lost between Git and this process, which has been
  * seen under heavy load. Listings that may be empty (`remote`, `status`,
- * `for-each-ref`) are not such questions.
+ * `for-each-ref`) are not such questions, and neither is
+ * `merge-base --is-ancestor`, which answers with its exit code alone.
  */
 export const gitAnswerIsRequired = (args: readonly string[]): boolean => {
   const [subcommand, ...rest] = gitSubcommand(args);
   const positional = rest.filter((argument) => !argument.startsWith("-"));
   switch (subcommand) {
+    case "merge-base":
+      // Exit 0 means at least one commit was found, and it is printed.
+      return !rest.includes("--is-ancestor");
     case "rev-parse":
       return (
         rest.length > 0 &&

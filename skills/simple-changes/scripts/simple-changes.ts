@@ -139,6 +139,7 @@ import { buildPreviewPlan } from "./lib/planner.ts";
 import {
   applyPolicyRequest,
   loadPersonalPolicy,
+  type PolicyRequestReport,
   parsePolicyRequest,
   resolvePersonalPolicyPath,
   withSavedExecGuard,
@@ -4266,14 +4267,26 @@ const runLoopStart = (options: CliOptions): void => {
     options.policyRequest === undefined
       ? null
       : parsePolicyRequest(options.policyRequest);
+  // Without --changelog-required loop start checks no initialization, so a
+  // valid request is reported as unused rather than silently dropped.
+  let policyRequestReport: PolicyRequestReport | null =
+    policyRequest === null
+      ? null
+      : {
+          reason:
+            "loop start checks initialization only with --changelog-required; the request was validated and not otherwise used.",
+          status: "ignored",
+        };
   if (options.changelogRequired) {
     const inventory = captureInventory(options.repo);
     const changelogCoordination = inspectChangelogCoordination(
       inventory.repository.primaryCheckout
     );
+    const policyLayer = applyPolicyRequest(inventory.policy, policyRequest);
+    policyRequestReport = policyLayer.report;
     const initialization = inspectInitialization(
       options.mode,
-      applyPolicyRequest(inventory.policy, policyRequest).policy,
+      policyLayer.policy,
       changelogCoordination,
       { changelogRequired: true }
     );
@@ -4343,13 +4356,14 @@ const runLoopStart = (options: CliOptions): void => {
       inheritedAwaitingUser: resumedQuestions,
       lease,
       manifestDigest: loopManifestDigest(lease),
+      ...(policyRequestReport ? { policyRequest: policyRequestReport } : {}),
       ...(reviewLedger ? { reviewLedger } : {}),
       removedWorkDirectories,
       runtimeFreshness: freshness,
       workDir,
     },
     options.json,
-    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${workDir ? `Work directory: ${workDir}\n` : ""}${
+    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${workDir ? `Work directory: ${workDir}\n` : ""}${policyRequestReport ? `Run-only policy request: ${policyRequestReport.status}. ${policyRequestReport.reason}\n` : ""}${
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""

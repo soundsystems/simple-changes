@@ -446,6 +446,7 @@ describe("run-only setup and --policy-request", () => {
     expect(existsSync(activeLoopPath(current.repository))).toBe(false);
     const started = start(["--policy-request", JSON.stringify(policy)]);
     expect(started.code).toBe(0);
+    expect(started.json.policyRequest).toMatchObject({ status: "applied" });
     expect(existsSync(activeLoopPath(current.repository))).toBe(true);
   });
 
@@ -549,6 +550,26 @@ describe("run-only setup and --policy-request", () => {
     expect(
       (underRepository.json.policyRequest as { reason: string }).reason
     ).toContain("cannot override or loosen it");
+    // loop start keeps the saved policy and says the request was ignored.
+    const loop = current.run([
+      "loop",
+      "start",
+      "--mode",
+      "queue",
+      "--agent-id",
+      "controller",
+      "--changelog-required",
+      "--policy-request",
+      JSON.stringify(request),
+      "--json",
+      "--repo",
+      current.repository.root,
+    ]);
+    expect(loop.code).toBe(0);
+    expect(loop.json.policyRequest).toMatchObject({ status: "ignored" });
+    expect((loop.json.policyRequest as { reason: string }).reason).toContain(
+      "saved repository policy"
+    );
     // Negative control: with nothing saved the same request applies.
     expect(
       initialize(fixture(), "handoff", [

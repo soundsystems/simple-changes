@@ -137,7 +137,9 @@ import {
 } from "./lib/permission-bundle.ts";
 import { buildPreviewPlan } from "./lib/planner.ts";
 import {
+  applyPolicyRequest,
   loadPersonalPolicy,
+  parsePolicyRequest,
   resolvePersonalPolicyPath,
   withSavedExecGuard,
   writeGuidanceAcknowledgement,
@@ -274,6 +276,7 @@ import type {
   LoopLease,
   ReleaseTagReceipt,
   RepoPolicy,
+  RepositoryInventory,
   RequestMode,
   SchemaName,
   ShipHoldAction,
@@ -354,6 +357,7 @@ Usage:
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--acknowledge-push-scope]
     [--proposal ID --head SHA] [--authoring-request JSON|@FILE]
+    [--policy-request JSON|@FILE]
     [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
@@ -389,7 +393,7 @@ Usage:
     [--json]
   simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
     [--opening-remote-inventory FILE] [--authoring-request JSON|@FILE]
-    [--json] [--repo PATH]
+    [--policy-request JSON|@FILE] [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop replan-status [--json] [--repo PATH]
   simple-changes loop archive-recorded --run-id ID --agent-id ID
@@ -628,6 +632,9 @@ interface CliOptions {
   pagesPath?: string;
   pauseReceiptId?: string;
   pendingPath?: string;
+  // initialize and loop start --policy-request: the `policy` object a
+  // run-only setup printed, as JSON or @path, applied and never written.
+  policyRequest?: string;
   positional: string[];
   priorReceiptPath?: string;
   productionAuthorized: boolean;
@@ -736,6 +743,7 @@ const VALUED_OPTIONS = new Set([
   "--output",
   "--pages",
   "--pending",
+  "--policy-request",
   "--pause-receipt",
   "--prior-receipt",
   "--production",
@@ -1195,6 +1203,7 @@ const applyLoopValuedOption = (
     "--pages": "pagesPath",
     "--pause-receipt": "pauseReceiptId",
     "--pending": "pendingPath",
+    "--policy-request": "policyRequest",
     "--prior-receipt": "priorReceiptPath",
     "--provider-receipt": "providerReceiptPath",
     "--purpose": "purpose",
@@ -2135,11 +2144,58 @@ const interactiveAuthoringContext = (
   }
 };
 
+// What a run-only setup hands to the rest of its run: the exact values to pass
+// as `--policy-request` and `--authoring-request` to every later `initialize`
+// and `loop start`. Null unless a run-only setup was confirmed.
+interface RunOnlyRequest {
+  authoringRequest: string | null;
+  policyRequest: string;
+}
+
+const runOnlyRequestFor = (
+  confirmed: boolean,
+  scope: string,
+  policy: RepoPolicy,
+  authoringAnswer: unknown
+): RunOnlyRequest | null =>
+  confirmed && scope === "run"
+    ? {
+        authoringRequest:
+          authoringAnswer === null || authoringAnswer === undefined
+            ? null
+            : JSON.stringify(authoringAnswer),
+        policyRequest: JSON.stringify(policy),
+      }
+    : null;
+
+const shellQuoted = (value: string): string =>
+  `'${value.replaceAll("'", "'\\''")}'`;
+
+const renderRunOnlyRequest = (request: RunOnlyRequest | null): string =>
+  request
+    ? `\nNothing was saved. Pass this to every later initialize and loop start in this run:\n--policy-request ${shellQuoted(request.policyRequest)}\n${request.authoringRequest ? `Pass this to every later initialize, proposal record-review, and loop start --mode resume in this run:\n--authoring-request ${shellQuoted(request.authoringRequest)}\n` : ""}`
+    : "";
+
+interface SetupRun {
+  result: Record<string, unknown> & {
+    confirmed: boolean;
+    policy: RepoPolicy;
+    runRequest: RunOnlyRequest | null;
+    scope: string;
+  };
+  text: string;
+}
+
 const runSetup = async (options: CliOptions): Promise<void> => {
   if (options.authoring !== undefined) {
     await runAuthoringSetup(options, options.authoring);
     return;
   }
+  const setup = await performSetup(options);
+  writeOutput(setup.result, options.json, setup.text);
+};
+
+const performSetup = async (options: CliOptions): Promise<SetupRun> => {
   const context = setupContext(options.repo);
   const instructionTargets = options.scope
     ? discoverInstructionTargets(
@@ -2347,8 +2403,17 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       uiArtifactsRelevant: options.uiArtifacts,
       written,
     };
+    const runRequest = runOnlyRequestFor(
+      selection.confirmed,
+      selection.scope,
+      policy,
+      result.authoringAnswer
+    );
     const outcome = setupOutcome(selection.confirmed, written, path);
-    writeOutput(result, options.json, `${selection.summary}\n\n${outcome}\n`);
+    return {
+      result: { ...result, runRequest },
+      text: `${selection.summary}\n\n${outcome}\n${renderRunOnlyRequest(runRequest)}`,
+    };
   } finally {
     interactive.close();
   }
@@ -2658,7 +2723,12 @@ const renderInitialization = (status: InitializationStatus): string => {
       `Released worktree claim ${status.handoffClaimRelease.claimId} on ${status.handoffClaimRelease.path}; this finished work is now shippable by any controller.`
     );
   }
-  if (status.policyTrust === "untrusted") {
+  if (status.policyRequest) {
+    lines.push(
+      `Run-only policy request: ${status.policyRequest.status}. ${status.policyRequest.reason}`
+    );
+  }
+  if (status.policyTrust === "untrusted" && status.policySource !== "request") {
     lines.push(
       "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
     );
@@ -2836,46 +2906,26 @@ const initializationAuthoring = (
   };
 };
 
-const runInitialize = async (options: CliOptions): Promise<void> => {
-  if (!options.mode) {
-    throw new SimpleChangesError(
-      "initialize requires --mode",
-      EXIT_CODES.usage
-    );
-  }
-  if (options.ready && options.mode !== "handoff") {
-    throw new SimpleChangesError(
-      "--ready is valid only with --mode handoff",
-      EXIT_CODES.usage
-    );
-  }
-  // The request layer is validated before anything is read or changed: an
-  // invalid --authoring-request is a usage error that leaves every claim
-  // where it was.
-  const authoringRequest =
-    options.authoringRequest === undefined
-      ? null
-      : parseAuthoringRequest(options.authoringRequest);
-  const inventory = captureInventory(options.repo);
-  const activeLoop = readLoopLease(options.repo);
-  if (activeLoop && !["preview", "pause", "handoff"].includes(options.mode)) {
-    const agentId = requireCliOption(
-      options.agentId,
-      "--agent-id while an integration loop is active"
-    );
-    guardLoopMutation(options.repo, activeLoop.runId, agentId);
-  }
-  const changelogCoordination = inspectChangelogCoordination(
-    inventory.repository.primaryCheckout
-  );
+// Everything `initialize` reports for one policy layer and authoring request.
+// A proceeding handoff releases the author's own claim here, unless an
+// earlier status in the same invocation already did.
+const initializationStatusFor = (
+  options: CliOptions,
+  mode: InitializationMode,
+  inventory: RepositoryInventory,
+  changelogCoordination: ChangelogCoordination,
+  policyLayer: ReturnType<typeof applyPolicyRequest>,
+  authoringRequest: AuthoringSidecar | null,
+  earlierRelease: { claimId: string; path: string } | null
+): InitializationStatus => {
   const authoring = initializationAuthoring(
     inventory.repository.primaryCheckout,
-    options.mode,
+    mode,
     authoringRequest
   );
   const inspected = inspectInitialization(
-    options.mode,
-    inventory.policy,
+    mode,
+    policyLayer.policy,
     changelogCoordination,
     {
       changelogRequired: options.changelogRequired,
@@ -2896,17 +2946,21 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   // A proceeding handoff declares the current checkout finished: release the
   // author's own claim there so the work becomes an ordinary stable unit that
   // any controller may ship, instead of a concurrent-author exclusion.
-  const handoffClaimRelease =
-    inspected.handoffAction === "proceed" && options.agentId
+  const released =
+    earlierRelease === null &&
+    inspected.handoffAction === "proceed" &&
+    options.agentId
       ? releaseHandoffWorktreeClaim(options.repo, options.agentId)
       : null;
-  const status = validateSchema<InitializationStatus>("initialization", {
+  const handoffClaimRelease =
+    earlierRelease ??
+    (released ? { claimId: released.claimId, path: released.path } : null);
+  return validateSchema<InitializationStatus>("initialization", {
     ...inspected,
     ...authoring.fields,
     changelogInstall: pendingChangelogInstallOffer(changelogCoordination),
-    handoffClaimRelease: handoffClaimRelease
-      ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
-      : null,
+    handoffClaimRelease,
+    policyRequest: policyLayer.report,
     reviewer,
     reviewLoopRule: initializationInstructionRule(
       "review-loop",
@@ -2928,6 +2982,54 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
     ),
     turnEndGuard: initializationTurnEndGuard(),
   });
+};
+
+const runInitialize = async (options: CliOptions): Promise<void> => {
+  const { mode } = options;
+  if (!mode) {
+    throw new SimpleChangesError(
+      "initialize requires --mode",
+      EXIT_CODES.usage
+    );
+  }
+  if (options.ready && mode !== "handoff") {
+    throw new SimpleChangesError(
+      "--ready is valid only with --mode handoff",
+      EXIT_CODES.usage
+    );
+  }
+  // The request layers are validated before anything is read or changed: an
+  // invalid or stale --policy-request or an invalid --authoring-request is a
+  // usage error that leaves every claim where it was.
+  const policyRequest =
+    options.policyRequest === undefined
+      ? null
+      : parsePolicyRequest(options.policyRequest);
+  const authoringRequest =
+    options.authoringRequest === undefined
+      ? null
+      : parseAuthoringRequest(options.authoringRequest);
+  const inventory = captureInventory(options.repo);
+  const activeLoop = readLoopLease(options.repo);
+  if (activeLoop && !["preview", "pause", "handoff"].includes(mode)) {
+    const agentId = requireCliOption(
+      options.agentId,
+      "--agent-id while an integration loop is active"
+    );
+    guardLoopMutation(options.repo, activeLoop.runId, agentId);
+  }
+  const changelogCoordination = inspectChangelogCoordination(
+    inventory.repository.primaryCheckout
+  );
+  const status = initializationStatusFor(
+    options,
+    mode,
+    inventory,
+    changelogCoordination,
+    applyPolicyRequest(inventory.policy, policyRequest),
+    authoringRequest,
+    null
+  );
   if (!status.onboardingRequired) {
     writeOutput(status, options.json, renderInitialization(status));
     return;
@@ -2953,7 +3055,34 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       changelogInstallOfferApplies(changelogCoordination)
     )
   ) {
-    await runSetup(setupOptions);
+    const setup = await performSetup(setupOptions);
+    const { runRequest } = setup.result;
+    if (!runRequest) {
+      writeOutput(setup.result, options.json, setup.text);
+      return;
+    }
+    // Run-only setup saved nothing, so a plain initialize still reports
+    // onboarding. Report the status the rest of this run gets by passing the
+    // request back, exactly as `initialize --policy-request` computes it.
+    const initialization = initializationStatusFor(
+      options,
+      mode,
+      inventory,
+      changelogCoordination,
+      applyPolicyRequest(
+        inventory.policy,
+        parsePolicyRequest(runRequest.policyRequest)
+      ),
+      runRequest.authoringRequest === null
+        ? authoringRequest
+        : parseAuthoringRequest(runRequest.authoringRequest),
+      status.handoffClaimRelease
+    );
+    writeOutput(
+      { ...setup.result, initialization },
+      options.json,
+      `${setup.text}\n${renderInitialization(initialization)}`
+    );
     return;
   }
   writeOutput(status, options.json, renderInitialization(status));
@@ -4131,6 +4260,12 @@ const runLoopStart = (options: CliOptions): void => {
     options.authoringRequest === undefined
       ? undefined
       : parseAuthoringRequest(options.authoringRequest);
+  // A run-only setup's policy, validated like the authoring request; it only
+  // stands in for a missing saved policy in the initialization check below.
+  const policyRequest =
+    options.policyRequest === undefined
+      ? null
+      : parsePolicyRequest(options.policyRequest);
   if (options.changelogRequired) {
     const inventory = captureInventory(options.repo);
     const changelogCoordination = inspectChangelogCoordination(
@@ -4138,7 +4273,7 @@ const runLoopStart = (options: CliOptions): void => {
     );
     const initialization = inspectInitialization(
       options.mode,
-      inventory.policy,
+      applyPolicyRequest(inventory.policy, policyRequest).policy,
       changelogCoordination,
       { changelogRequired: true }
     );

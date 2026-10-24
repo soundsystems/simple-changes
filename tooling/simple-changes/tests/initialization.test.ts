@@ -362,6 +362,44 @@ describe("first-run initialization", () => {
     });
   });
 
+  test("treats a run-only policy request as finished onboarding for the run", () => {
+    const request = {
+      path: null,
+      source: "request" as const,
+      value: DEFAULT_POLICY,
+    };
+    const status = inspectInitialization("queue", request);
+    expect(status).toMatchObject({
+      firstUseWalkthroughAvailable: false,
+      guidanceUpdate: { status: "current" },
+      mutationAllowed: true,
+      onboardingRequired: false,
+      policyPath: null,
+      policySource: "request",
+      preLoopActionRequired: false,
+    });
+    expect(status.reason).toContain("onboarding returns on the next run");
+    // Readiness still gates a handoff, and an older guidance version in the
+    // layer still pauses, exactly as for a saved policy.
+    expect(inspectInitialization("handoff", request)).toMatchObject({
+      handoffAction: "confirm-readiness",
+      mutationAllowed: false,
+    });
+    expect(
+      inspectInitialization("queue", {
+        ...request,
+        value: {
+          ...DEFAULT_POLICY,
+          guidance: { disposition: "accepted", version: 32 },
+        },
+      })
+    ).toMatchObject({ mutationAllowed: false, preLoopActionRequired: true });
+    // Negative control: the same value as the default layer still onboards.
+    expect(
+      inspectInitialization("queue", { ...request, source: "default" })
+    ).toMatchObject({ mutationAllowed: false, onboardingRequired: true });
+  });
+
   test("pauses once for a meaningful installed guidance update", () => {
     const status = inspectInitialization(
       "queue",

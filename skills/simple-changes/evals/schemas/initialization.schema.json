@@ -524,7 +524,21 @@
     "changelogRequired": { "type": "boolean" },
     "mutationAllowed": { "type": "boolean" },
     "onboardingRequired": { "type": "boolean" },
-    "policySource": { "enum": ["default", "user", "repository"] },
+    "policySource": { "enum": ["default", "user", "repository", "request"] },
+    "policyRequest": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": { "enum": ["applied", "ignored"] },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
     "policyPath": {
       "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
     },

@@ -138,7 +138,9 @@ export interface RepoPolicy {
   uiArtifactVersioning: UiArtifactVersioning;
 }
 
-export type PolicySource = "default" | "user" | "repository";
+// `request`: a run-only setup's policy passed back as `--policy-request`,
+// applied for one invocation when nothing is saved, and never written.
+export type PolicySource = "default" | "user" | "repository" | "request";
 
 export interface GitChange {
   conflicted: boolean;

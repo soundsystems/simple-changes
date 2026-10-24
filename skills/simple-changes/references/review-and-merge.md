@@ -81,7 +81,14 @@ already exists.
 ## Review identity and the review ledger
 
 Two requirements apply. **Executor independence** is the rule above: the
-reviewer is a separate agent or session from every author of the change.
+reviewer is a different agent instance from every author of the change. A
+model may review its own model's work in a separate session, or as a
+different agent in one session; the same model and harness are no
+objection. The same instance never counts, even when a record names a
+different harness or model for it: an equal instance ID is the same agent
+under any session, and one session is the same agent unless both records
+name different instances in it. Records that show neither are refused
+(`independence-unproven`), never guessed.
 When the review role sets `adversarial: true`, review also needs
 **diversity**: a different harness, or the same harness with a different
 model ID, from every author. Model IDs are what harnesses report, such as
@@ -186,8 +193,8 @@ runtime. Runtimes before 0.32.0 reject `extensions` too.
   the reviewer graded its findings. Pass the same
   `--authoring-request` as `initialize`: a request can make the gate
   adversarial for this run and never loosens a saved setting. It is accepted
-  only when the head is covered or waived, the reviewer's instance or
-  session differs from every author's, and, when adversarial, its harness or
+  only when the head is covered or waived, the reviewer is a different agent
+  instance from every author (above), and, when adversarial, its harness or
   model differs too. Missing evidence rejects; a `clean` verdict never proves
   independence; a rejected attempt stays rejected. Disclose a reported
   identity that differs from the target.

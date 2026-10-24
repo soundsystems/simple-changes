@@ -14,7 +14,11 @@ import {
 import {
   type Attestation,
   attestCommits,
+  emptyReviewLedger,
+  evaluateReviewAcceptance,
+  headCoverage,
   type ReviewLedger,
+  type RuntimeIdentity,
   reviewLedgerPath,
 } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import { turnCheck } from "../../../skills/simple-changes/scripts/lib/turn-guard.ts";
@@ -385,6 +389,134 @@ describe("identity receipts", () => {
         session: child,
       }),
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Independence per agent instance
+
+const STAMP = "2026-10-23T12:00:00.000Z";
+const PROPOSAL = "group/project!8";
+const HEAD = "a".repeat(40);
+
+const decision = (
+  author: RuntimeIdentity,
+  reviewer: RuntimeIdentity,
+  adversarial = false
+) => {
+  const ledger = emptyReviewLedger();
+  ledger.attestations[HEAD] = [
+    { ...author, logicalId: "author", recordedAt: STAMP },
+  ];
+  const coverage = headCoverage(ledger, [HEAD]);
+  ledger.proposals[PROPOSAL] = {
+    attempts: [],
+    heads: {
+      [HEAD]: {
+        authorsDigest: coverage.authorsDigest,
+        base: "b".repeat(40),
+        commits: [HEAD],
+        copyAuthors: [],
+        gaps: coverage.gaps,
+        unattributed: coverage.unattributed,
+        waivers: [],
+      },
+    },
+  };
+  return evaluateReviewAcceptance({
+    adversarial,
+    attempt: { headRevision: HEAD, verdict: "clean", verified: reviewer },
+    currentHead: HEAD,
+    ledger,
+    proposalId: PROPOSAL,
+    repairRequired: false,
+  });
+};
+
+const AUTHOR: RuntimeIdentity = {
+  agent: "model-shared",
+  harness: "harness-one",
+  instance: "agent-author",
+  session: "session-author",
+};
+
+describe("independence per agent instance", () => {
+  test("the same model in the same harness reviews as a different instance", () => {
+    // Another session of the same model.
+    expect(
+      decision(AUTHOR, {
+        ...AUTHOR,
+        instance: "agent-reviewer",
+        session: "session-reviewer",
+      })
+    ).toMatchObject({ acceptanceReason: null, accepted: true });
+    // Another agent in the author's own session.
+    expect(
+      decision(AUTHOR, { ...AUTHOR, instance: "agent-reviewer" })
+    ).toMatchObject({ acceptanceReason: null, accepted: true });
+    // Another session, where neither names an instance.
+    expect(
+      decision(
+        { ...AUTHOR, instance: null },
+        { ...AUTHOR, instance: null, session: "session-reviewer" }
+      )
+    ).toMatchObject({ accepted: true });
+  });
+
+  test("the same instance is never independent, even recorded under another harness, model and session", () => {
+    const sameInstance: RuntimeIdentity = {
+      agent: "model-other",
+      harness: "harness-two",
+      instance: AUTHOR.instance,
+      session: "session-child",
+    };
+    for (const adversarial of [false, true]) {
+      expect(decision(AUTHOR, sameInstance, adversarial)).toMatchObject({
+        acceptanceReason: "reviewer-not-independent",
+        accepted: false,
+      });
+    }
+    // Negative control: another instance with that record passes, and
+    // passes diversity too, since its harness differs.
+    for (const adversarial of [false, true]) {
+      expect(
+        decision(
+          AUTHOR,
+          { ...sameInstance, instance: "agent-reviewer" },
+          adversarial
+        )
+      ).toMatchObject({ accepted: true });
+    }
+    // One session with no second instance named is the same agent.
+    expect(
+      decision(AUTHOR, { ...AUTHOR, harness: "harness-two", instance: null })
+    ).toMatchObject({ acceptanceReason: "reviewer-not-independent" });
+  });
+
+  test("an instance the records cannot tell is refused, never guessed", () => {
+    const unknown: RuntimeIdentity = {
+      agent: "model-other",
+      harness: "harness-two",
+      instance: null,
+      session: null,
+    };
+    expect(decision(AUTHOR, unknown)).toMatchObject({
+      acceptanceReason: "independence-unproven",
+      accepted: false,
+    });
+    expect(
+      decision(
+        { ...AUTHOR, instance: null, session: null },
+        { ...AUTHOR, instance: "agent-reviewer", session: "session-reviewer" }
+      )
+    ).toMatchObject({ acceptanceReason: "independence-unproven" });
+    // One record names only an instance and the other only a session.
+    expect(
+      decision(
+        { ...AUTHOR, session: null },
+        { ...AUTHOR, instance: null, session: "session-reviewer" }
+      )
+    ).toMatchObject({ acceptanceReason: "independence-unproven" });
   });
 });
 

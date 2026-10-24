@@ -2103,31 +2103,28 @@ export const latestRecordedHead = (proposal: ProposalRecord): string | null =>
 // Identity comparison
 
 /**
- * Executor independence, the existing rule: a different instance (both
- * known) or a different session (both known). A background agent with its
- * own instance passes beside its parent's session. Logical ids, models and
- * harnesses are never consulted here.
+ * Executor independence, per agent instance: a reviewer is independent of
+ * an author only when their records show different agent instances. The
+ * same model, and the same harness, are no objection. The same instance
+ * never is independent, whatever harness or model either record names: an
+ * equal instance id is the same agent even under different sessions, and
+ * one session is the same agent unless both records name different
+ * instances in it, as a background agent beside its parent does. Different
+ * instance ids, or else different sessions, are different agents. Anything
+ * else cannot tell the instance, and the gate refuses it. Logical ids,
+ * models and harnesses are never consulted here.
  */
 const executorIndependence = (
   reviewer: RuntimeIdentity,
   author: RuntimeIdentity
 ): "independent" | "same" | "unknown" => {
-  const instanceDiffers =
-    reviewer.instance !== null &&
-    author.instance !== null &&
-    reviewer.instance !== author.instance;
-  const sessionDiffers =
-    reviewer.session !== null &&
-    author.session !== null &&
-    reviewer.session !== author.session;
-  if (instanceDiffers || sessionDiffers) {
-    return "independent";
+  if (reviewer.instance !== null && author.instance !== null) {
+    return reviewer.instance === author.instance ? "same" : "independent";
   }
-  const instanceEqual =
-    reviewer.instance !== null && reviewer.instance === author.instance;
-  const sessionEqual =
-    reviewer.session !== null && reviewer.session === author.session;
-  return instanceEqual || sessionEqual ? "same" : "unknown";
+  if (reviewer.session !== null && author.session !== null) {
+    return reviewer.session === author.session ? "same" : "independent";
+  }
+  return "unknown";
 };
 
 /**

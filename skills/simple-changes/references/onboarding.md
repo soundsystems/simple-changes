@@ -356,7 +356,10 @@ name must be the model ID the agent reports, such as `model-5-5`; ask again
 for a display name or an effort label, for the model ID recorded for that
 agent (compared after folding case and one `provider/` prefix), and when the
 recorded model is itself not an ID. Options 1 and 2 record
-`adversarial: true`.
+`adversarial: true`. Naming the author's own model under option 2 is not
+self-review, which is only the same agent instance: say that a separate
+session of that model is an independent reviewer under option 3, and ask
+again.
 
 Every option then sets the review loop. Unless the model question already
 asked it, ask **Which effort should the first review of a change use?** with

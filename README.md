@@ -420,7 +420,8 @@ simple-changes help
 `ready-work-receipt`, `ship-holds`, `loop-lease`, `loop-close-equivalent`,
 `migration-review`, `migration-pending`, `migration-apply-plan`,
 `post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
-`worktree-cleanup`, `worktree-coordination`, `worktree-takeover`,
+`worktree-archive`, `worktree-archive-prune`, `worktree-cleanup`,
+`worktree-coordination`, `worktree-takeover`,
 `worktree-equivalence`, or `branch-audit` (the schema filenames under
 `skills/simple-changes/evals/schemas/`).
 

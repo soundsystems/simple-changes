@@ -5,7 +5,9 @@ import {
   type ContainedBranchPreservation,
   type ContainedBranchRemoval,
   deleteTargetContainedBranches,
+  type LocalRemovalMethod,
   localBranchForTargetRef,
+  REVIEWED_REPLACEMENT_METHOD,
   type TargetContainmentMethod,
   targetContainmentAudit,
 } from "./cleanup-core.ts";
@@ -21,7 +23,19 @@ import {
   withLoopStateLock,
 } from "./loop-lease.ts";
 import { emptyManagedWorktreeFolderNotes } from "./managed-worktrees.ts";
+import { archiveRetentionPolicy } from "./policy.ts";
 import { runGit } from "./process.ts";
+import {
+  assertPlainGitEnvironment,
+  assertReviewedReplacementUnchanged,
+  parseReplacementLineageReceipt,
+  plannedReplacementLineage,
+  type ReplacementLineageOutcome,
+  type ReplacementLineageReceipt,
+  removeReviewedReplacement,
+  type VerifiedReplacementLineage,
+  verifyReplacementLineage,
+} from "./replacement-lineage.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   RepositoryInventory,
@@ -29,6 +43,16 @@ import type {
   WorktreeCoordinationState,
   WorktreeInventory,
 } from "./types.ts";
+import {
+  type ArchiveListing,
+  type ArchivePruneInput,
+  type ArchivePruneResult,
+  extractWorktreeArchive,
+  listWorktreeArchives,
+  pruneWorktreeArchives,
+  type RestoreWorktreeArchiveResult,
+  restoreWorktreeArchive,
+} from "./worktree-archive.ts";
 import {
   readCoordinationDocumentFromCommonDirectory,
   releaseAbsentWorktreeClaimsUnderLock,
@@ -108,12 +132,30 @@ export interface WorktreeCleanupReceipt {
  * written to the receipt history, which older runtimes validate strictly.
  */
 export interface WorktreeCleanupResult extends WorktreeCleanupReceipt {
+  /**
+   * Expired worktree archives pruned at this natural cleanup point, or null
+   * when pruning could not run (the reason is in `notes`). Not part of the
+   * receipt history.
+   */
+  archivePruning: ArchivePruneResult | null;
   notes: string[];
+  /**
+   * The checkout a `--lineage-receipt` removed, or null without one. It is
+   * kept out of the receipt history, whose containment values older runtimes
+   * validate strictly, and recorded in its own lineage files instead.
+   */
+  reviewedReplacement: ReplacementLineageOutcome | null;
 }
 
 export interface WorktreeCleanupOptions {
   agentId: string;
   approvedBy: string;
+  /** A reviewed replacement lineage receipt document, unvalidated. */
+  lineageReceipt?: unknown;
+  /** The per-archive size cap for a reviewed removal; the module default when absent. */
+  maxArchiveBytes?: number | undefined;
+  /** The clock the receipt's approval freshness is judged by. */
+  now?: Date | undefined;
   reason: string;
   repositoryPath: string;
   targetRef?: string | undefined;
@@ -235,7 +277,8 @@ const classifyCleanupCandidates = (
   inventory: RepositoryInventory,
   targetRevision: string,
   targetRef: string,
-  protectedPaths: ReadonlyMap<string, string> = new Map()
+  protectedPaths: ReadonlyMap<string, string> = new Map(),
+  lineagePath: string | null = null
 ): CleanupClassification => {
   const classification: CleanupClassification = {
     preserved: [],
@@ -252,7 +295,8 @@ const classifyCleanupCandidates = (
     (worktree) => worktree.prunable && protectedPaths.has(worktree.path)
   );
   for (const worktree of inventory.worktrees) {
-    if (worktree.isPrimary) {
+    // A verified lineage receipt's checkout is removed by its own path.
+    if (worktree.isPrimary || worktree.path === lineagePath) {
       continue;
     }
     const protection = protectedPaths.get(worktree.path);
@@ -339,6 +383,153 @@ const classifyCleanupCandidates = (
     classification.prunable = [];
   }
   return classification;
+};
+
+interface LineageVerificationInput {
+  agentId: string;
+  approvedBy: string;
+  inventory: RepositoryInventory;
+  leaseBranches: ReadonlySet<string>;
+  leasePaths: ReadonlyMap<string, string>;
+  maxArchiveBytes: number | undefined;
+  now: Date | undefined;
+  receipt: ReplacementLineageReceipt | null;
+  targetRef: string;
+  targetRevision: string;
+}
+
+// Verifies a lineage receipt under the cleanup locks, before anything is
+// written; a refusal throws. Without a receipt cleanup is unchanged.
+const verifiedLineage = (
+  input: LineageVerificationInput
+): VerifiedReplacementLineage | null =>
+  input.receipt
+    ? verifyReplacementLineage({
+        approvedBy: input.approvedBy,
+        claims: readCoordinationDocumentFromCommonDirectory(
+          input.inventory.repository.commonGitDirectory
+        ).claims,
+        controllerAgentId: input.agentId,
+        inventory: input.inventory,
+        leaseBranches: input.leaseBranches,
+        leasePaths: input.leasePaths,
+        maxArchiveBytes: input.maxArchiveBytes,
+        now: input.now ?? new Date(),
+        receipt: input.receipt,
+        targetRef: input.targetRef,
+        targetRevision: input.targetRevision,
+      })
+    : null;
+
+// Removes the verified checkout before any other removal or cleanup history
+// write. When it was not removed, the run stops there, so a lineage failure
+// never leaves other checkouts removed or the strict history written.
+const removeLineageFirst = (
+  lineage: VerifiedReplacementLineage | null,
+  options: Omit<
+    Parameters<typeof removeReviewedReplacement>[0],
+    "errors" | "source" | "verified"
+  >,
+  errors: string[]
+): ReplacementLineageOutcome | null => {
+  if (!lineage) {
+    return null;
+  }
+  const source = assertReviewedReplacementUnchanged(lineage);
+  const lineageErrors: string[] = [];
+  const outcome = removeReviewedReplacement({
+    ...options,
+    errors: lineageErrors,
+    source,
+    verified: lineage,
+  });
+  if (!outcome.worktreeRemoved) {
+    throw new SimpleChangesError(
+      `Stopped before any other removal: the reviewed replacement checkout ${lineage.worktree.path} was not removed. ${lineageErrors.join(" ")} Its lineage records are in ${outcome.recordPaths.join(", ") || "no file"}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  errors.push(...lineageErrors);
+  return outcome;
+};
+
+const parsedLineageReceipt = (
+  value: unknown
+): ReplacementLineageReceipt | null =>
+  value === undefined ? null : parseReplacementLineageReceipt(value);
+
+/**
+ * Runs `operation` the way a reviewed removal needs: the environment must
+ * not redirect what Git reads, and `GIT_OPTIONAL_LOCKS=0` keeps every
+ * `git status` from refreshing an index, so the reads before the archive
+ * write nothing and a refusal that says so is exact. Without a receipt the
+ * run is unchanged.
+ */
+const withReviewedRemovalEnvironment = <T>(
+  receipt: ReplacementLineageReceipt | null,
+  operation: () => T
+): T => {
+  if (receipt === null) {
+    return operation();
+  }
+  assertPlainGitEnvironment();
+  return withOptionalLocksOff(operation);
+};
+
+export const withOptionalLocksOff = <T>(operation: () => T): T => {
+  const previous = process.env.GIT_OPTIONAL_LOCKS;
+  process.env.GIT_OPTIONAL_LOCKS = "0";
+  try {
+    return operation();
+  } finally {
+    if (previous === undefined) {
+      Reflect.deleteProperty(process.env, "GIT_OPTIONAL_LOCKS");
+    } else {
+      process.env.GIT_OPTIONAL_LOCKS = previous;
+    }
+  }
+};
+
+/**
+ * Prunes expired worktree archives at a natural cleanup point, under the
+ * caller's cleanup locks, at the end of a run whose removals succeeded, so
+ * that a refusal earlier in the run has written nothing; an archive the run
+ * itself made is named in `keep` and never pruned by that run. A policy
+ * value that fell back to its default, or a pruning failure, is reported in
+ * `notes`; a failure never stops the cleanup itself.
+ */
+export const pruneArchivesAtCleanup = (
+  inventory: RepositoryInventory,
+  command: ArchivePruneInput["command"],
+  dryRun: boolean,
+  now: Date | undefined,
+  notes: string[],
+  keep: readonly string[] = []
+): ArchivePruneResult | null => {
+  const retention = archiveRetentionPolicy(inventory.policy.value);
+  notes.push(
+    ...retention.fallbacks.map((fallback) => `Archive retention: ${fallback}.`)
+  );
+  try {
+    return pruneWorktreeArchives({
+      command,
+      commonGitDirectory: inventory.repository.commonGitDirectory,
+      dryRun,
+      keep,
+      now: now ?? new Date(),
+      primaryCheckout: inventory.repository.primaryCheckout,
+      retention: {
+        days: retention.days,
+        maxTotalBytes: retention.maxTotalBytes,
+      },
+    });
+  } catch (error) {
+    if (error instanceof SimpleChangesError) {
+      notes.push(`Expired worktree archives were not pruned: ${error.message}`);
+      return null;
+    }
+    throw error;
+  }
 };
 
 const branchTipSha = (
@@ -523,125 +714,175 @@ export const standaloneWorktreeCleanup = (
   const agentId = requiredText(options.agentId, "agent ID");
   const approvedBy = requiredText(options.approvedBy, "approver");
   const reason = requiredText(options.reason, "cleanup reason");
-  assertNoLoopLease(options.repositoryPath);
-  const opening = locateRepository(options.repositoryPath);
-  const { commonGitDirectory } = opening.repository;
-  return withCleanupLocks(
-    commonGitDirectory,
-    "standalone worktree cleanup",
-    () => {
-      assertNoLoopLease(options.repositoryPath);
-      const inventory = captureInventory(options.repositoryPath);
-      const { targetRef, targetRevision } = resolveCleanupTarget(
-        inventory,
-        options.targetRef
-      );
-      const errors: string[] = [];
-      const classification = classifyCleanupCandidates(
-        inventory,
-        targetRevision,
-        targetRef
-      );
-      const cleanupId = `cleanup-${randomUUID()}`;
-      const plannedRemovals = classification.removable
-        .map((candidate) => ({
-          branch: candidate.worktree.branch,
-          changeDigest: candidate.worktree.changeDigest,
-          containment: candidate.containment,
-          headSha: candidate.worktree.headSha,
-          path: candidate.worktree.path,
-        }))
-        .sort((left, right) => left.path.localeCompare(right.path));
-      const plannedPrunePaths = classification.prunable
-        .map((worktree) => worktree.path)
-        .sort((left, right) => left.localeCompare(right));
-      const preserved = classification.preserved.sort((left, right) =>
-        left.path.localeCompare(right.path)
-      );
-      const intent = validateSchema<WorktreeCleanupReceipt>(
-        "worktree-cleanup",
-        {
+  const lineageReceipt = parsedLineageReceipt(options.lineageReceipt);
+  return withReviewedRemovalEnvironment(lineageReceipt, () => {
+    assertNoLoopLease(options.repositoryPath);
+    const opening = locateRepository(options.repositoryPath);
+    const { commonGitDirectory } = opening.repository;
+    return withCleanupLocks(
+      commonGitDirectory,
+      "standalone worktree cleanup",
+      () => {
+        assertNoLoopLease(options.repositoryPath);
+        const inventory = captureInventory(options.repositoryPath);
+        const { targetRef, targetRevision } = resolveCleanupTarget(
+          inventory,
+          options.targetRef
+        );
+        const errors: string[] = [];
+        const notes: string[] = [];
+        const lineage = verifiedLineage({
           agentId,
           approvedBy,
-          cleanupId,
-          errors: [],
-          phase: "intent",
-          plannedPrunePaths,
-          plannedRemovals,
-          preserved,
-          prunedPaths: [],
-          reason,
-          recordedAt: new Date().toISOString(),
-          removed: [],
-          schemaVersion: 2,
+          inventory,
+          leaseBranches: new Set(),
+          leasePaths: new Map(),
+          maxArchiveBytes: options.maxArchiveBytes,
+          now: options.now,
+          receipt: lineageReceipt,
           targetRef,
           targetRevision,
-        } satisfies WorktreeCleanupReceipt
-      );
-      appendWorktreeCleanup(commonGitDirectory, intent);
-      const removed = removeProvenWorktrees(
-        options.repositoryPath,
-        targetRef,
-        classification.removable,
-        errors
-      );
-      const prunedPaths = pruneStaleWorktreeMetadata(
-        options.repositoryPath,
-        classification.prunable,
-        errors
-      );
-      // Parent folders stay; the removals above may have emptied managed ones.
-      const notes = emptyManagedWorktreeFolderNotes(
-        inventory.repository.primaryCheckout
-      );
-      // A claim whose checkout is gone (removed above, pruned above, or already
-      // absent) protects nothing; release it so it stops demanding a takeover.
-      // A held unit's checkout is the exception: its claim keeps protecting
-      // the held work after the run closed, as finalization keeps it.
-      const releasedClaims = releaseAbsentHeldAwareClaims(
-        commonGitDirectory,
-        captureInventory(options.repositoryPath),
-        agentId,
-        errors
-      )
-        .map((claim) => ({
-          claimId: claim.claimId,
-          path: claim.path,
-          releaseReason: "worktree-absent" as const,
-        }))
-        .sort((left, right) => left.path.localeCompare(right.path));
-      const receipt = validateSchema<WorktreeCleanupReceipt>(
-        "worktree-cleanup",
-        {
+        });
+        const classification = classifyCleanupCandidates(
+          inventory,
+          targetRevision,
+          targetRef,
+          new Map(),
+          lineage?.worktree.path ?? null
+        );
+        const cleanupId = `cleanup-${randomUUID()}`;
+        const plannedRemovals = classification.removable
+          .map((candidate) => ({
+            branch: candidate.worktree.branch,
+            changeDigest: candidate.worktree.changeDigest,
+            containment: candidate.containment,
+            headSha: candidate.worktree.headSha,
+            path: candidate.worktree.path,
+          }))
+          .sort((left, right) => left.path.localeCompare(right.path));
+        const plannedPrunePaths = classification.prunable
+          .map((worktree) => worktree.path)
+          .sort((left, right) => left.localeCompare(right));
+        const preserved = classification.preserved.sort((left, right) =>
+          left.path.localeCompare(right.path)
+        );
+        const intent = validateSchema<WorktreeCleanupReceipt>(
+          "worktree-cleanup",
+          {
+            agentId,
+            approvedBy,
+            cleanupId,
+            errors: [],
+            phase: "intent",
+            plannedPrunePaths,
+            plannedRemovals,
+            preserved,
+            prunedPaths: [],
+            reason,
+            recordedAt: new Date().toISOString(),
+            removed: [],
+            schemaVersion: 2,
+            targetRef,
+            targetRevision,
+          } satisfies WorktreeCleanupReceipt
+        );
+        const reviewedReplacement = removeLineageFirst(
+          lineage,
+          {
+            approvedBy,
+            cleanupId,
+            command: "worktree-cleanup",
+            commonGitDirectory,
+            controllerAgentId: agentId,
+            reason,
+          },
+          errors
+        );
+        appendWorktreeCleanup(commonGitDirectory, intent);
+        const removed = removeProvenWorktrees(
+          options.repositoryPath,
+          targetRef,
+          classification.removable,
+          errors
+        );
+        const prunedPaths = pruneStaleWorktreeMetadata(
+          options.repositoryPath,
+          classification.prunable,
+          errors
+        );
+        // Parent folders stay; the removals above may have emptied managed ones.
+        notes.push(
+          ...emptyManagedWorktreeFolderNotes(
+            inventory.repository.primaryCheckout
+          )
+        );
+        // A claim whose checkout is gone (removed above, pruned above, or already
+        // absent) protects nothing; release it so it stops demanding a takeover.
+        // A held unit's checkout is the exception: its claim keeps protecting
+        // the held work after the run closed, as finalization keeps it.
+        const releasedClaims = releaseAbsentHeldAwareClaims(
+          commonGitDirectory,
+          captureInventory(options.repositoryPath),
           agentId,
-          approvedBy,
-          cleanupId,
-          errors,
-          phase: "completed",
-          plannedPrunePaths,
-          plannedRemovals,
-          preserved,
-          prunedPaths,
-          reason,
-          recordedAt: new Date().toISOString(),
-          releasedClaims,
-          removed: removed.sort((left, right) =>
-            left.path.localeCompare(right.path)
-          ),
-          schemaVersion: 2,
-          targetRef,
-          targetRevision,
-        } satisfies WorktreeCleanupReceipt
-      );
-      appendWorktreeCleanup(commonGitDirectory, receipt);
-      return { ...receipt, notes };
-    }
-  );
+          errors
+        )
+          .map((claim) => ({
+            claimId: claim.claimId,
+            path: claim.path,
+            releaseReason: "worktree-absent" as const,
+          }))
+          .sort((left, right) => left.path.localeCompare(right.path));
+        const archivePruning = pruneArchivesAtCleanup(
+          inventory,
+          "worktree-cleanup",
+          false,
+          options.now,
+          notes,
+          reviewedReplacement?.archive.archiveId
+            ? [reviewedReplacement.archive.archiveId]
+            : []
+        );
+        const receipt = validateSchema<WorktreeCleanupReceipt>(
+          "worktree-cleanup",
+          {
+            agentId,
+            approvedBy,
+            cleanupId,
+            errors,
+            phase: "completed",
+            plannedPrunePaths,
+            plannedRemovals,
+            preserved,
+            prunedPaths,
+            reason,
+            recordedAt: new Date().toISOString(),
+            releasedClaims,
+            removed: removed.sort((left, right) =>
+              left.path.localeCompare(right.path)
+            ),
+            schemaVersion: 2,
+            targetRef,
+            targetRevision,
+          } satisfies WorktreeCleanupReceipt
+        );
+        appendWorktreeCleanup(commonGitDirectory, receipt);
+        return { ...receipt, archivePruning, notes, reviewedReplacement };
+      }
+    );
+  });
 };
 
 export interface PruneOptions {
+  /** The controller's agent ID; required with a lineage receipt. */
+  agentId?: string | undefined;
   approvedBy?: string | undefined;
   dryRun: boolean;
+  /** A reviewed replacement lineage receipt document, unvalidated. */
+  lineageReceipt?: unknown;
+  /** The per-archive size cap for a reviewed removal; the module default when absent. */
+  maxArchiveBytes?: number | undefined;
+  /** The clock the receipt's approval freshness is judged by. */
+  now?: Date | undefined;
   reason?: string | undefined;
   repositoryPath: string;
   targetRef?: string | undefined;
@@ -658,13 +899,22 @@ export interface PruneLeaseProtection {
 
 export interface PrunePlannedRemoval {
   branch: string | null;
-  containment: TargetContainmentMethod;
+  containment: LocalRemovalMethod;
   headSha: string;
   path: string;
 }
 
+export type PruneRemoval = Omit<WorktreeCleanupRemoval, "containment"> & {
+  containment: LocalRemovalMethod;
+};
+
 export interface PruneReport {
   approvedBy: string | null;
+  /**
+   * Expired worktree archives pruned (or, in a dry run, planned), or null
+   * when pruning could not run (the reason is in `notes`).
+   */
+  archivePruning: ArchivePruneResult | null;
   dryRun: boolean;
   errors: string[];
   lease: PruneLeaseProtection | null;
@@ -676,8 +926,10 @@ export interface PruneReport {
   preservedBranches: ContainedBranchPreservation[];
   prunedPaths: string[];
   reason: string | null;
-  removed: WorktreeCleanupRemoval[];
+  removed: PruneRemoval[];
   removedBranches: ContainedBranchRemoval[];
+  /** The checkout a `--lineage-receipt` plans or removed, else null. */
+  reviewedReplacement: ReplacementLineageOutcome | null;
   targetRef: string;
   targetRevision: string;
 }
@@ -798,6 +1050,187 @@ const sortedByBranch = <T extends { branch: string }>(items: T[]): T[] =>
  * preserved and named with the reason. Lease state, claims, and durable
  * receipts are never modified.
  */
+interface PruneRun {
+  approvedBy: string | null;
+  lineageAgentId: string | null;
+  lineageReceipt: ReplacementLineageReceipt | null;
+  options: PruneOptions;
+  reason: string | null;
+}
+
+// The prune pass itself, under the cleanup locks.
+const pruneUnderLocks = (
+  run: PruneRun,
+  commonGitDirectory: string
+): PruneReport => {
+  const { approvedBy, lineageAgentId, lineageReceipt, options, reason } = run;
+  const inventory = captureInventory(options.repositoryPath);
+  const { targetRef, targetRevision } = resolveCleanupTarget(
+    inventory,
+    options.targetRef
+  );
+  const lease = leaseProtectionFor(inventory);
+  const errors: string[] = [];
+  const notes: string[] = [];
+  if (lease.protection) {
+    notes.push(
+      `Loop ${lease.protection.runId} is ${lease.protection.liveness.state}; cleanup of its registered work is deferred to its controller. Only unrelated state is eligible. A stale or relinquished run keeps its protections until it closes or is explicitly recovered.`
+    );
+  }
+  notes.push(
+    "Prune never edits lease state, worktree claims, or recorded receipts."
+  );
+  const lineage = verifiedLineage({
+    agentId: lineageAgentId ?? "",
+    approvedBy: approvedBy ?? "",
+    inventory,
+    leaseBranches: lease.branches,
+    leasePaths: lease.paths,
+    maxArchiveBytes: options.maxArchiveBytes,
+    now: options.now,
+    receipt: lineageReceipt,
+    targetRef,
+    targetRevision,
+  });
+  const classification = classifyCleanupCandidates(
+    inventory,
+    targetRevision,
+    targetRef,
+    lease.paths,
+    lineage?.worktree.path ?? null
+  );
+  const branchPlan = prunableBranchCandidates(
+    inventory,
+    targetRef,
+    lease.branches
+  );
+  const plannedBranches = deleteTargetContainedBranches({
+    branches: branchPlan.candidates,
+    dryRun: true,
+    repositoryPath: inventory.repository.primaryCheckout,
+    targetRevision,
+  });
+  const plannedRemovals: PrunePlannedRemoval[] = sortedByPath([
+    ...classification.removable.map((candidate) => ({
+      branch: candidate.worktree.branch,
+      containment: candidate.containment,
+      headSha: candidate.worktree.headSha,
+      path: candidate.worktree.path,
+    })),
+    ...(lineage
+      ? [
+          {
+            branch: lineage.worktree.branch,
+            containment: REVIEWED_REPLACEMENT_METHOD,
+            headSha: lineage.worktree.headSha,
+            path: lineage.worktree.path,
+          },
+        ]
+      : []),
+  ]);
+  const plannedPrunePaths = classification.prunable
+    .map((worktree) => worktree.path)
+    .sort((left, right) => left.localeCompare(right));
+  const plannedBranchRemovals = sortedByBranch(plannedBranches.removed);
+  const report: PruneReport = {
+    approvedBy,
+    archivePruning: null,
+    dryRun: options.dryRun,
+    errors,
+    lease: lease.protection,
+    notes,
+    plannedBranchRemovals,
+    plannedPrunePaths,
+    plannedRemovals,
+    preserved: sortedByPath(classification.preserved),
+    preservedBranches: sortedByBranch([
+      ...branchPlan.protectedByLease,
+      ...plannedBranches.preserved,
+    ]),
+    prunedPaths: [],
+    reason,
+    removed: [],
+    removedBranches: [],
+    reviewedReplacement: lineage ? plannedReplacementLineage(lineage) : null,
+    targetRef,
+    targetRevision,
+  };
+  if (options.dryRun) {
+    report.archivePruning = pruneArchivesAtCleanup(
+      inventory,
+      "prune",
+      true,
+      options.now,
+      notes
+    );
+    return report;
+  }
+  const outcome = removeLineageFirst(
+    lineage,
+    {
+      approvedBy: approvedBy ?? "",
+      cleanupId: null,
+      command: "prune",
+      commonGitDirectory,
+      controllerAgentId: lineageAgentId ?? "",
+      reason: reason ?? "",
+    },
+    errors
+  );
+  const removed: PruneRemoval[] = removeProvenWorktrees(
+    options.repositoryPath,
+    targetRef,
+    classification.removable,
+    errors
+  );
+  if (lineage && outcome) {
+    report.reviewedReplacement = outcome;
+    removed.push({
+      branch: outcome.branch,
+      branchDeleted: outcome.branchDeleted,
+      changeDigest: lineage.worktree.changeDigest,
+      containment: REVIEWED_REPLACEMENT_METHOD,
+      headSha: outcome.headSha,
+      path: outcome.path,
+    });
+  }
+  report.removed = sortedByPath(removed);
+  report.prunedPaths = pruneStaleWorktreeMetadata(
+    options.repositoryPath,
+    classification.prunable,
+    errors
+  );
+  notes.push(
+    ...emptyManagedWorktreeFolderNotes(inventory.repository.primaryCheckout)
+  );
+  const refreshed = captureInventory(options.repositoryPath);
+  const finalBranches = prunableBranchCandidates(
+    refreshed,
+    targetRef,
+    lease.branches
+  );
+  const deletion = deleteTargetContainedBranches({
+    branches: finalBranches.candidates,
+    repositoryPath: refreshed.repository.primaryCheckout,
+    targetRevision,
+  });
+  errors.push(...deletion.errors);
+  report.removedBranches = sortedByBranch(deletion.removed);
+  report.preservedBranches = sortedByBranch([
+    ...finalBranches.protectedByLease,
+    ...deletion.preserved,
+  ]);
+  report.archivePruning = pruneArchivesAtCleanup(
+    inventory,
+    "prune",
+    false,
+    options.now,
+    notes,
+    outcome?.archive.archiveId ? [outcome.archive.archiveId] : []
+  );
+  return report;
+};
+
 export const pruneRepository = (options: PruneOptions): PruneReport => {
   if (!options.dryRun) {
     requiredText(options.approvedBy ?? "", "approver");
@@ -805,114 +1238,136 @@ export const pruneRepository = (options: PruneOptions): PruneReport => {
   }
   const approvedBy = options.approvedBy?.trim() || null;
   const reason = options.reason?.trim() || null;
-  const opening = locateRepository(options.repositoryPath);
-  const { commonGitDirectory } = opening.repository;
-  return withCleanupLocks(commonGitDirectory, "prune", () => {
-    const inventory = captureInventory(options.repositoryPath);
-    const { targetRef, targetRevision } = resolveCleanupTarget(
-      inventory,
-      options.targetRef
+  const lineageReceipt = parsedLineageReceipt(options.lineageReceipt);
+  const lineageAgentId = lineageReceipt
+    ? requiredText(options.agentId ?? "", "agent ID (with a lineage receipt)")
+    : null;
+  if (lineageReceipt) {
+    requiredText(options.approvedBy ?? "", "approver");
+  }
+  const run: PruneRun = {
+    approvedBy,
+    lineageAgentId,
+    lineageReceipt,
+    options,
+    reason,
+  };
+  return withReviewedRemovalEnvironment(lineageReceipt, () => {
+    const { commonGitDirectory } = locateRepository(
+      options.repositoryPath
+    ).repository;
+    return withCleanupLocks(commonGitDirectory, "prune", () =>
+      pruneUnderLocks(run, commonGitDirectory)
     );
-    const lease = leaseProtectionFor(inventory);
-    const errors: string[] = [];
-    const notes: string[] = [];
-    if (lease.protection) {
-      notes.push(
-        `Loop ${lease.protection.runId} is ${lease.protection.liveness.state}; cleanup of its registered work is deferred to its controller. Only unrelated state is eligible. A stale or relinquished run keeps its protections until it closes or is explicitly recovered.`
-      );
-    }
-    notes.push(
-      "Prune never edits lease state, worktree claims, or recorded receipts."
-    );
-    const classification = classifyCleanupCandidates(
-      inventory,
-      targetRevision,
-      targetRef,
-      lease.paths
-    );
-    const branchPlan = prunableBranchCandidates(
-      inventory,
-      targetRef,
-      lease.branches
-    );
-    const plannedBranches = deleteTargetContainedBranches({
-      branches: branchPlan.candidates,
-      dryRun: true,
-      repositoryPath: inventory.repository.primaryCheckout,
-      targetRevision,
-    });
-    const plannedRemovals = sortedByPath(
-      classification.removable.map((candidate) => ({
-        branch: candidate.worktree.branch,
-        containment: candidate.containment,
-        headSha: candidate.worktree.headSha,
-        path: candidate.worktree.path,
-      }))
-    );
-    const plannedPrunePaths = classification.prunable
-      .map((worktree) => worktree.path)
-      .sort((left, right) => left.localeCompare(right));
-    const plannedBranchRemovals = sortedByBranch(plannedBranches.removed);
-    const report: PruneReport = {
-      approvedBy,
-      dryRun: options.dryRun,
-      errors,
-      lease: lease.protection,
-      notes,
-      plannedBranchRemovals,
-      plannedPrunePaths,
-      plannedRemovals,
-      preserved: sortedByPath(classification.preserved),
-      preservedBranches: sortedByBranch([
-        ...branchPlan.protectedByLease,
-        ...plannedBranches.preserved,
-      ]),
-      prunedPaths: [],
-      reason,
-      removed: [],
-      removedBranches: [],
-      targetRef,
-      targetRevision,
-    };
-    if (options.dryRun) {
-      return report;
-    }
-    report.removed = sortedByPath(
-      removeProvenWorktrees(
-        options.repositoryPath,
-        targetRef,
-        classification.removable,
-        errors
-      )
-    );
-    report.prunedPaths = pruneStaleWorktreeMetadata(
-      options.repositoryPath,
-      classification.prunable,
-      errors
-    );
-    notes.push(
-      ...emptyManagedWorktreeFolderNotes(inventory.repository.primaryCheckout)
-    );
-    const refreshed = captureInventory(options.repositoryPath);
-    const finalBranches = prunableBranchCandidates(
-      refreshed,
-      targetRef,
-      lease.branches
-    );
-    const deletion = deleteTargetContainedBranches({
-      branches: finalBranches.candidates,
-      repositoryPath: refreshed.repository.primaryCheckout,
-      targetRevision,
-    });
-    errors.push(...deletion.errors);
-    report.removedBranches = sortedByBranch(deletion.removed);
-    report.preservedBranches = sortedByBranch([
-      ...finalBranches.protectedByLease,
-      ...deletion.preserved,
-    ]);
-    return report;
   });
 };
+
+export interface RestoreArchivedWorktreeOptions {
+  archiveId: string;
+  /** Copy the archive into this folder instead of restoring the checkout. */
+  extractTo?: string | undefined;
+  repositoryPath: string;
+}
+
+/**
+ * Restores an archived checkout at its recorded path, or copies the archive
+ * into a folder, under the cleanup locks so no prune or removal runs
+ * meanwhile. A restore refuses an environment that redirects Git and keeps
+ * its own status check from refreshing the restored index.
+ */
+export const restoreArchivedWorktree = (
+  options: RestoreArchivedWorktreeOptions
+):
+  | { bytes: number; destination: string; extracted: true }
+  | (RestoreWorktreeArchiveResult & { extracted: false }) => {
+  const opening = locateRepository(options.repositoryPath);
+  const { commonGitDirectory } = opening.repository;
+  return withCleanupLocks(
+    commonGitDirectory,
+    "worktree restore-archive",
+    () => {
+      if (options.extractTo !== undefined) {
+        return {
+          ...extractWorktreeArchive({
+            archiveId: options.archiveId,
+            commonGitDirectory,
+            destination: options.extractTo,
+          }),
+          extracted: true as const,
+        };
+      }
+      assertPlainGitEnvironment();
+      // The inventory's status runs with optional locks off too, so a
+      // refusal below has refreshed no live index.
+      return withOptionalLocksOff(() => ({
+        ...restoreWorktreeArchive({
+          archiveId: options.archiveId,
+          commonGitDirectory,
+          primaryCheckout: captureInventory(options.repositoryPath).repository
+            .primaryCheckout,
+        }),
+        extracted: false as const,
+      }));
+    }
+  );
+};
+
+export interface ManualArchivePruneOptions {
+  approvedBy: string;
+  archiveId?: string | undefined;
+  dryRun: boolean;
+  now?: Date | undefined;
+  olderThanDays?: number | undefined;
+  reason: string;
+  repositoryPath: string;
+}
+
+/** The optional manual prune, by archive ID or by age, under the coordination lock. */
+export const pruneArchivedWorktrees = (
+  options: ManualArchivePruneOptions
+): ArchivePruneResult => {
+  const approvedBy = requiredText(options.approvedBy, "approver");
+  const reason = requiredText(options.reason, "prune reason");
+  const opening = locateRepository(options.repositoryPath);
+  const { commonGitDirectory } = opening.repository;
+  return withWorktreeCoordinationLock(
+    commonGitDirectory,
+    "worktree prune-archives",
+    () => {
+      const inventory = captureInventory(options.repositoryPath);
+      const retention = archiveRetentionPolicy(inventory.policy.value);
+      return pruneWorktreeArchives({
+        command: "prune-archives",
+        commonGitDirectory,
+        dryRun: options.dryRun,
+        manual: {
+          approvedBy,
+          reason,
+          ...(options.archiveId === undefined
+            ? {}
+            : { archiveId: options.archiveId }),
+          ...(options.olderThanDays === undefined
+            ? {}
+            : { olderThanDays: options.olderThanDays }),
+        },
+        now: options.now ?? new Date(),
+        primaryCheckout: inventory.repository.primaryCheckout,
+        retention: {
+          days: retention.days,
+          maxTotalBytes: retention.maxTotalBytes,
+        },
+      });
+    }
+  );
+};
+
+/** Every worktree archive of the repository, with its state. */
+export const listArchivedWorktrees = (
+  repositoryPath: string
+): ArchiveListing[] =>
+  listWorktreeArchives(
+    locateRepository(repositoryPath).repository.commonGitDirectory
+  );
 
 export interface WorktreeIndexAdapterNote {
   adapter: string;

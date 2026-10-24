@@ -111,7 +111,18 @@ export interface ChangelogCoordination {
   relevant: boolean;
 }
 
+/**
+ * How long worktree archives are kept, as written in the policy file. Both
+ * values are optional and read with fallback (`archiveRetentionPolicy`): a
+ * value that is not a whole number in range falls back to the default.
+ */
+export interface ArchiveRetentionSetting {
+  days?: number;
+  maxTotalBytes?: number;
+}
+
 export interface RepoPolicy {
+  archiveRetention?: ArchiveRetentionSetting;
   changelogHandling: ChangelogHandling;
   concurrentWork: "allow-claimed" | "strict" | "preserve";
   defaultFinish: "open-change-request" | "integrate" | "ship" | "preview";

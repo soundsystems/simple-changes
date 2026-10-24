@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/worktree-archive-prune.schema.json",
+  "title": "Simple Changes worktree archive prune record",
+  "description": "One element of the append-only list in the Git common directory's simple-changes/archives/prune-log.json. Each record is written before its archive folder is removed, so a crash between the two leaves a record for an archive that still exists, never the reverse. The fields copied from the manifest are null only for an archive pruned by id whose manifest did not parse.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schemaVersion",
+    "archiveId",
+    "prunedAt",
+    "command",
+    "cause",
+    "createdAt",
+    "expiresAt",
+    "bytes",
+    "receiptDigest",
+    "source",
+    "pinRefsDeleted",
+    "approvedBy",
+    "reason"
+  ],
+  "properties": {
+    "kind": { "const": "worktree-archive-prune" },
+    "schemaVersion": { "const": 1 },
+    "archiveId": {
+      "type": "string",
+      "pattern": "^archive-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}-[0-9a-f]{8}$"
+    },
+    "prunedAt": { "type": "string", "format": "date-time" },
+    "command": {
+      "enum": ["prune", "worktree-cleanup", "loop-finalize", "prune-archives"]
+    },
+    "cause": { "enum": ["expired", "size-cap", "manual"] },
+    "createdAt": {
+      "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
+    },
+    "expiresAt": {
+      "anyOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }]
+    },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "receiptDigest": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        { "type": "null" }
+      ]
+    },
+    "source": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "branch", "headSha"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "branch": {
+              "anyOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "null" }
+              ]
+            },
+            "headSha": {
+              "type": "string",
+              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+            }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "pinRefsDeleted": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^refs/simple-changes/archives/" }
+    },
+    "approvedBy": {
+      "anyOf": [
+        { "type": "string", "minLength": 1, "maxLength": 128 },
+        { "type": "null" }
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        { "type": "string", "minLength": 1, "maxLength": 500 },
+        { "type": "null" }
+      ]
+    }
+  },
+  "if": {
+    "required": ["cause"],
+    "properties": { "cause": { "const": "manual" } }
+  },
+  "then": {
+    "properties": {
+      "approvedBy": { "type": "string" },
+      "reason": { "type": "string" }
+    }
+  },
+  "else": {
+    "properties": {
+      "approvedBy": { "type": "null" },
+      "reason": { "type": "null" },
+      "createdAt": { "type": "string" },
+      "expiresAt": { "type": "string" },
+      "receiptDigest": { "type": "string" },
+      "source": { "type": "object" }
+    }
+  }
+}

@@ -198,6 +198,69 @@ describe("loop rebaseline", () => {
   });
 });
 
+describe("rebaselined late arrivals and automatic cleanup", () => {
+  // Each fixture has a clean, target-contained checkout registered at loop
+  // start (the control, which cleanup still removes) and a clean,
+  // target-contained late arrival registered by `loop rebaseline`, which
+  // re-baseline grants no cleanup authority over.
+  const rebaselinedFixture = () => {
+    const fixture = repository();
+    const opening = join(fixture.base, "opening-unit");
+    git(fixture.root, ["worktree", "add", "-b", "opening-unit", opening]);
+    const lease = startLoop(fixture.root, "controller", "integrate");
+    const late = join(fixture.base, "late-unit");
+    git(fixture.root, ["worktree", "add", "-b", "late-unit", late]);
+    const rebaselined = rebaselineLoopWorktrees(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "the-user",
+      "Another agent opened a checkout after loop start."
+    );
+    expect(rebaselined.verification.ok).toBe(true);
+    return { fixture, late, lease, opening };
+  };
+
+  test("finalize keeps a clean contained rebaselined checkout and removes the opening one", () => {
+    const { fixture, late, lease, opening } = rebaselinedFixture();
+
+    const finalized = finalizeLoop(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "Everything is already in the target."
+    );
+
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.blockers).toEqual([]);
+    expect(finalized.cleanup.removedWorktrees).toContain(opening);
+    expect(existsSync(opening)).toBe(false);
+    expect(finalized.cleanup.removedWorktrees).not.toContain(late);
+    expect(existsSync(late)).toBe(true);
+    expect(
+      captureInventory(fixture.root).worktrees.map((worktree) => worktree.path)
+    ).toContain(late);
+  });
+
+  test("close-equivalent keeps a clean contained rebaselined checkout and removes the opening one", () => {
+    const { fixture, late, lease, opening } = rebaselinedFixture();
+
+    const closed = closeLoopTargetEquivalent(
+      fixture.root,
+      lease.runId,
+      "controller",
+      "the-user",
+      "Nothing to ship; the registered work is already in the target."
+    );
+
+    expect(closed.outcome).toBe("target-equivalent");
+    expect(closed.cleanup.removedWorktrees).toContain(opening);
+    expect(existsSync(opening)).toBe(false);
+    expect(closed.cleanup.removedWorktrees).not.toContain(late);
+    expect(existsSync(late)).toBe(true);
+  });
+});
+
 describe("stale-claim takeover on lease-registered paths", () => {
   test("an active loop still protects its registered claimed worktrees, but a relinquished one does not", () => {
     const fixture = repository();

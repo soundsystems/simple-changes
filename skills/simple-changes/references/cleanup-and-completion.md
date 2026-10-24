@@ -518,6 +518,10 @@ run-created and opening worktree removals remain in the historical audit.
 Because Git prunes stale registrations together, finalization defers all
 metadata pruning if any missing checkout is outside the freshly audited set.
 Unique work, retained checkouts, and active claims keep their registrations.
+A late arrival that `loop rebaseline` registered is never a cleanup candidate,
+even when it is clean and the target contains it, and it never blocks the run
+from ending; a later run that registers it at its opening treats it like any
+other opening checkout.
 `prepare-agent` creates each worktree directly beside the primary checkout, so
 removing it with Git leaves nothing behind. Finalization never removes a
 worktree's parent folder, including the managed

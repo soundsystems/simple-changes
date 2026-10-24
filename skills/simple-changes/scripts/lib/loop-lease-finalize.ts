@@ -440,6 +440,16 @@ const automaticRemovalDisposition = (
 
 type AutomaticCleanupCandidate = WorktreeInventory & { headSha: string };
 
+// A late arrival registered by `loop rebaseline` stays owner-controlled: the
+// re-baseline grants no cleanup authority over it, so automatic cleanup never
+// takes it and its presence never blocks the run from ending.
+const rebaselinedPaths = (lease: LoopLease): ReadonlySet<string> =>
+  new Set(
+    (lease.rebaselines ?? []).flatMap((record) =>
+      record.registered.map((item) => item.path)
+    )
+  );
+
 const automaticCleanupCandidates = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -457,8 +467,12 @@ const automaticCleanupCandidates = (
   if (!protection) {
     return [];
   }
+  const rebaselined = rebaselinedPaths(lease);
   return inventory.worktrees.filter((worktree) => {
-    if (protection.sources.has(worktree.path)) {
+    if (
+      protection.sources.has(worktree.path) ||
+      rebaselined.has(worktree.path)
+    ) {
       return false;
     }
     const registered = registeredByPath.get(worktree.path);
@@ -2063,8 +2077,12 @@ const repositoryCleanupBlockers = (
           true
         ).exitCode === 0
     );
+  const rebaselined = rebaselinedPaths(lease);
   const mergedCleanupWorktrees = inventory.worktrees
     .filter((worktree) => {
+      if (rebaselined.has(worktree.path)) {
+        return false;
+      }
       const registered = registeredByPath.get(worktree.path);
       return (
         !worktree.isPrimary &&

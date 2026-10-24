@@ -120,8 +120,10 @@ const THROWN_DELETE_PATTERN =
   /\/head \(Simulated spawn failure while deleting/u;
 const LEFTOVER_PIN_PATTERN =
   /could not be fully removed; still present: refs\/simple-changes\/archives\/archive-[^ ]+\/head \(Simulated spawn failure/u;
-const MOVED_HEAD_UNDONE_PATTERN =
-  /Git registers it at [0-9a-f]{40} on source-unit, not the reviewed [0-9a-f]{40} on source-unit\. Archive archive-[^ ]+ and its [0-9]+ pin\(s\) were removed again/u;
+const MOVED_HEAD_KEPT_PATTERN =
+  /Git registers it at [0-9a-f]{40} on source-unit, not the reviewed [0-9a-f]{40} on source-unit\. Archive archive-[^ ]+ at \S+ is complete and kept with its [0-9]+ pin\(s\)/u;
+const GROWN_STATE_FILE_PATTERN =
+  /was preserved; no archive was made\. The copied private Git directory holds FETCH_HEAD \([0-9]+ bytes\), larger than the [0-9]+ bytes the object scan reads/u;
 const OVERSIZED_STATE_FILE_PATTERN =
   /holds FETCH_HEAD \([0-9]+ bytes\), larger than the [0-9]+ bytes the object scan reads/u;
 const ONE_PIN_REMOVED_PATTERN =
@@ -131,8 +133,9 @@ const DAY = 86_400_000;
 const ADAPTER = "test-adapter";
 const HEAD_PIN_PATTERN = /\/head$/u;
 const CHANGED_AFTER_ARCHIVE_PATTERN = /changed after it was archived/u;
-const ARCHIVE_UNDONE_PATTERN =
-  /Archive archive-[^ ]+ and its [0-9]+ pin\(s\) were removed again/u;
+const UNDO_TEXT_PATTERN = /still present|removed again/u;
+const ARCHIVE_KEPT_PATTERN =
+  /Archive archive-[^ ]+ at \S+ is complete and kept with its [0-9]+ pin\(s\); it expires at [^,]+, or prune it with/u;
 const ONE_BYTE_CAP_PATTERN = /more than the 1-byte limit/u;
 const PATH_TAKEN_PATTERN = /already exists/u;
 const BRANCH_ELSEWHERE_PATTERN = /now points at [0-9a-f]{40}/u;
@@ -1718,7 +1721,11 @@ describe("reviewed replacement lineage cleanup", () => {
     ).toBe(stash);
   });
 
-  test("a change between the archive copy and the final comparison keeps the checkout and removes the archive again", () => {
+  // A final comparison that finds the checkout changed refuses and keeps
+  // it; the complete archive stays with its pins and expires under
+  // retention, so nothing is undone. No pin deletion is attempted, which
+  // the throwing seam would otherwise turn into a reported leftover.
+  const expectDriftKeepsArchive = (throwingPin?: string): void => {
     const lineage = lineageFixture(false);
     const { root } = lineage.fixture;
     const receipt = receiptFor(lineage);
@@ -1732,6 +1739,9 @@ describe("reviewed replacement lineage cleanup", () => {
               lineage.path,
               "a.ts"
             ),
+            ...(throwingPin
+              ? { SIMPLE_CHANGES_TEST_THROW_PIN_DELETE: throwingPin }
+              : {}),
           },
           () => prune(lineage, receipt)
         ),
@@ -1744,10 +1754,14 @@ describe("reviewed replacement lineage cleanup", () => {
     expect(branchExists(root, "source-unit")).toBe(true);
     expect(branchExists(root, "merged-unit")).toBe(true);
     expect(readWorktreeCleanups(commonDirectory(root))).toEqual([]);
-    // The archive written before the drift was found is undone again, pins
-    // first, so nothing stays pinned without a removal.
-    expect(listWorktreeArchives(commonDirectory(root))).toEqual([]);
-    expect(pinRefs(root)).toBe("");
+    const archives = listWorktreeArchives(commonDirectory(root));
+    expect(archives).toHaveLength(1);
+    const manifest = readWorktreeArchiveManifest(archives[0]?.directory ?? "");
+    expect(manifest.source.headSha).toBe(lineage.headSha);
+    expect(manifest.pinRefs.length).toBeGreaterThan(0);
+    for (const pin of manifest.pinRefs) {
+      expect(git(root, ["rev-parse", pin.ref])).toBe(pin.object);
+    }
     const completed = lineageRecords(root).find(
       (record) => record.phase === "completed"
     );
@@ -1756,9 +1770,21 @@ describe("reviewed replacement lineage cleanup", () => {
       | undefined;
     expect(outcome?.worktreeRemoved).toBe(false);
     expect(outcome?.errors[0] ?? "").toMatch(CHANGED_AFTER_ARCHIVE_PATTERN);
-    expect(outcome?.errors[0] ?? "").toMatch(ARCHIVE_UNDONE_PATTERN);
-    expect(completed?.archive).toBeNull();
-    expect(completed?.pinRefs).toEqual([]);
+    expect(outcome?.errors[0] ?? "").toMatch(ARCHIVE_KEPT_PATTERN);
+    expect(outcome?.errors[0] ?? "").not.toMatch(UNDO_TEXT_PATTERN);
+    expect(completed?.archive).toMatchObject({
+      archiveId: manifest.archiveId,
+      path: archives[0]?.directory,
+    });
+    expect(completed?.pinRefs).toEqual(manifest.pinRefs);
+  };
+
+  test("a change between the archive copy and the final comparison keeps the checkout and the archive", () => {
+    expectDriftKeepsArchive();
+  });
+
+  test("a final drift keeps the archive and its pins even when a pin deletion would throw", () => {
+    expectDriftKeepsArchive("head");
   });
 
   test("an archive over the per-archive size cap is refused before anything is copied", () => {
@@ -2298,7 +2324,7 @@ describe("reviewed replacement lineage cleanup", () => {
     expect(pins[0]).toMatch(PIN_REF_PATTERN);
   });
 
-  test("a head that moved before the copy is refused and the archive undone", () => {
+  test("a head that moved before the copy is refused and the archive kept", () => {
     const lineage = lineageFixture(false);
     const receipt = receiptFor(lineage);
     const { root } = lineage.fixture;
@@ -2311,16 +2337,24 @@ describe("reviewed replacement lineage cleanup", () => {
           },
           () => prune(lineage, receipt)
         ),
-      MOVED_HEAD_UNDONE_PATTERN
+      MOVED_HEAD_KEPT_PATTERN
     );
     expect(worktreePaths(root)).toContain(lineage.path);
     expect(git(lineage.path, ["rev-parse", "HEAD"])).not.toBe(lineage.headSha);
-    expect(pinRefs(root)).toBe("");
-    expect(listWorktreeArchives(commonDirectory(root))).toEqual([]);
+    const archives = listWorktreeArchives(commonDirectory(root));
+    expect(archives).toHaveLength(1);
+    const manifest = readWorktreeArchiveManifest(archives[0]?.directory ?? "");
+    expect(manifest.pinRefs.length).toBeGreaterThan(0);
+    for (const pin of manifest.pinRefs) {
+      expect(git(root, ["rev-parse", pin.ref])).toBe(pin.object);
+    }
     const completed = lineageRecords(root).find(
       (record) => record.phase === "completed"
     );
     expect(completed?.outcome).toMatchObject({ worktreeRemoved: false });
+    expect(completed?.archive).toMatchObject({
+      archiveId: manifest.archiveId,
+    });
   });
 
   test("a state file too large for the object scan refuses, and a small one is pinned", () => {
@@ -2353,6 +2387,51 @@ describe("reviewed replacement lineage cleanup", () => {
         `refs/simple-changes/archives/${archive.archiveId}/objects/${rescue}`,
       ])
     ).toBe(rescue);
+  });
+
+  test("a state file that grows past the scan limit after the boundary read leaves no archive", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const common = commonDirectory(root);
+    const privateDirectory = privateGitDirectoryOf(lineage.path);
+    expectRefusal(
+      () =>
+        withEnvironment(
+          {
+            NODE_ENV: "test",
+            SIMPLE_CHANGES_TEST_GROW_BEFORE_ARCHIVE: join(
+              privateDirectory,
+              "FETCH_HEAD"
+            ),
+          },
+          () => prune(lineage, receiptFor(lineage))
+        ),
+      GROWN_STATE_FILE_PATTERN
+    );
+    expect(worktreePaths(root)).toContain(lineage.path);
+    expect(branchExists(root, "source-unit")).toBe(true);
+    expect(pinRefs(root)).toBe("");
+    expect(listWorktreeArchives(common)).toEqual([]);
+    expect(existsSync(replacementLineageDirectory(common))).toBe(false);
+    expect(readWorktreeCleanups(common)).toEqual([]);
+    // Control: a file the scan never reads (a reflog) may grow the same way;
+    // the copy completes and the checkout is removed.
+    rmSync(join(privateDirectory, "FETCH_HEAD"));
+    const archive = reportedArchive(
+      withEnvironment(
+        {
+          NODE_ENV: "test",
+          SIMPLE_CHANGES_TEST_GROW_BEFORE_ARCHIVE: join(
+            privateDirectory,
+            "logs",
+            "HEAD"
+          ),
+        },
+        () => prune(lineage, receiptFor(lineage))
+      )
+    );
+    expect(existsSync(archive.path)).toBe(true);
+    expect(existsSync(lineage.path)).toBe(false);
   });
 
   test("worktree archives names a restore marker it cannot read", () => {

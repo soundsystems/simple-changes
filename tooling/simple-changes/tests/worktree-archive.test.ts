@@ -41,6 +41,7 @@ import {
   listWorktreeArchives,
   measureTree,
   newArchiveId,
+  OBJECT_SCAN_LIMIT,
   objectIdCandidates,
   pruneWorktreeArchives,
   readArchivePruneLog,
@@ -94,6 +95,8 @@ const UNPARSABLE_PATTERN = /Its state does not parse/u;
 const RECHECK_FAILED_PATTERN =
   /The re-check failed and the archive was pruned/u;
 const MOVED_PIN_PATTERN = /now points at [0-9a-f]{40}, not the pinned/u;
+const OVERSIZED_COPY_PATTERN =
+  /The copied private Git directory holds FETCH_HEAD \([0-9]+ bytes\), larger than the [0-9]+ bytes the object scan reads.*The partial archive was removed/u;
 const STAYS_WHOLE_PATTERN =
   /The archive stays whole so the next prune retries it/u;
 const OUTSIDE_NAMESPACE_PATTERN = /is outside the archive's namespace/u;
@@ -602,6 +605,38 @@ describe("archiving a linked checkout", () => {
     expect(lstatSync(join(checkout.path, "nested", "pipe")).isFIFO()).toBe(
       true
     );
+  });
+
+  test("refuses a copy whose Git tree holds a state file too large to scan, and discards it", () => {
+    const fixture = repository();
+    const checkout = linkedCheckout(
+      fixture,
+      "feature",
+      join(fixture.base, "parent")
+    );
+    const fetchHead = join(checkout.privateGitDirectory, "FETCH_HEAD");
+    const line = `${checkout.headSha}\t\tbranch 'main' of ${fixture.root}\n`;
+    writeFileSync(
+      fetchHead,
+      line.repeat(Math.ceil((OBJECT_SCAN_LIMIT + 1) / line.length))
+    );
+    const input = {
+      archiveId: newArchiveId(new Date(), RECEIPT_DIGEST),
+      checkoutPath: checkout.path,
+      commonGitDirectory: checkout.common,
+      privateGitDirectory: checkout.privateGitDirectory,
+    };
+
+    expectRefusal(() => copyWorktreeIntoArchive(input), OVERSIZED_COPY_PATTERN);
+
+    expect(
+      existsSync(join(worktreeArchivesRoot(checkout.common), input.archiveId))
+    ).toBe(false);
+    // Control: under the limit the file is scanned, and the commit it names
+    // is an object candidate.
+    writeFileSync(fetchHead, line);
+    const copy = copyWorktreeIntoArchive(input);
+    expect(copy.objectIdCandidates).toContain(checkout.headSha);
   });
 
   test("refuses an archive over the cap or without the free space, naming the numbers", () => {
@@ -1150,6 +1185,77 @@ describe("pruning", () => {
     expect(readArchivePruneLog(commonDirectoryOf(fixture.root))).toHaveLength(
       2
     );
+  });
+
+  test("selects the next-oldest when a kept archive frees nothing under the size cap", () => {
+    const twoUnexpiredOverCap = () => {
+      const fixture = repository();
+      const replacement = git(fixture.root, ["rev-parse", "main"]);
+      const unexpired = {
+        expiresAt: ago(-30),
+        payloadBytes: 600 * 1024,
+        pins: "head" as const,
+        replacement,
+      };
+      const oldest = syntheticArchive(fixture, {
+        ...unexpired,
+        createdAt: ago(5),
+      });
+      const newer = syntheticArchive(fixture, {
+        ...unexpired,
+        createdAt: ago(2),
+      });
+      return {
+        fixture,
+        newer,
+        oldest,
+        retention: { days: 14, maxTotalBytes: 1024 * 1024 },
+      };
+    };
+
+    const blocked = twoUnexpiredOverCap();
+    writeFixture(blocked.fixture.root, "other.txt", "other\n");
+    git(blocked.fixture.root, ["add", "."]);
+    git(blocked.fixture.root, ["commit", "-m", "Another commit"]);
+    const other = git(blocked.fixture.root, ["rev-parse", "HEAD"]);
+    const movedPin = `${archivePinNamespace(blocked.oldest.archiveId)}/head`;
+    git(blocked.fixture.root, ["update-ref", movedPin, other]);
+
+    const planned = prune(blocked.fixture, {
+      dryRun: true,
+      retention: blocked.retention,
+    });
+    expect(planned.pruned.map((item) => [item.archiveId, item.cause])).toEqual([
+      [blocked.newer.archiveId, "size-cap"],
+    ]);
+    expect(planned.keptForAttention.map((item) => item.archiveId)).toEqual([
+      blocked.oldest.archiveId,
+    ]);
+    expect(existsSync(blocked.newer.directory)).toBe(true);
+
+    const result = prune(blocked.fixture, { retention: blocked.retention });
+    expect(result.pruned.map((item) => [item.archiveId, item.cause])).toEqual([
+      [blocked.newer.archiveId, "size-cap"],
+    ]);
+    expect(result.keptForAttention.map((item) => item.archiveId)).toEqual([
+      blocked.oldest.archiveId,
+    ]);
+    expect(result.keptForAttention[0]?.reason).toMatch(MOVED_PIN_PATTERN);
+    expect(result.totalBytesAfter).toBe(archiveBytes(blocked.oldest));
+    expect(existsSync(blocked.oldest.directory)).toBe(true);
+    expect(existsSync(blocked.newer.directory)).toBe(false);
+    expect(git(blocked.fixture.root, ["rev-parse", movedPin])).toBe(other);
+
+    // Control: with healthy pins the oldest alone brings the total under the
+    // cap, and the newer archive stays.
+    const healthy = twoUnexpiredOverCap();
+    const control = prune(healthy.fixture, { retention: healthy.retention });
+    expect(control.pruned.map((item) => [item.archiveId, item.cause])).toEqual([
+      [healthy.oldest.archiveId, "size-cap"],
+    ]);
+    expect(control.keptForAttention).toEqual([]);
+    expect(control.totalBytesAfter).toBe(archiveBytes(healthy.newer));
+    expect(existsSync(healthy.newer.directory)).toBe(true);
   });
 
   test("keeps archives whose target reverted or lost a replacement, until pruned by ID", () => {

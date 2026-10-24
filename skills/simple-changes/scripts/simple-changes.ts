@@ -4904,9 +4904,10 @@ const renderReviewedReplacement = (
   const archived = archive.archiveId
     ? `archived as ${archive.archiveId} at ${archive.path} (${retention}); ${outcome.pinRefs.length} pin(s) under refs/simple-changes/archives/${archive.archiveId}/`
     : "not archived";
-  const restore = archive.archiveId
-    ? ` Restore it with \`simple-changes worktree restore-archive --archive ${archive.archiveId}\`.`
-    : "";
+  const restore =
+    archive.archiveId && outcome.worktreeRemoved
+      ? ` Restore it with \`simple-changes worktree restore-archive --archive ${archive.archiveId}\`.`
+      : "";
   return `Reviewed replacement: ${outcome.worktreeRemoved ? "removed" : "kept"} ${outcome.path}${outcome.branch ? `, branch ${outcome.branch} ${outcome.branchDeleted ? "deleted" : "kept"}` : ""}; ${archived} (${proof}).${restore}${fallbacks}\n`;
 };
 

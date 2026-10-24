@@ -135,17 +135,17 @@ so an autostash, a rebase's original head or a per-worktree ref stays
 reachable; writes an intent record; compares the live files with the
 manifest once more, with no Git command in the checkout in between, and
 checks that Git still registers the reviewed head and branch there; when
-anything changed it refuses, keeps the checkout, and removes the archive and
-its pins again; removes the checkout with plain `git worktree remove`; deletes
+anything changed it refuses and keeps the checkout, and the complete archive
+stays with its pins, named by the completion record, until retention prunes
+it or `worktree prune-archives --archive <id>` does; removes the checkout
+with plain `git worktree remove`; deletes
 the branch only while no checkout uses it and it still points at the pinned
 head, with its configuration section (the manifest keeps the entries for
 restore); and writes a completion record, both under
 `<git common dir>/simple-changes/replacement-lineage/`. It forces nothing.
 A failure before the archive is complete leaves no archive; a failure after
-it keeps the archive, except the final comparison's refusal, which removes
-the archive again and names no archive in its completion record; a removal
-Git could not finish is reported as "not removed by this run" with the
-restore command.
+it keeps the archive; a removal Git could not finish is reported as "not
+removed by this run" with the restore command.
 
 The hardened boundary is unchanged: from the check before the archive
 through the branch deletion, every Git command runs with `--no-pager
@@ -192,7 +192,9 @@ its expiry and pins.
 
 Archives never need managing. Each expires after the repository policy's
 `archiveRetention.days` (default 14), or sooner, oldest first, once the
-archives together exceed `archiveRetention.maxTotalBytes` (default 2 GiB).
+archives together exceed `archiveRetention.maxTotalBytes` (default 2 GiB);
+an archive that is kept frees nothing, so the next-oldest is chosen until
+the total is under the cap.
 `prune`, `worktree cleanup` and `loop finalize` prune expired archives
 automatically, at the end of a run whose removals succeeded (never the
 archive that run made, and never on a run that refused), and report what

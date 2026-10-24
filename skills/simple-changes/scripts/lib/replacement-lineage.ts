@@ -1623,6 +1623,21 @@ const commitBeforeArchiveForTests = (path: string): void => {
   }
 };
 
+// A test-only seam: a Git state file in the checkout's private directory
+// grows past the object scan limit between the boundary read and the copy,
+// which the copy must catch.
+const growBeforeArchiveForTests = (): void => {
+  const target = process.env.SIMPLE_CHANGES_TEST_GROW_BEFORE_ARCHIVE;
+  if (process.env.NODE_ENV === "test" && target) {
+    const line = `${"0".repeat(40)}\t\tbranch 'main' of a test remote\n`;
+    writeFileSync(
+      target,
+      line.repeat(Math.ceil((OBJECT_SCAN_LIMIT + 1) / line.length)),
+      { flag: "a" }
+    );
+  }
+};
+
 // A test-only seam: a change to the checkout between the archive copy and
 // the comparison that precedes removal, which the comparison must catch.
 const changeAfterArchiveForTests = (): void => {
@@ -1647,47 +1662,18 @@ const liveDrift = (
   return registrationDrift(verified, overrides);
 };
 
-// The checkout is no longer the one the archive describes, so the archive is
-// undone (exactly its pins, then its folder) and the checkout kept; what
-// could not be undone is named. Returns the error line for the records.
+// The checkout is no longer the one the archive describes, so the run
+// refuses and keeps it. The archive is complete and verified, so it stays
+// too, with its pins, and expires under retention: nothing is undone, and
+// the records name exactly what exists. Returns the error line.
 const keepAfterDrift = (
   verified: VerifiedReplacementLineage,
   archived: ArchivedSource,
-  overrides: readonly string[],
-  drift: string,
-  outcome: ReplacementLineageOutcome
+  drift: string
 ): string => {
   const { manifest } = archived;
-  const leftovers = deleteTrackedPins(
-    verified.primaryCheckout,
-    manifest.pinRefs,
-    overrides
-  );
-  try {
-    discardArchiveDirectory(archived.directory);
-  } catch (removal) {
-    leftovers.push(
-      `${archived.directory} (${removal instanceof Error ? removal.message : String(removal)})`
-    );
-  }
-  if (leftovers.length === 0) {
-    outcome.archive = { ...outcome.archive, archiveId: null, path: null };
-    outcome.pinRefs = [];
-  }
-  const undone =
-    leftovers.length === 0
-      ? `Archive ${manifest.archiveId} and its ${manifest.pinRefs.length} pin(s) were removed again.`
-      : `Archive ${manifest.archiveId} could not be fully removed; still present: ${leftovers.join(", ")}. Remove them by hand.`;
-  return `Preserved reviewed replacement checkout ${verified.worktree.path}: ${drift}. ${undone} Review the checkout again and write a new receipt.`;
+  return `Preserved reviewed replacement checkout ${verified.worktree.path}: ${drift}. Archive ${manifest.archiveId} at ${archived.directory} is complete and kept with its ${manifest.pinRefs.length} pin(s); it expires at ${manifest.expiresAt}, or prune it with \`simple-changes worktree prune-archives --archive ${manifest.archiveId} --approved-by <user> --reason <why>\`. Review the checkout again and write a new receipt.`;
 };
-
-// After a full undo the completed record names no archive and no pins, so a
-// reader never looks for an archive that was removed again; after a partial
-// undo they stay, with the leftovers named in the errors.
-const undoneArchive = (
-  outcome: ReplacementLineageOutcome
-): Partial<Pick<ReplacementLineageRemovalRecord, "archive" | "pinRefs">> =>
-  outcome.archive.archiveId === null ? { archive: null, pinRefs: [] } : {};
 
 // Deletes the source branch only while no checkout has it checked out and it
 // still points at the pinned head, with an exact old-value ref update rather
@@ -1781,6 +1767,7 @@ export const removeReviewedReplacement = (
   assertPlainGitEnvironment();
   const removalId = `lineage-${randomUUID()}`;
   commitBeforeArchiveForTests(path);
+  growBeforeArchiveForTests();
   let archived: ArchivedSource;
   try {
     archived = archiveSource(verified, source, removalId, overrides);
@@ -1842,9 +1829,7 @@ export const removeReviewedReplacement = (
   const stepErrors: string[] = [];
   const drift = liveDrift(verified, manifest, overrides);
   if (drift) {
-    stepErrors.push(
-      keepAfterDrift(verified, archived, overrides, drift, outcome)
-    );
+    stepErrors.push(keepAfterDrift(verified, archived, drift));
   } else {
     const removal = runGit(
       primary,
@@ -1871,7 +1856,6 @@ export const removeReviewedReplacement = (
   outcome.recordPaths.push(
     writeRecord(options.commonGitDirectory, {
       ...base,
-      ...undoneArchive(outcome),
       outcome: {
         branchDeleted: outcome.branchDeleted,
         errors: stepErrors,

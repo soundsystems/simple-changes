@@ -879,6 +879,15 @@ export const copyWorktreeIntoArchive = (
         `The archive copy does not match what was read (${summarize(differences)}). The partial archive was removed and nothing else changed; run the command again.`
       );
     }
+    // The object scan reads this copy, so a state file that grew past the
+    // scan limit between the caller's own checks and the copy is caught
+    // here, and the partial archive is discarded like any other copy failure.
+    const oversized = oversizedScanFiles(gitCopy);
+    if (oversized.length > 0) {
+      throw refusal(
+        `The copied private Git directory holds ${oversized.join(", ")}, larger than the ${OBJECT_SCAN_LIMIT_BYTES} bytes the object scan reads, so the objects they name could not all be pinned. The partial archive was removed and nothing else changed; shrink or remove those files (for FETCH_HEAD, run \`git fetch\` without --append) and run the command again.`
+      );
+    }
     return {
       checkout,
       directory,
@@ -1915,6 +1924,9 @@ const automaticPlan = (
   const plan: PrunePlan = { keptForAttention: [], prune: [], skipped: [] };
   const eligible = classifyListings(context, listings, plan);
   // The size cap is the policy's; a manual run by age prunes by age only.
+  // An archive whose pins are blocked is selected, so the run reports it as
+  // kept, but frees nothing, so the next-oldest is selected after it; a dry
+  // run plans from the same pin plans and so matches.
   let total = totalBytesBefore;
   while (
     input.manual === undefined &&
@@ -1924,7 +1936,9 @@ const automaticPlan = (
     const oldest = eligible.shift();
     if (oldest) {
       plan.prune.push({ ...oldest, cause: "size-cap" });
-      total -= oldest.bytes;
+      if (pinPlanFor(context, oldest).blocked.length === 0) {
+        total -= oldest.bytes;
+      }
     }
   }
   for (const item of eligible) {

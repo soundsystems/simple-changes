@@ -75,9 +75,9 @@ describe("first-run initialization", () => {
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
       26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30,
       31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32,
-      // <!-- lineage -->: guidance 33 has nine changes with the archived
-      // reviewed removal and eight without it; drop one 33 from each list.
-      33, 33, 33, 33, 33, 33, 33, 33, 33,
+      // <!-- lineage -->: guidance 33 has ten changes with the archived
+      // reviewed removal and nine without it; drop one 33 from each list.
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
@@ -130,7 +130,7 @@ describe("first-run initialization", () => {
     );
     expect(from29.changes.map((item) => item.version)).toEqual([
       30, 30, 31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32,
-      32, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from29.summaryBullets.join(" ")).toContain(
       "`author attest --complete-identity`"
@@ -144,7 +144,7 @@ describe("first-run initialization", () => {
     );
     expect(from30.changes.map((item) => item.version)).toEqual([
       31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32, 33,
-      33, 33, 33, 33, 33, 33, 33, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from30.requiredAnswers).toEqual([]);
     const from31 = inspectGuidanceUpdate(
@@ -155,7 +155,7 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from31.changes.map((item) => item.version)).toEqual([
-      32, 32, 32, 32, 32, 32, 32, 32, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      32, 32, 32, 32, 32, 32, 32, 32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from31.requiredAnswers).toEqual([]);
     expect(from31.summaryBullets.join(" ")).toContain(
@@ -169,7 +169,7 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from32.changes.map((item) => item.version)).toEqual([
-      33, 33, 33, 33, 33, 33, 33, 33, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from32.requiredAnswers).toEqual([]);
     expect(from32.summaryBullets).toHaveLength(3);

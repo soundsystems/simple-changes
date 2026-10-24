@@ -276,6 +276,19 @@
   point without your help, and commands explain outcomes in plain words
   and ask only for decisions you can make. Reviews of Simple Changes now
   grade findings against it.
+- Choosing "This run only" during setup now lets the agent finish the
+  request you started it for. Before, run-only setup saved nothing and
+  told the agent nothing, so every later check in the same run still said
+  setup was required and `loop start --changelog-required` stopped with
+  exit 5. Now setup prints the exact value to pass on as `runRequest`, and
+  the agent passes setup's `policy` as `--policy-request` to each later
+  `initialize` and `loop start` of that run. It applies only when no
+  repository or personal policy is saved, is never written anywhere, and
+  never turns on automatic pushes, production deploys, non-standard
+  shipping, or automatic migrations, which stay at ask. A saved policy
+  always wins. A malformed or out-of-date value is refused with exit 2
+  and changes nothing. The next run asks the setup questions again, as
+  before. Older copies reject `--policy-request` as unknown.
 - Sharing a repository with an older release: the lease, coordination,
   review ledger, and authoring files keep their shapes, except that a run
   with a held unit adds `heldUnits` to its lease, which older copies

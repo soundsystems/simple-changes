@@ -1392,18 +1392,13 @@ export interface RemoteBranchExternalDeletion {
   lastHeadRevision: string;
 }
 
-/** The branches one recorded receipt, named by digest, records as deleted. */
-export interface RemoteBranchExternalDeletionReceipt {
+/**
+ * The branches one recorded receipt records as deleted outside the run, kept
+ * in its own immutable file named by the receipt's digest.
+ */
+export interface RemoteBranchExternalDeletionRecord {
   deletions: RemoteBranchExternalDeletion[];
   receiptDigest: string;
-}
-
-export interface RemoteBranchExternalDeletionRecord {
-  /**
-   * The receipt the lease held before the latest record, when it had any,
-   * and the latest one; loop end uses the entry whose digest matches.
-   */
-  receipts: RemoteBranchExternalDeletionReceipt[];
   runId: string;
   schemaVersion: 1;
 }

@@ -247,10 +247,11 @@ lastHeadRevision }` naming its opening head, and lists it under
 merged, or obsolete. A branch deleted while a proposal on it is still open
 still stops the build.
 
-`loop reconcile-remote-branches` keeps the record in
-`remote-branch-external-deletions/<run-id>.json` beside the lease, keyed by
-receipt digest (it keeps the entry for the receipt the lease already holds,
-so an interrupted record never invalidates it), and pins each last head that
+`loop reconcile-remote-branches` keeps the record beside the lease in its own
+immutable file per receipt,
+`remote-branch-external-deletions/<run-id>/<receipt digest>.json` (a later
+record never rewrites it, so a failed or interrupted record never takes it
+from the receipt the lease holds), and pins each last head that
 Git has locally at `refs/simple-changes/external/<run-id>/<head>/<ms>`, where
 `<ms>` is when the pin was made. A head that is not local is recorded without
 a pin. `loop finalize` lists each branch under
@@ -260,9 +261,9 @@ starts "This branch was deleted outside this run; its last head was ...". Any
 entry makes `cleanupStatus` `pending`; it never blocks closing the run. Tell
 the user, and restore the branch from the pin or fetch its head (GitLab keeps
 a merge request's head at `refs/merge-requests/<iid>/head`) if the work is
-still needed. A later completed `loop finalize` removes each pin of another run 14
-days after the time in its name, by exact value, and reports what it removed
-under `expiredExternalDeletionPins`.
+still needed. When a later run closes, `loop finalize` removes each pin of
+another run 14 days after the time in its name, by exact value, and reports
+what it removed under `expiredExternalDeletionPins`.
 
 Older runtimes cannot read the record, so they refuse that receipt at `loop
 end` and cannot record it; they still read the lease.

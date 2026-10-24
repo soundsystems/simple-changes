@@ -1493,22 +1493,47 @@ type ReceiptSidecarDirectory =
   | typeof REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY
   | typeof REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY;
 
+/**
+ * A receipt sidecar's path: `<directory>/<runId>.json`, or, for a sidecar
+ * kept per receipt, `<directory>/<runId>/<receipt digest>.json`.
+ */
 const receiptSidecarPath = (
   commonGitDirectory: string,
   directory: ReceiptSidecarDirectory,
-  runId: string
-): string =>
-  assertNoSymlinkAncestors(
+  runId: string,
+  receiptDigest?: string
+): string => {
+  if (receiptDigest !== undefined && !DIGEST_PATTERN.test(receiptDigest)) {
+    throw new SimpleChangesError(
+      `Invalid receipt digest for a ${directory} sidecar: ${receiptDigest}`,
+      EXIT_CODES.validation
+    );
+  }
+  return assertNoSymlinkAncestors(
     commonGitDirectory,
-    join(STATE_DIRECTORY, directory, `${requiredRunId(runId)}.json`)
+    receiptDigest === undefined
+      ? join(STATE_DIRECTORY, directory, `${requiredRunId(runId)}.json`)
+      : join(
+          STATE_DIRECTORY,
+          directory,
+          requiredRunId(runId),
+          `${receiptDigest}.json`
+        )
   );
+};
 
 const readReceiptSidecar = (
   commonGitDirectory: string,
   directory: ReceiptSidecarDirectory,
-  runId: string
+  runId: string,
+  receiptDigest?: string
 ): unknown => {
-  const path = receiptSidecarPath(commonGitDirectory, directory, runId);
+  const path = receiptSidecarPath(
+    commonGitDirectory,
+    directory,
+    runId,
+    receiptDigest
+  );
   if (!existsSync(path)) {
     return null;
   }
@@ -1522,12 +1547,14 @@ const readReceiptSidecar = (
 const writeReceiptSidecar = (
   lease: LoopLease,
   directory: ReceiptSidecarDirectory,
-  record: object | null
+  record: object | null,
+  receiptDigest?: string
 ): void => {
   const path = receiptSidecarPath(
     lease.commonGitDirectory,
     directory,
-    lease.runId
+    lease.runId,
+    receiptDigest
   );
   if (record === null) {
     rmSync(path, { force: true });

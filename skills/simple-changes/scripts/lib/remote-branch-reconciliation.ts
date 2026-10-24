@@ -997,10 +997,9 @@ export const validateRemoteBranchSupersessionRecord = (
 };
 
 /**
- * The branches an external-deletion sidecar records as deleted outside the
- * run for this exact receipt, found by its digest; none when no entry names
- * it, which leaves the receipt validator to refuse any entry that needs one.
- * A record that is malformed or names another run fails closed.
+ * The branches an external-deletion record names for this exact receipt. The
+ * record is read from the file named by the receipt's digest, so it must name
+ * the same run and digest; anything else fails closed.
  */
 export const externalDeletionsForReceipt = (
   value: unknown,
@@ -1011,17 +1010,16 @@ export const externalDeletionsForReceipt = (
     "remote-branch-external-deletions",
     value
   );
-  if (record.runId !== runId) {
+  if (
+    record.runId !== runId ||
+    record.receiptDigest !== remoteBranchReconciliationDigest(receipt)
+  ) {
     throw new SimpleChangesError(
-      `The remote-branch external deletion record names run ${record.runId}, not ${runId}; record the final reconciliation again.`,
+      "The remote-branch external deletion record does not match this run's recorded reconciliation receipt; record the final reconciliation again.",
       EXIT_CODES.unsafe
     );
   }
-  const digest = remoteBranchReconciliationDigest(receipt);
-  return (
-    record.receipts.find((entry) => entry.receiptDigest === digest)
-      ?.deletions ?? []
-  );
+  return record.deletions;
 };
 
 export const validateRemoteBranchReconciliation = (

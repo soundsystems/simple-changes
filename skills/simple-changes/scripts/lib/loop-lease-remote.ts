@@ -141,34 +141,6 @@ const writeRemoteBranchOpenTargets = (
   );
 
 /**
- * The external-deletion record for this run, or null when there is none or it
- * cannot be read. Only a record writer uses it this way, to keep the entry
- * of the receipt the lease already holds; loop end reads it strictly.
- */
-const storedExternalDeletionRecord = (
-  commonGitDirectory: string,
-  runId: string
-): RemoteBranchExternalDeletionRecord | null => {
-  try {
-    const stored = readReceiptSidecar(
-      commonGitDirectory,
-      REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY,
-      runId
-    );
-    if (stored === null) {
-      return null;
-    }
-    const record = validateSchema<RemoteBranchExternalDeletionRecord>(
-      "remote-branch-external-deletions",
-      stored
-    );
-    return record.runId === runId ? record : null;
-  } catch {
-    return null;
-  }
-};
-
-/**
  * Pins the last head of each branch deleted outside the run, when Git has it
  * and no pin of this run already keeps it, at
  * `refs/simple-changes/external/<runId>/<head>/<ms>`, so gc cannot remove
@@ -214,41 +186,29 @@ const pinExternallyDeletedHeads = (
 };
 
 /**
- * Branches deleted outside the run live beside the lease, keyed by receipt
- * digest. A record keeps the entry for the receipt the lease already holds
- * and adds the new one, so a record interrupted before the lease is written
- * never leaves the earlier receipt without its entry. Entries for any other
- * receipt are dropped, and a record with no entry is removed.
+ * Branches deleted outside the run live beside the lease, one immutable file
+ * per receipt, named by its digest. A record writes only its own receipt's
+ * file and never reads, rewrites, or removes another, so a record that fails
+ * or is interrupted before the lease write cannot take evidence away from the
+ * receipt the lease already holds.
  */
 const writeRemoteBranchExternalDeletions = (
   lease: LoopLease,
   receipt: RemoteBranchReconciliationReceipt,
   deletions: RemoteBranchExternalDeletion[]
 ): void => {
-  const current = lease.remoteBranchReconciliation
-    ? remoteBranchReconciliationDigest(lease.remoteBranchReconciliation)
-    : null;
-  const next = remoteBranchReconciliationDigest(receipt);
-  const kept =
-    storedExternalDeletionRecord(
-      lease.commonGitDirectory,
-      lease.runId
-    )?.receipts.filter(
-      (entry) => entry.receiptDigest === current && current !== next
-    ) ?? [];
-  const receipts = [
-    ...kept,
-    ...(deletions.length > 0 ? [{ deletions, receiptDigest: next }] : []),
-  ];
+  if (deletions.length === 0) {
+    return;
+  }
+  const receiptDigest = remoteBranchReconciliationDigest(receipt);
   writeReceiptSidecar(
     lease,
     REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY,
-    receipts.length === 0
-      ? null
-      : validateSchema<RemoteBranchExternalDeletionRecord>(
-          "remote-branch-external-deletions",
-          { receipts, runId: lease.runId, schemaVersion: 1 }
-        )
+    validateSchema<RemoteBranchExternalDeletionRecord>(
+      "remote-branch-external-deletions",
+      { deletions, receiptDigest, runId: lease.runId, schemaVersion: 1 }
+    ),
+    receiptDigest
   );
 };
 
@@ -657,7 +617,12 @@ const validateRecordedRemoteBranchReconciliation = (
     readReceiptSidecar(lease.commonGitDirectory, directory, lease.runId);
   const storedAncestry = read(REMOTE_BRANCH_ANCESTRY_DIRECTORY);
   const storedSupersession = read(REMOTE_BRANCH_SUPERSESSION_DIRECTORY);
-  const storedExternal = read(REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY);
+  const storedExternal = readReceiptSidecar(
+    lease.commonGitDirectory,
+    REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY,
+    lease.runId,
+    remoteBranchReconciliationDigest(receipt)
+  );
   const ancestryProofs =
     storedAncestry === null
       ? []

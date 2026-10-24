@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
@@ -55,9 +56,10 @@ const runInChild = (
   flag: string,
   lost: number,
   failFlag = "",
-  mode: FakeGitLoss = "empty"
+  mode: FakeGitLoss = "empty",
+  skip = 0
 ): { remaining: number; reply: unknown } =>
-  runWithFakeGit({ body, failFlag, flag, lost, mode }, (cleanup) =>
+  runWithFakeGit({ body, failFlag, flag, lost, mode, skip }, (cleanup) =>
     cleanups.push(cleanup)
   );
 
@@ -322,13 +324,19 @@ console.log(JSON.stringify({
 // side's only commit was cherry-picked onto main after another commit, so
 // the report proves it finished by patch equivalence, which needs the merge
 // base, the target's and side's commit listings, and each commit's patch ID.
-const patchEquivalentFixture = () => {
+const patchEquivalentFixture = (change: "text" | "mode" = "text") => {
   const fixture = repository();
   const { root } = fixture;
   const base = git(root, ["rev-parse", "HEAD"]);
   git(root, ["switch", "--quiet", "-c", "side"]);
-  writeFixture(root, "side.txt", "side\n");
-  git(root, ["add", "side.txt"]);
+  if (change === "text") {
+    writeFixture(root, "side.txt", "side\n");
+    git(root, ["add", "side.txt"]);
+  } else {
+    // A mode change only: a diff without a hunk.
+    chmodSync(join(root, "README.md"), 0o755);
+    git(root, ["add", "README.md"]);
+  }
   git(root, ["commit", "--quiet", "-m", "Side"]);
   const side = git(root, ["rev-parse", "HEAD"]);
   git(root, ["switch", "--quiet", "main"]);
@@ -358,7 +366,8 @@ const reportInChild = (
   fixture: ReturnType<typeof patchEquivalentFixture>,
   flag: string,
   lost: number,
-  mode: FakeGitLoss = "empty"
+  mode: FakeGitLoss = "empty",
+  skip = 0
 ) =>
   runInChild(
     `import { remoteBranchCleanupReport } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
@@ -373,8 +382,16 @@ console.log(JSON.stringify({ errors: result.errors, pending: result.pending }));
     flag,
     lost,
     "",
-    mode
+    mode,
+    skip
   );
+
+// Every patch-ID calculation reads the commit's diff and then pipes it into
+// `git patch-id`, target commits first (main's own commit, then the
+// cherry-pick), so side's commit is the third call of each; the diff call
+// names --full-index in this and in earlier versions.
+const SIDE_DIFF = { flag: "--full-index", skip: 2 } as const;
+const SIDE_PATCH_ID = { flag: "patch-id --stable", skip: 2 } as const;
 
 describe("the cleanup report with a lost merge base", () => {
   const report = (lost: number) => {
@@ -476,40 +493,42 @@ describe("the cleanup report with a target listing lost or cut short", () => {
   });
 });
 
-describe("the cleanup report with a lost diff", () => {
-  // Patch evidence is used only when it is whole, so a lost diff of side's
-  // commit is asked again, and a second loss is an error, never a miss.
-  const expectPatchEquivalent = (lost: number): void => {
-    const fixture = patchEquivalentFixture();
-    const { remaining, reply } = reportInChild(
-      fixture,
-      `--full-index ${fixture.side}`,
-      lost
-    );
+describe("the cleanup report with a lost diff or patch ID", () => {
+  // Patch evidence is used only when it is whole, so a lost answer for
+  // side's commit is asked again, and a second loss is an error, never a
+  // settled miss.
+  const run = (
+    change: "text" | "mode",
+    loss: { flag: string; skip: number },
+    lost: number
+  ) => {
+    const fixture = patchEquivalentFixture(change);
+    return {
+      side: fixture.side,
+      ...reportInChild(fixture, loss.flag, lost, "empty", loss.skip),
+    };
+  };
+
+  const expectPatchEquivalent = (
+    change: "text" | "mode",
+    loss: { flag: string; skip: number },
+    lost: number
+  ): void => {
+    const { remaining, reply, side } = run(change, loss, lost);
     expect(remaining).toBe(0);
     expect(reply).toEqual({
       errors: [],
       pending: [
-        { headRevision: fixture.side, name: "side", proof: "patch-equivalent" },
+        { headRevision: side, name: "side", proof: "patch-equivalent" },
       ],
     });
   };
 
-  test("with every answer kept, the branch is pending as patch-equivalent (control)", () => {
-    expectPatchEquivalent(0);
-  });
-
-  test("a lost diff is asked again, so the branch is still pending", () => {
-    expectPatchEquivalent(1);
-  });
-
-  test("a diff lost twice is an error that keeps cleanup pending, never a settled miss", () => {
-    const fixture = patchEquivalentFixture();
-    const { remaining, reply } = reportInChild(
-      fixture,
-      `--full-index ${fixture.side}`,
-      2
-    );
+  const expectError = (
+    change: "text" | "mode",
+    loss: { flag: string; skip: number }
+  ): void => {
+    const { remaining, reply, side } = run(change, loss, 2);
     expect(remaining).toBe(0);
     const { errors, pending } = reply as {
       errors: string[];
@@ -517,33 +536,70 @@ describe("the cleanup report with a lost diff", () => {
     };
     expect(pending).toEqual([]);
     expect(errors.join(" ")).toContain(
-      `side at ${fixture.side}: its containment could not be checked`
+      `side at ${side}: its containment could not be checked`
     );
     expect(errors.join(" ")).toContain("retry the command");
+  };
+
+  test("with every answer kept, a text or a mode-only change is pending as patch-equivalent (control)", () => {
+    expectPatchEquivalent("text", SIDE_DIFF, 0);
+    expectPatchEquivalent("mode", SIDE_PATCH_ID, 0);
+  });
+
+  test("a lost diff is asked again, so the branch is still pending", () => {
+    expectPatchEquivalent("text", SIDE_DIFF, 1);
+  });
+
+  test("a diff lost twice is an error that keeps cleanup pending, never a settled miss", () => {
+    expectError("text", SIDE_DIFF);
+  });
+
+  test("a lost patch ID for a diff without a hunk is asked again, so the branch is still pending", () => {
+    expectPatchEquivalent("mode", SIDE_PATCH_ID, 1);
+  });
+
+  test("a patch ID lost twice for a diff without a hunk is an error, never a settled miss", () => {
+    expectError("mode", SIDE_PATCH_ID);
   });
 });
 
 describe("local cleanup's patch proof with a diff cut short", () => {
-  // The source commit changes a.txt and b.txt; the target carries only the
-  // same change to a.txt. A source diff cut after a.txt has a valid patch
-  // ID equal to the target commit's, which would prove unshipped b.txt
-  // shipped.
-  const audit = (lost: number) => {
+  // The target carries part of the source commit: the same change to a.txt
+  // without b.txt, or the same mode change to f without its new binary
+  // contents. A source diff cut after that part has a valid patch ID equal
+  // to the target commit's, which would prove unshipped work shipped.
+  const audit = (change: "text" | "binary", lost: number) => {
     const fixture = repository();
     const { root } = fixture;
+    if (change === "binary") {
+      writeFileSync(join(root, "f"), Buffer.from([0, 1, 2]));
+      git(root, ["add", "f"]);
+      git(root, ["commit", "--quiet", "-m", "Add binary f"]);
+    }
     git(root, ["switch", "--quiet", "-c", "source"]);
-    writeFixture(root, "a.txt", "shipped\n");
-    writeFixture(root, "b.txt", "unshipped\n");
-    git(root, ["add", "a.txt", "b.txt"]);
-    git(root, ["commit", "--quiet", "-m", "Change a and b"]);
+    if (change === "text") {
+      writeFixture(root, "a.txt", "shipped\n");
+      writeFixture(root, "b.txt", "unshipped\n");
+      git(root, ["add", "a.txt", "b.txt"]);
+    } else {
+      writeFileSync(join(root, "f"), Buffer.from([0, 9, 9]));
+      chmodSync(join(root, "f"), 0o755);
+      git(root, ["add", "f"]);
+    }
+    git(root, ["commit", "--quiet", "-m", "Change the source"]);
     const source = git(root, ["rev-parse", "HEAD"]);
     git(root, ["switch", "--quiet", "main"]);
     writeFixture(root, "main.txt", "main\n");
     git(root, ["add", "main.txt"]);
     git(root, ["commit", "--quiet", "-m", "Main"]);
-    writeFixture(root, "a.txt", "shipped\n");
-    git(root, ["add", "a.txt"]);
-    git(root, ["commit", "--quiet", "-m", "Ship a only"]);
+    if (change === "text") {
+      writeFixture(root, "a.txt", "shipped\n");
+      git(root, ["add", "a.txt"]);
+    } else {
+      chmodSync(join(root, "f"), 0o755);
+      git(root, ["add", "f"]);
+    }
+    git(root, ["commit", "--quiet", "-m", "Ship part of it"]);
     const target = git(root, ["rev-parse", "HEAD"]);
     const diff = git(root, [
       "diff-tree",
@@ -552,10 +608,12 @@ describe("local cleanup's patch proof with a diff cut short", () => {
       "--full-index",
       source,
     ]).split("\n");
-    // Everything before b.txt's header: a.txt's whole diff.
-    const kept = diff.findIndex((line) =>
-      line.startsWith("diff --git a/b.txt")
-    );
+    // The lines of the part the target carries: a.txt's whole diff, or f's
+    // header through its new mode.
+    const kept =
+      change === "text"
+        ? diff.findIndex((line) => line.startsWith("diff --git a/b.txt"))
+        : diff.findIndex((line) => line.startsWith("new mode")) + 1;
     expect(kept).toBeGreaterThan(0);
     return runInChild(
       `import { targetContainmentAudit } from ${JSON.stringify(libraryPath("cleanup-core.ts"))};
@@ -565,31 +623,34 @@ try {
   console.log(JSON.stringify({ error: error.message }));
 }
 `,
-      `--full-index ${source}`,
+      SIDE_DIFF.flag,
       lost,
       "",
-      `lines:${kept}`
+      `lines:${kept}`,
+      SIDE_DIFF.skip
     );
   };
 
-  test("with every answer whole, the half-shipped commit is not patch-equivalent (control)", () => {
-    expect(audit(0).reply).toEqual({ method: null });
-  });
+  for (const change of ["text", "binary"] as const) {
+    test(`with every answer whole, the partly shipped ${change} commit is not patch-equivalent (control)`, () => {
+      expect(audit(change, 0).reply).toEqual({ method: null });
+    });
 
-  test("a diff cut short once is asked again, so the commit is still not patch-equivalent", () => {
-    const { remaining, reply } = audit(1);
-    expect(remaining).toBe(0);
-    expect(reply).toEqual({ method: null });
-  });
+    test(`a ${change} diff cut short once is asked again, so the commit is still not patch-equivalent`, () => {
+      const { remaining, reply } = audit(change, 1);
+      expect(remaining).toBe(0);
+      expect(reply).toEqual({ method: null });
+    });
 
-  test("a diff cut short twice refuses instead of proving unshipped work shipped", () => {
-    const { remaining, reply } = audit(2);
-    expect(remaining).toBe(0);
-    expect((reply as { error: string }).error).toContain(
-      "was twice lost or cut short"
-    );
-    expect((reply as { error: string }).error).toContain("retry the command");
-  });
+    test(`a ${change} diff cut short twice refuses instead of proving unshipped work shipped`, () => {
+      const { remaining, reply } = audit(change, 2);
+      expect(remaining).toBe(0);
+      expect((reply as { error: string }).error).toContain(
+        "was twice lost or cut short"
+      );
+      expect((reply as { error: string }).error).toContain("retry the command");
+    });
+  }
 });
 
 describe("a rev-list listing checked whole against its count", () => {

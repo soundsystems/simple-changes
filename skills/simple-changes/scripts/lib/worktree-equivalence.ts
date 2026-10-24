@@ -102,7 +102,6 @@ const rawGit = (
 };
 
 const COUNT_ANSWER = /^[0-9]+\n$/u;
-const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 
 // How many commits `range` holds. Git always prints digits and a line
 // break for this, so an answer lost or cut short on its way here (seen
@@ -126,161 +125,63 @@ const revisionCount = (cwd: string, range: string): number => {
 const revisionList = (cwd: string, range: string): string[] =>
   countedRevisionList(cwd, ["--reverse", range]);
 
-const DIFF_HEADER = "diff --git ";
-const HUNK_HEADER = /^@@ -[0-9]+(?:,([0-9]+))? \+[0-9]+(?:,([0-9]+))? @@/u;
-const SHORTSTAT_ANSWER =
-  /^ ([0-9]+) files? changed(?:, ([0-9]+) insertions?\(\+\))?(?:, ([0-9]+) deletions?\(-\))?\n$/u;
 const PATCH_ID_ANSWER = /^([0-9a-f]{40}|[0-9a-f]{64}) [0-9a-f]{40,64}\n$/u;
+const HUNK_LINE = /^@@ /mu;
+const GIT_VERSION_ANSWER = /^git version ([0-9]+)\.([0-9]+)/u;
+const textEncoder = new TextEncoder();
 
-interface DiffShape {
-  deletions: number;
-  files: number;
-  hunks: number;
-  insertions: number;
-}
-
-interface DiffReading extends DiffShape {
-  /** Lines the current hunk still holds on its old and new sides. */
-  newLeft: number;
-  oldLeft: number;
-}
-
-// One line inside a hunk; false when it cannot be one.
-const readHunkLine = (reading: DiffReading, line: string): boolean => {
-  const [mark] = line;
-  if (mark === "+") {
-    reading.insertions += 1;
-    reading.newLeft -= 1;
-  } else if (mark === "-") {
-    reading.deletions += 1;
-    reading.oldLeft -= 1;
-  } else if (mark === " ") {
-    reading.oldLeft -= 1;
-    reading.newLeft -= 1;
-  } else {
-    return false;
-  }
-  return reading.oldLeft >= 0 && reading.newLeft >= 0;
-};
-
-// One line between hunks: a file's header, a hunk header, or another line
-// of a file's header; false when it comes before any file.
-const readHeaderLine = (reading: DiffReading, line: string): boolean => {
-  const hunk = HUNK_HEADER.exec(line);
-  if (hunk) {
-    reading.hunks += 1;
-    reading.oldLeft = Number(hunk[1] ?? "1");
-    reading.newLeft = Number(hunk[2] ?? "1");
-    return true;
-  }
-  if (line.startsWith(DIFF_HEADER)) {
-    reading.files += 1;
-    return true;
-  }
-  return reading.files > 0;
-};
-
-// The shape of a whole `diff-tree --patch` answer, or null when it is not
-// whole: it ends with a line break, and every hunk holds exactly the lines
-// its header counts. A diff cut short at a file or hunk boundary still has
-// this shape, which is why the caller also checks the totals.
-const diffShape = (text: string): DiffShape | null => {
-  if (!text.endsWith("\n")) {
+// A commit's diff, asked for twice in one answer. `diff-tree --stdin
+// --always` prints the commit's ID line and then its diff for each line it
+// reads, so a whole answer is the same block twice, and an answer lost or
+// cut short anywhere is not, since no line of a diff can be the bare ID of
+// the commit it shows. The diff is what `diff-tree --patch --no-commit-id`
+// prints: nothing for a root commit, a merge, or a commit with its
+// parent's tree. Null when the answer was not whole.
+const wholeDiff = (cwd: string, sha: string): Buffer | null => {
+  const answer = Buffer.from(
+    rawGit(
+      cwd,
+      ["diff-tree", "--stdin", "--always", "--patch", "--full-index"],
+      textEncoder.encode(`${sha}\n${sha}\n`)
+    ).stdout
+  );
+  const header = Buffer.from(`${sha}\n`);
+  const half = answer.length / 2;
+  if (!Number.isInteger(half) || half < header.length) {
     return null;
   }
-  const reading: DiffReading = {
-    deletions: 0,
-    files: 0,
-    hunks: 0,
-    insertions: 0,
-    newLeft: 0,
-    oldLeft: 0,
-  };
-  for (const line of text.slice(0, -1).split("\n")) {
-    // "\ No newline at end of file" follows the line it describes.
-    const read =
-      line.startsWith("\\") ||
-      (reading.oldLeft > 0 || reading.newLeft > 0
-        ? readHunkLine(reading, line)
-        : readHeaderLine(reading, line));
-    if (!read) {
-      return null;
-    }
-  }
-  const { deletions, files, hunks, insertions, newLeft, oldLeft } = reading;
-  return oldLeft === 0 && newLeft === 0
-    ? { deletions, files, hunks, insertions }
+  const first = answer.subarray(0, half);
+  return first.subarray(0, header.length).equals(header) &&
+    first.equals(answer.subarray(half))
+    ? first.subarray(header.length)
     : null;
 };
 
-// Whether Git rightly shows no diff for `sha`: a root commit or a merge,
-// which `diff-tree` shows without `--root`, `-m` or `-c` as nothing, or a
-// commit with its parent's tree. Null when Git's answer was not whole.
-const showsNoDiff = (cwd: string, sha: string): boolean | null => {
-  const parents = runGit(cwd, [
-    "rev-list",
-    "--parents",
-    "--max-count=1",
-    sha,
-  ]).stdout;
-  const ids = parents.endsWith("\n") ? parents.slice(0, -1).split(" ") : [];
-  if (ids[0] !== sha || !ids.every((id) => OBJECT_ID_PATTERN.test(id))) {
-    return null;
-  }
-  if (ids.length !== 2) {
+// Whether this Git gives a patch ID to every diff: 2.39 and later also ID
+// a diff without hunks, such as a mode change or a binary file. A version
+// that cannot be read counts as yes, so an empty answer then refuses.
+const idsEveryDiff = (cwd: string): boolean => {
+  const match = GIT_VERSION_ANSWER.exec(runGit(cwd, ["version"]).stdout);
+  if (!match) {
     return true;
   }
-  const [own, parent, rest] = runGit(cwd, [
-    "rev-parse",
-    `${sha}^{tree}`,
-    `${sha}^1^{tree}`,
-  ]).stdout.split("\n");
-  if (
-    !(
-      own &&
-      parent &&
-      rest === "" &&
-      OBJECT_ID_PATTERN.test(own) &&
-      OBJECT_ID_PATTERN.test(parent)
-    )
-  ) {
-    return null;
-  }
-  return own === parent;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 2 || (major === 2 && minor >= 39);
 };
 
 // A commit's patch ID, null when Git rightly gives it none, or undefined
-// when an answer it rests on was not whole. The diff must have the shape
-// and the file, insertion and deletion totals of `diff-tree --shortstat`
-// for the same commit, so a diff cut short at a file or hunk boundary,
-// whose patch ID would be a valid ID of the part that arrived and could
-// match a target commit that changed only that part, is never accepted.
+// when an answer it rests on was not whole. The diff fed to patch-id is the
+// whole one, so a diff cut short, whose patch ID would be a valid ID of the
+// part that arrived and could match a target commit that changed only that
+// part, never reaches it; patch-id's own answer must be one whole line.
 const wholePatchId = (cwd: string, sha: string): string | null | undefined => {
-  const diff = rawGit(cwd, [
-    "diff-tree",
-    "--patch",
-    "--no-commit-id",
-    "--full-index",
-    sha,
-  ]).stdout;
-  const stat = runGit(cwd, [
-    "diff-tree",
-    "--shortstat",
-    "--no-commit-id",
-    sha,
-  ]).stdout;
-  if (diff.length === 0) {
-    return stat === "" && showsNoDiff(cwd, sha) === true ? null : undefined;
+  const diff = wholeDiff(cwd, sha);
+  if (diff === null) {
+    return;
   }
-  const shape = diffShape(Buffer.from(diff).toString("latin1"));
-  const totals = SHORTSTAT_ANSWER.exec(stat);
-  if (
-    !(shape && totals) ||
-    shape.files !== Number(totals[1]) ||
-    shape.insertions !== Number(totals[2] ?? "0") ||
-    shape.deletions !== Number(totals[3] ?? "0")
-  ) {
-    return undefined;
+  if (diff.length === 0) {
+    return null;
   }
   const output = textDecoder.decode(
     rawGit(cwd, ["patch-id", "--stable"], diff).stdout
@@ -289,9 +190,11 @@ const wholePatchId = (cwd: string, sha: string): string | null | undefined => {
   if (patchId) {
     return patchId;
   }
-  // Git before 2.39 gives no patch ID to a diff without hunks, such as a
-  // mode change or a binary file; a diff with a hunk always gets one.
-  return output === "" && shape.hunks === 0 ? null : undefined;
+  return output === "" &&
+    !HUNK_LINE.test(diff.toString("latin1")) &&
+    !idsEveryDiff(cwd)
+    ? null
+    : undefined;
 };
 
 // Patch evidence is accepted only when it is whole. Anything else is asked

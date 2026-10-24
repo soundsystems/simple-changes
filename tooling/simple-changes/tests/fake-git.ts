@@ -31,13 +31,15 @@ export interface FakeGitRun {
    * answer cut short.
    */
   mode?: FakeGitLoss;
+  /** How many calls naming `flag` to answer truthfully before losing any. */
+  skip?: number;
 }
 
 // A Git on PATH that answers truthfully, except as the environment says:
-// while token files remain, a call whose arguments contain
-// FAKE_GIT_EMPTY_FLAG removes one token and loses its answer
-// (FAKE_GIT_EMPTY_MODE), and a call whose arguments contain
-// FAKE_GIT_FAIL_FLAG fails with exit 3.
+// a call whose arguments contain FAKE_GIT_EMPTY_FLAG first uses up a skip
+// token and answers truthfully, then, while loss tokens remain, removes one
+// and loses its answer (FAKE_GIT_EMPTY_MODE); a call whose arguments
+// contain FAKE_GIT_FAIL_FLAG fails with exit 3.
 const fakeGitDirectory = (register: (cleanup: () => void) => void): string => {
   const realGit = which("git");
   if (!realGit) {
@@ -60,6 +62,9 @@ fi
 if [ -n "$FAKE_GIT_EMPTY_FLAG" ] && [ -d "$FAKE_GIT_EMPTY_TOKENS" ]; then
   case " $* " in
     *" $FAKE_GIT_EMPTY_FLAG "*)
+      for token in "$FAKE_GIT_SKIP_TOKENS"/*; do
+        rm "$token" 2>/dev/null && exec "$real" "$@"
+      done
       for token in "$FAKE_GIT_EMPTY_TOKENS"/*; do
         if rm "$token" 2>/dev/null; then
           case "$FAKE_GIT_EMPTY_MODE" in
@@ -94,6 +99,11 @@ export const runWithFakeGit = (
   for (let index = 0; index < run.lost; index += 1) {
     writeFileSync(join(tokens, `token-${index}`), "");
   }
+  const skips = mkdtempSync(join(tmpdir(), "simple-changes-skip-"));
+  register(() => rmSync(skips, { force: true, recursive: true }));
+  for (let index = 0; index < (run.skip ?? 0); index += 1) {
+    writeFileSync(join(skips, `skip-${index}`), "");
+  }
   const script = join(bin, "child.ts");
   writeFileSync(script, run.body);
   const result = spawnSync([process.execPath, script], {
@@ -103,6 +113,7 @@ export const runWithFakeGit = (
       FAKE_GIT_EMPTY_MODE: run.mode ?? "empty",
       FAKE_GIT_EMPTY_TOKENS: tokens,
       FAKE_GIT_FAIL_FLAG: run.failFlag ?? "",
+      FAKE_GIT_SKIP_TOKENS: skips,
       PATH: `${bin}:${process.env.PATH ?? ""}`,
     },
     stderr: "pipe",

@@ -468,10 +468,11 @@ result of a squash or rebase merge) is deleted with method `patch-equivalent`
 recorded, so merged provider branches stop accumulating locally. A branch with
 any unmatched commit, or one too far ahead to audit cheaply, is preserved and
 named. Patch evidence counts only when it came back whole: each listing must
-match Git's own count, and each commit's diff must have the files, insertions
-and deletions `git diff-tree --shortstat` counts, so an answer lost or cut
-short under load is asked again and then refused, never read as a match. It
-then restores or fast-forwards the primary under the controller and
+match Git's own count, each commit's diff is asked for twice in one answer
+and must come back as the same block twice, and patch-id must answer with
+one whole line, so an answer lost or cut short under load is asked again
+and then refused, never read as a match or a miss. It then restores or
+fast-forwards the primary under the controller and
 coordination locks. Without an exact verified shipment outcome, a missing or
 stale target, dirty or off-target primary, or remaining cleanup candidate keeps
 the run open. With that outcome, clean source worktrees proven contained in the

@@ -782,8 +782,9 @@ first known session that claims it. Subagents that share their parent's
 session share its claims, and a harness without a session variable binds
 nothing. A harness started from another inherits the parent's session
 variable beside its own, so when the environment names sessions of two
-harnesses, a command that binds or checks a claim's session (claim, takeover,
-and every owner command on a bound claim) refuses with exit 2 until
+harnesses, every command that binds or checks a claim's session (claim,
+takeover, pause, detach, attach, release, and the release a handoff makes),
+on a bound claim or not, refuses with exit 2 before it takes a lock, until
 `--harness <id>` or `--identity-receipt` names the harness it runs in; it
 never binds a child's claim to its parent's session. Every `loop start`, a
 repeated one and a resume included, `loop takeover`, `workdir` inside a run,

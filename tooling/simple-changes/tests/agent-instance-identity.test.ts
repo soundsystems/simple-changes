@@ -682,7 +682,7 @@ describe("claim sessions with two harness sessions in view", () => {
     expect(liveClaims(fixture.root)).toEqual([]);
   });
 
-  test("an unbound claim needs no session, so two in view do not block it", () => {
+  test("an owner command asks which session it runs in before it changes anything, even on an unbound claim", () => {
     const { nested } = sessions();
     const fixture = repository();
     const path = addWorktree(fixture, "unbound-work");
@@ -703,7 +703,7 @@ describe("claim sessions with two harness sessions in view", () => {
     const { claimId } = (
       JSON.parse(claimed.stdout) as { claim: { claimId: string } }
     ).claim;
-    const released = cli(fixture.root, nested, [
+    const release = [
       "worktree",
       "release",
       "--agent-id",
@@ -713,8 +713,39 @@ describe("claim sessions with two harness sessions in view", () => {
       "--json",
       "--repo",
       fixture.root,
+    ];
+    const refused = cli(fixture.root, nested, release);
+    expect(refused.exitCode).toBe(2);
+    expect(refused.stderr).toContain("worktree release");
+    expect(liveClaims(fixture.root).map((claim) => claim.claimId)).toEqual([
+      claimId,
     ]);
-    expect(released.exitCode).toBe(0);
+    const pause = cli(fixture.root, nested, [
+      "worktree",
+      "pause",
+      "--agent-id",
+      "plain-agent",
+      "--worktree",
+      path,
+      "--run-id",
+      "run-none",
+      "--disposition",
+      "preserve-in-place",
+      "--reason",
+      "Pause to test the refusal.",
+      "--json",
+      "--repo",
+      fixture.root,
+    ]);
+    expect(pause.exitCode).toBe(2);
+    expect(liveClaims(fixture.root)).toEqual([
+      expect.objectContaining({ claimId, state: "active" }),
+    ]);
+    // An unbound claim refuses no session once the command names its own.
+    expect(
+      cli(fixture.root, nested, [...release, "--harness", "codex"]).exitCode
+    ).toBe(0);
+    expect(liveClaims(fixture.root)).toEqual([]);
   });
 });
 

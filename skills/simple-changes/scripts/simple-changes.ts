@@ -6377,21 +6377,38 @@ const lockWaitInput = (options: CliOptions): { lockWait?: LoopLockWait } => {
   return lockWait ? { lockWait } : {};
 };
 
-// Commands that always record or bind the executing session. With sessions
+// Commands that record, bind, or check the executing session. With sessions
 // of two harnesses in the environment, they ask which is theirs before they
-// take a lock or touch a directory or file. Commands that need the session
-// only sometimes (an owner command on a bound claim, `workdir` inside a run,
-// a controller transfer) ask where they need it, in the library, which also
-// guards direct callers.
-const SESSION_BINDING_COMMANDS = new Set([
+// take a lock or touch a directory or file, even an owner command on a claim
+// that turns out to be unbound. The library checks again for direct callers.
+// `workdir` asks only inside a run, before any lock or write, since outside
+// one it needs no session.
+const SESSION_COMMANDS = new Set([
   "author attest",
   "loop start",
   "loop takeover",
   "loop turn-check",
   "proposal record-authors",
+  "worktree attach",
   "worktree claim",
+  "worktree detach",
+  "worktree pause",
+  "worktree release",
   "worktree takeover",
 ]);
+
+const checksSession = (command: string, options: CliOptions): boolean => {
+  const name = `${command} ${options.positional[0] ?? ""}`.trim();
+  if (name === "loop turn-check") {
+    // The Stop hook names its ending session itself and must never fail.
+    return !options.hook;
+  }
+  // A proceeding handoff releases the author's own claim.
+  if (command === "initialize") {
+    return options.mode === "handoff" && options.agentId !== undefined;
+  }
+  return SESSION_COMMANDS.has(name);
+};
 
 // The identity preflight every command runs before dispatch. A receipt is
 // checked against the environment and against every argument that states an
@@ -6418,13 +6435,12 @@ const invocationHarnessFor = (
     return null;
   }
   const harness = receipt?.harness ?? named;
-  const name = `${command} ${options.positional[0] ?? ""}`.trim();
-  // The Stop hook names its ending session itself and must never fail.
-  if (
-    SESSION_BINDING_COMMANDS.has(name) &&
-    !(name === "loop turn-check" && options.hook)
-  ) {
-    requireHarnessSession(name, process.env, harness);
+  if (checksSession(command, options)) {
+    requireHarnessSession(
+      `${command} ${options.positional[0] ?? ""}`.trim(),
+      process.env,
+      harness
+    );
   }
   return harness;
 };

@@ -291,8 +291,10 @@ when all of these hold:
 The build reads the worktrees and claims from `--repo`. A merged-MR head that
 fails only the last two checks is listed in `heldBranches` with every reason
 and is not proposed. When the pages lack open MR targets, the local state
-cannot be read, or `--repo` is a shallow clone (fork points need full
-history; run `git fetch --unshallow`), every merged-MR head is held.
+cannot be read, a fork point cannot be computed (a merge base Git returned
+empty is asked again, and a second empty answer counts as unreadable), or
+`--repo` is a shallow clone (fork points need full history; run `git fetch
+--unshallow`), every merged-MR head is held.
 
 Delete each proposal the guarded way: `loop guard`, a provider deletion of
 exactly that branch at that head, then `loop verify`. Then fetch fresh final
@@ -523,7 +525,8 @@ cannot be held and is reported as pending. A check that fails is listed in
 `errors` and also makes cleanup pending: a head missing locally (fetch it and
 finalize again), a head with more than 200 commits outside the target (too
 many to prove by patch equivalence, so classify it yourself), any other Git
-failure while settling containment (such as a missing ancestor object), any
+failure while settling containment (such as a missing ancestor object, or a
+merge base or commit listing Git returned empty twice under load), any
 answer short of a positive proof in a shallow clone, or holds that cannot be
 read (a shallow clone always loses its fork-point holds). Holds apply first,
 so a held branch's unsettled audit is neither pending nor an error. Unknown

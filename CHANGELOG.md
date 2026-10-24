@@ -281,6 +281,9 @@
   larger than 1 MiB, such as a `FETCH_HEAD` grown by repeated fetches,
   refuses the removal and leaves no archive, naming the file and its size,
   because Simple Changes cannot read every commit such a file names.
+  Commits only the checkout's reflogs still remember, such as one replaced
+  by `git commit --amend`, are kept reachable too, and a checkout with
+  more than 2,000 of them is kept, not removed.
 - `simple-changes worktree restore-archive --archive <archive ID>` puts
   the checkout and its branch back exactly as they were and confirms that
   Git sees the checkout clean at the recorded commit. It refuses, changing

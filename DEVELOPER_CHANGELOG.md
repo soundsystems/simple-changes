@@ -474,6 +474,13 @@
   damaged prune log refuses only a run that would prune
   (`queueWouldPrune`). `ArchivePruneResult` gains `appliedRetention {
   days, maxTotalBytes }`, and `pruned[]` no longer carries `pinRefsKept`.
+- Release-review fixes: lineage archives also pin, under `objects/`, the
+  commits only the source's HEAD, branch, and own-ref reflogs keep (named
+  with `rev-list --walk-reflogs`, refused above `REFLOG_PIN_LIMIT`, 2000);
+  pruning deletes an archive's pins in one `update-ref --stdin`
+  transaction (`applyRefTransaction`), all or none; and `merge-base`
+  without `--is-ancestor` is now a required answer, so a lost fork point
+  withholds deletion proposals.
 - Lineage wiring: `policy.ts` adds `DEFAULT_ARCHIVE_RETENTION_DAYS` (14),
   `DEFAULT_ARCHIVE_TOTAL_BYTES` (2147483648), and
   `archiveRetentionPolicy(policy)` (`days` 1 to 3650, `maxTotalBytes` 1

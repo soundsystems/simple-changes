@@ -124,17 +124,22 @@ reviewed mapping, the review, and the approval are the evidence.
 
 What the removal does, in order, under the cleanup locks: it reads the
 checkout inside the hardened boundary (status, head, branch, its private Git
-directory, the objects its own refs and pseudo-refs name, its branch
-configuration); copies the checkout folder and its private Git directory,
-never following a link, into
+directory, the objects its own refs and pseudo-refs name, the commits only
+its reflogs keep, its branch configuration); copies the checkout folder and
+its private Git directory, never following a link, into
 `<git common dir>/simple-changes/archives/<archive id>/` with a manifest
 that records every file's mode, size and SHA-256 and verifies the copy;
 pins the head and every object the checkout named under
 `refs/simple-changes/archives/<archive id>/` (`head` and `objects/<id>`),
 so an autostash, a rebase's original head or a per-worktree ref stays
-reachable; writes an intent record; compares the live files with the
-manifest once more, with no Git command in the checkout in between, and
-checks that Git still registers the reviewed head and branch there; when
+reachable; pins the same way every commit that its HEAD's reflog, its
+branch's reflog or its own refs' reflogs name and that no ref reaches
+(Simple Changes' own expiring pins do not count), because the removal
+deletes those reflogs and an amended-away or reset-away commit would
+otherwise be left to `git gc`; writes an intent record; compares the live
+files with the manifest once more, with no Git command in the checkout in
+between, and checks that Git still registers the reviewed head and branch
+there; when
 anything changed it refuses and keeps the checkout, and the complete archive
 stays with its pins, named by the completion record, until retention prunes
 it or `worktree prune-archives --archive <id>` does; removes the checkout
@@ -156,7 +161,10 @@ source with submodules, a partial clone, a hook configured through
 `hook.*`, `core.virtualFilesystem`, and a Git state file in the checkout's
 private directory larger than the 1 MiB the object scan reads (such as a
 `FETCH_HEAD` grown by repeated `git fetch --append`), because the objects
-it names could not all be pinned. These settings are hardening, not a
+it names could not all be pinned. It also refuses, and keeps the checkout,
+when its reflogs keep more than 2,000 commits that no ref reaches, rather
+than archive it with part of that history; put the work still needed on a
+branch first. These settings are hardening, not a
 guarantee. As on the other removal paths, programs that the repository or
 the user configures are trusted (a filter driver whose name the command
 cannot read back exactly is a known case, tracked as issue #20). A run with
@@ -200,11 +208,12 @@ foresee a deletion that fails only when tried).
 `prune`, `worktree cleanup` and `loop finalize` prune expired archives
 automatically, at the end of a run whose removals succeeded (never the
 archive that run made, and never on a run that refused), and report what
-they pruned and what they kept. A prune deletes the archive's pins first and
-removes the folder only once every pin is gone; an archive with a pin that
-cannot be deleted (it moved, became a symbolic ref, or Git refused) keeps
-its folder, manifest and remaining pins and is reported, so the next prune
-retries it. An archive is pruned only when its
+they pruned and what they kept. A prune deletes the archive's pins first,
+all in one Git transaction, and removes the folder only once every pin is
+gone; an archive with a pin that cannot be deleted (it moved, became a
+symbolic ref, or Git refused, as over a stale lock) keeps its folder,
+manifest and every one of its pins, its head's included, and is reported,
+so the next prune retries it. An archive is pruned only when its
 target still contains every replacement commit its receipt named and
 reverts none of them (Git's own revert message is recognized; a hand-written
 revert message is not); otherwise it is kept for attention and named in

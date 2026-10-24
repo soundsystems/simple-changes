@@ -4103,9 +4103,12 @@ const workSessionOf = (
 ): string | null =>
   session ? `${session.harness}:${session.sessionId}` : null;
 
-// The harness session a work directory binding follows, when known.
-const workDirectorySession = (): string | null =>
-  workSessionOf(currentHarnessSession());
+// The harness session a work directory binding follows, when known. A
+// binding without a session matches any session, so with sessions of two
+// harnesses in the environment the command must say which is its own rather
+// than share another session's directory.
+const workDirectorySession = (command = "workdir"): string | null =>
+  workSessionOf(requireHarnessSession(command));
 
 const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
   removed.length > 0
@@ -4450,7 +4453,7 @@ const runLoopStart = (options: CliOptions): void => {
             workRepository,
             started.runId,
             agentId,
-            workDirectorySession(),
+            workDirectorySession("loop start"),
             openingWorkDirectory
           );
         } catch (error) {
@@ -6086,8 +6089,9 @@ const workDirectoryFor = async (
   lease: LoopLease | null,
   agentId: string
 ): Promise<{ bound: boolean; path: string }> => {
-  const session = workDirectorySession();
   if (lease) {
+    // Only a run's bindings follow a session.
+    const session = workDirectorySession();
     const use = runWorkDirectoryUse(repository, lease, agentId, session);
     if (use.action === "use") {
       return { bound: true, path: use.path };
@@ -6384,11 +6388,14 @@ const invocationHarnessFor = (
     return null;
   }
   if (options.identityReceipt) {
-    receiptSession(
-      options.identityReceipt,
-      process.env,
-      options.harness ?? null
-    );
+    // Every argument that states an identity must agree with the receipt,
+    // whether or not this command uses it, before anything runs.
+    receiptSession(options.identityReceipt, process.env, {
+      agent: options.agentName ?? null,
+      harness: options.harness ?? null,
+      instance: options.instanceId ?? null,
+      session: options.sessionId ?? null,
+    });
     return options.identityReceipt.harness;
   }
   return options.harness ?? null;

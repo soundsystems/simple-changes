@@ -392,6 +392,76 @@ describe("identity receipts", () => {
   });
 });
 
+describe("identity receipts on other commands", () => {
+  test("a receipt picks a claim's session, and arguments that dispute it stop the command before it writes", () => {
+    const { child, childOnly, nested, parent, parentOnly } = sessions();
+    const fixture = repository();
+    const path = join(fixture.base, "receipt-work");
+    git(fixture.root, ["worktree", "add", "-b", "receipt-work", path]);
+    const receiptPath = join(fixture.base, "identity.json");
+    writeFileSync(
+      receiptPath,
+      JSON.stringify({
+        harness: "codex",
+        instance: "child-agent-1",
+        model: "model-child",
+        parentSession: parent,
+        schemaVersion: 1,
+        session: child,
+      })
+    );
+    const claim = [
+      "worktree",
+      "claim",
+      "--agent-id",
+      "receipt-agent",
+      "--worktree",
+      path,
+      "--adapter",
+      "codex",
+      "--identity-receipt",
+      `@${receiptPath}`,
+      "--json",
+      "--repo",
+      fixture.root,
+    ];
+    for (const extra of [
+      ["--agent", "model-other"],
+      ["--instance", "another-agent"],
+      ["--session", "another-session"],
+      ["--harness", "claude-code"],
+    ]) {
+      expect({
+        exitCode: cli(fixture.root, nested, [...claim, ...extra]).exitCode,
+        extra,
+      }).toEqual({
+        exitCode: 2,
+        extra,
+      });
+      expect(readWorktreeCoordination(fixture.root).claims).toEqual([]);
+    }
+    const claimed = cli(fixture.root, nested, claim);
+    expect(claimed.exitCode).toBe(0);
+    const { claimId } = (
+      JSON.parse(claimed.stdout) as { claim: { claimId: string } }
+    ).claim;
+    const release = [
+      "worktree",
+      "release",
+      "--agent-id",
+      "receipt-agent",
+      "--claim-id",
+      claimId,
+      "--json",
+      "--repo",
+      fixture.root,
+    ];
+    // The receipt bound the claim to the child's own session.
+    expect(cli(fixture.root, parentOnly, release).exitCode).toBe(5);
+    expect(cli(fixture.root, childOnly, release).exitCode).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Independence per agent instance
 
@@ -647,6 +717,56 @@ describe("the controller binding and the turn-end guard", () => {
       harness: "codex",
       sessionId: child,
     });
+    // Repeating the start of the live run asks the same question.
+    const repeated = cli(fixture.root, nested, start);
+    expect(repeated.exitCode).toBe(2);
+    expect(repeated.stderr).toContain("--harness");
+    expect(
+      cli(fixture.root, nested, [...start, "--harness", "codex"]).exitCode
+    ).toBe(0);
+  });
+
+  test("a work directory inside a run needs --harness with two sessions in view, and outside a run it does not", () => {
+    const { nested } = sessions();
+    const fixture = repository();
+    expect(
+      cli(fixture.root, nested, [
+        "loop",
+        "start",
+        "--mode",
+        "integrate",
+        "--agent-id",
+        "child-controller",
+        "--harness",
+        "codex",
+        "--json",
+        "--repo",
+        fixture.root,
+      ]).exitCode
+    ).toBe(0);
+    const workdir = [
+      "workdir",
+      "--agent-id",
+      "run-helper",
+      "--json",
+      "--repo",
+      fixture.root,
+    ];
+    expect(cli(fixture.root, nested, workdir).exitCode).toBe(2);
+    expect(
+      cli(fixture.root, nested, [...workdir, "--harness", "codex"]).exitCode
+    ).toBe(0);
+    const elsewhere = repository();
+    expect(
+      cli(elsewhere.root, nested, [
+        "workdir",
+        "--agent-id",
+        "no-run-helper",
+        "--json",
+        "--repo",
+        elsewhere.root,
+      ]).exitCode
+    ).toBe(0);
   });
 
   test("a child's turn never ends on its parent's run when the hook names no session", () => {

@@ -2874,7 +2874,12 @@ const executingSession = (
 ): LoopControllerSession | null => {
   const requested = input.harness === undefined ? null : input.harness.trim();
   if (input.identityReceipt) {
-    return receiptSession(input.identityReceipt, environment, requested);
+    return receiptSession(input.identityReceipt, environment, {
+      agent: input.agent ?? null,
+      harness: requested,
+      instance: input.instance ?? null,
+      session: input.session ?? null,
+    });
   }
   const resolution = resolveHarnessSession(environment, requested);
   if (resolution.status === "ambiguous") {
@@ -2892,41 +2897,17 @@ const executingSession = (
   return resolution.session;
 };
 
-// The reported model: an identity receipt's, which `--agent` must name too
-// (compared as model IDs), or else `--agent` alone.
+// The reported model and instance: an identity receipt's, which the session
+// check already found `--agent` and `--instance` agree with, or else the
+// arguments alone.
 const executingAgent = (input: ExecutingIdentityInput): string | null => {
   const named = optionalValue(input.agent, isModelName, "--agent");
-  const receipt = input.identityReceipt;
-  if (!receipt) {
-    return named;
-  }
-  if (
-    named !== null &&
-    canonicalModelId(named) !== canonicalModelId(receipt.model)
-  ) {
-    throw new SimpleChangesError(
-      `--agent ${named} disagrees with the identity receipt's model ${receipt.model}.`,
-      EXIT_CODES.usage
-    );
-  }
-  return receipt.model;
+  return input.identityReceipt ? input.identityReceipt.model : named;
 };
 
-// The reported instance: an identity receipt's, which `--instance` must
-// equal, or else `--instance` alone.
 const executingInstance = (input: ExecutingIdentityInput): string | null => {
   const named = optionalValue(input.instance, isToken, "--instance");
-  const reported = input.identityReceipt?.instance ?? null;
-  if (reported === null) {
-    return named;
-  }
-  if (named !== null && named !== reported) {
-    throw new SimpleChangesError(
-      `--instance ${named} disagrees with the identity receipt's instance ${reported}.`,
-      EXIT_CODES.usage
-    );
-  }
-  return reported;
+  return input.identityReceipt?.instance ?? named;
 };
 
 /**

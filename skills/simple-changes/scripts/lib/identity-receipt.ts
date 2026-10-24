@@ -73,22 +73,59 @@ export const parseIdentityReceipt = (text: string): IdentityReceipt => {
   return receipt;
 };
 
+/** What the command's own arguments say about the executing identity. */
+export interface StatedIdentity {
+  /** `--agent`: the model the agent says it runs. */
+  agent?: string | null;
+  /** `--harness`: the harness the agent says it runs in. */
+  harness?: string | null;
+  /** `--instance`: the agent instance the agent reports. */
+  instance?: string | null;
+  /** `--session`: the session the agent says it runs in. */
+  session?: string | null;
+}
+
+// Each argument beside a receipt must say what the receipt says: the same
+// harness, session and instance, and the same model ID.
+const statedConflict = (
+  receipt: IdentityReceipt,
+  stated: StatedIdentity
+): string | null => {
+  const harness = stated.harness?.trim();
+  if (harness && harness !== receipt.harness) {
+    return `--harness ${harness} disagrees with the identity receipt, which names ${receipt.harness}.`;
+  }
+  const session = stated.session?.trim();
+  if (session && session !== receipt.session) {
+    return `--session ${session} disagrees with the identity receipt, which names ${receipt.session}.`;
+  }
+  const agent = stated.agent?.trim();
+  if (agent && canonicalModelId(agent) !== canonicalModelId(receipt.model)) {
+    return `--agent ${agent} disagrees with the identity receipt's model ${receipt.model}.`;
+  }
+  const instance = stated.instance?.trim();
+  const reported = receipt.instance ?? null;
+  if (instance && reported !== null && instance !== reported) {
+    return `--instance ${instance} disagrees with the identity receipt's instance ${reported}.`;
+  }
+  return null;
+};
+
 /**
- * The executing session a receipt names, once the environment agrees: the
- * receipt's harness must have its own session variable set here, holding the
- * receipt's session. A `--harness` passed beside it must name the same
- * harness. Any disagreement is a usage error, so nothing is recorded under an
- * identity the two sources dispute.
+ * The executing session a receipt names, once everything else agrees with
+ * it: the arguments beside it, and the environment, where the receipt's
+ * harness must have its own session variable set, holding the receipt's
+ * session. Any disagreement is a usage error, so no command acts under an
+ * identity two sources dispute.
  */
 export const receiptSession = (
   receipt: IdentityReceipt,
   environment: Environment,
-  requestedHarness: string | null = null
+  stated: StatedIdentity = {}
 ): LoopControllerSession => {
-  if (requestedHarness !== null && requestedHarness !== receipt.harness) {
-    throw refuse(
-      `--harness ${requestedHarness} disagrees with the identity receipt, which names ${receipt.harness}.`
-    );
+  const conflict = statedConflict(receipt, stated);
+  if (conflict) {
+    throw refuse(conflict);
   }
   const resolution = resolveHarnessSession(environment, receipt.harness);
   if (!resolution.session) {

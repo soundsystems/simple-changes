@@ -25,6 +25,10 @@ import type { ShipmentOutcomeReceipt } from "../../../skills/simple-changes/scri
 import { readCoordinationDocumentFromCommonDirectory } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import { commitEquivalenceAgainstTarget } from "../../../skills/simple-changes/scripts/lib/worktree-equivalence.ts";
 import {
+  renderExpiredExternalDeletionPins,
+  renderRemoteBranchCleanup,
+} from "../../../skills/simple-changes/scripts/simple-changes.ts";
+import {
   createTestRepository,
   git,
   type TestRepository,
@@ -871,6 +875,12 @@ describe("branches deleted outside the run", () => {
     );
     expect(item?.note).toContain("not counted as delivered or obsolete");
     expect(finalized.receipt.remoteBranches?.pending).toEqual([]);
+    // It is the only cleanup left, and the text output still names it.
+    expect(finalized.receipt.remoteBranches?.held).toEqual([]);
+    expect(finalized.receipt.remoteBranches?.errors).toEqual([]);
+    expect(renderRemoteBranchCleanup(finalized.receipt.remoteBranches)).toBe(
+      `Remote branch deleted outside this run: feature/gone. ${item?.note}\n`
+    );
     // Its own fresh pin is not pruned when the run closes.
     expect(finalized.expiredExternalDeletionPins).toBeUndefined();
 
@@ -1007,6 +1017,11 @@ describe("branches deleted outside the run", () => {
     });
     expect(items[0]?.pinExpiresAt).toBeUndefined();
     expect(items[0]?.note).toContain("not present locally, so nothing pins it");
+    expect(
+      renderRemoteBranchCleanup(finalized.receipt.remoteBranches)
+    ).toContain(
+      `Remote branch deleted outside this run: feature/remote-only. This branch was deleted outside this run; its last head was ${missing}.`
+    );
   }, 180_000);
 
   test("control: a branch that moved instead of being deleted stays preserved", async () => {
@@ -1054,9 +1069,16 @@ describe("branches deleted outside the run", () => {
     for (const ref of [expired, fresh, current, notATime, noTime, wrongValue]) {
       git(root, ["update-ref", ref, head]);
     }
-    expect(
-      pruneExpiredExternalDeletionPins(root, "run-current-cccccccc", now)
-    ).toEqual({ errors: [], removed: [expired] });
+    const pruned = pruneExpiredExternalDeletionPins(
+      root,
+      "run-current-cccccccc",
+      now
+    );
+    expect(pruned).toEqual({ errors: [], removed: [expired] });
+    expect(renderExpiredExternalDeletionPins(pruned)).toBe(
+      `Removed expired pin ${expired} of a branch deleted outside an earlier run.\n`
+    );
+    expect(renderExpiredExternalDeletionPins(undefined)).toBe("");
     expect(new Set(pinRefs(root).map((line) => line.split(" ")[0]))).toEqual(
       new Set([fresh, current, notATime, noTime, wrongValue])
     );

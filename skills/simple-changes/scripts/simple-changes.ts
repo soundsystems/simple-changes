@@ -4134,13 +4134,19 @@ const renderCleanupNotes = (notes: readonly string[]): string =>
 const remoteBranchProofText = (item: RemoteBranchCleanupItem): string =>
   `${item.proof === "merged-proposal-head" ? `merged proposal ${item.proposalObjectId} at this exact head` : `target contains it (${item.proof})`}${item.movedDuringRun ? ", moved during this run" : ""}`;
 
-const renderRemoteBranchCleanup = (
+export const renderRemoteBranchCleanup = (
   report: RemoteBranchCleanupReport | undefined
 ): string => {
   if (!report) {
     return "";
   }
   const lines = [
+    // A branch deleted outside the run needs the user's attention before its
+    // pin expires, so its note is always printed.
+    ...(report.deletedExternally ?? []).map(
+      (item) =>
+        `Remote branch deleted outside this run: ${item.name}. ${item.note}\n`
+    ),
     ...report.pending.map(
       (item) =>
         `Remote branch pending cleanup: ${item.name} at ${item.headRevision}, ${remoteBranchProofText(item)}.\n`
@@ -4153,6 +4159,18 @@ const renderRemoteBranchCleanup = (
   ];
   return lines.join("");
 };
+
+// Pins of branches deleted outside earlier runs that this close removed.
+export const renderExpiredExternalDeletionPins = (
+  expired: LoopFinalizationResult["expiredExternalDeletionPins"]
+): string =>
+  [
+    ...(expired?.removed ?? []).map(
+      (ref) =>
+        `Removed expired pin ${ref} of a branch deleted outside an earlier run.\n`
+    ),
+    ...(expired?.errors ?? []).map((error) => `Pin expiry: ${error}\n`),
+  ].join("");
 
 const runLoopFinalizationAction = (
   action: string,
@@ -4257,7 +4275,7 @@ const runLoopFinalizationAction = (
       writeOutput(
         { ...result, manifestDigest: null, removedWorkDirectories },
         options.json,
-        `Closed ${runId} without changing the repository's work: it changed after the loop started, so the loop's shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderFinalizeArchivePruning(result.archivePruning)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+        `Closed ${runId} without changing the repository's work: it changed after the loop started, so the loop's shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
       );
       return true;
     }
@@ -4268,7 +4286,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderFinalizeArchivePruning(result.archivePruning)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }

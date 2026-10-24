@@ -1734,6 +1734,8 @@ type PrunedArchive = ArchivePruneResult["pruned"][number];
 interface PruneItem {
   bytes: number;
   cause: ArchivePruneRecord["cause"];
+  /** Pruned whatever the total: expired, past the manual age, or named by ID. */
+  due: boolean;
   listing: ArchiveListing;
   manifest: WorktreeArchiveManifest | null;
   notes: string[];
@@ -1741,7 +1743,8 @@ interface PruneItem {
 
 interface PrunePlan {
   keptForAttention: ArchivePruneResult["keptForAttention"];
-  prune: PruneItem[];
+  /** Every eligible archive in creation order; execution walks it. */
+  queue: PruneItem[];
   skipped: ArchivePruneResult["skipped"];
 }
 
@@ -1905,7 +1908,8 @@ const classifyListings = (
     } else if (listing.manifest) {
       eligible.push({
         bytes: manifestBytes(listing.manifest),
-        cause: "expired",
+        cause: context.input.manual === undefined ? "expired" : "manual",
+        due: isDue(listing.manifest, context.input),
         listing,
         manifest: listing.manifest,
         notes: [],
@@ -1915,40 +1919,14 @@ const classifyListings = (
   return eligible.sort(byCreation);
 };
 
+// The plan only classifies; which archives the cap takes is decided while
+// the queue runs, from what each removal actually freed.
 const automaticPlan = (
   context: PruneContext,
-  listings: readonly ArchiveListing[],
-  totalBytesBefore: number
+  listings: readonly ArchiveListing[]
 ): PrunePlan => {
-  const { input } = context;
-  const plan: PrunePlan = { keptForAttention: [], prune: [], skipped: [] };
-  const eligible = classifyListings(context, listings, plan);
-  // The size cap is the policy's; a manual run by age prunes by age only.
-  // An archive whose pins are blocked is selected, so the run reports it as
-  // kept, but frees nothing, so the next-oldest is selected after it; a dry
-  // run plans from the same pin plans and so matches.
-  let total = totalBytesBefore;
-  while (
-    input.manual === undefined &&
-    total > input.retention.maxTotalBytes &&
-    eligible.length > 0
-  ) {
-    const oldest = eligible.shift();
-    if (oldest) {
-      plan.prune.push({ ...oldest, cause: "size-cap" });
-      if (pinPlanFor(context, oldest).blocked.length === 0) {
-        total -= oldest.bytes;
-      }
-    }
-  }
-  for (const item of eligible) {
-    if (item.manifest && isDue(item.manifest, input)) {
-      plan.prune.push({
-        ...item,
-        cause: input.manual === undefined ? "expired" : "manual",
-      });
-    }
-  }
+  const plan: PrunePlan = { keptForAttention: [], queue: [], skipped: [] };
+  plan.queue = classifyListings(context, listings, plan);
   return plan;
 };
 
@@ -1995,12 +1973,13 @@ const manualPlan = (
   }
   return {
     keptForAttention: [],
-    prune: [
+    queue: [
       {
         bytes: listing.manifest
           ? manifestBytes(listing.manifest)
           : measuredBytes(directory),
         cause: "manual",
+        due: true,
         listing,
         manifest: listing.manifest,
         notes,
@@ -2328,6 +2307,70 @@ const plannedPrune = (context: PruneContext, item: PruneItem): PruneOutcome => {
   };
 };
 
+interface QueueOutcome {
+  item: PruneItem;
+  outcome: PruneOutcome;
+}
+
+// Only an archive whose folder is gone frees its bytes.
+const freedBytes = (item: PruneItem, outcome: PruneOutcome): number =>
+  outcome.pruned?.folderRemoved && item.manifest ? item.bytes : 0;
+
+// Execution walks the eligible archives in creation order. While the total
+// is over the cap (the policy's; a manual run prunes by age or by ID only),
+// the oldest is pruned for the cap and credited only once its folder is
+// gone, so a kept archive, whether its pins were blocked in the plan or a
+// deletion failed when tried, advances the queue to the next-oldest. Then
+// every due archive left in the queue is pruned. A dry run walks the same
+// queue with the pin plans, so it matches the real run except for a
+// deletion that fails only when tried.
+const runQueue = (
+  context: PruneContext,
+  queue: readonly PruneItem[],
+  totalBytesBefore: number
+): { outcomes: QueueOutcome[]; totalBytesAfter: number } => {
+  const { input } = context;
+  const run = (item: PruneItem): QueueOutcome => ({
+    item,
+    outcome: input.dryRun
+      ? plannedPrune(context, item)
+      : executePrune(context, item),
+  });
+  const remaining = [...queue];
+  const outcomes: QueueOutcome[] = [];
+  let total = totalBytesBefore;
+  while (
+    input.manual === undefined &&
+    total > input.retention.maxTotalBytes &&
+    remaining.length > 0
+  ) {
+    const oldest = remaining.shift();
+    if (oldest) {
+      const ran = run({ ...oldest, cause: "size-cap" });
+      outcomes.push(ran);
+      total -= freedBytes(ran.item, ran.outcome);
+    }
+  }
+  for (const item of remaining.filter((candidate) => candidate.due)) {
+    const ran = run(item);
+    outcomes.push(ran);
+    total -= freedBytes(ran.item, ran.outcome);
+  }
+  return { outcomes, totalBytesAfter: total };
+};
+
+// Whether the queue would touch anything, so a damaged log refuses only a
+// run that would prune.
+const queueWouldPrune = (
+  input: ArchivePruneInput,
+  queue: readonly PruneItem[],
+  totalBytesBefore: number
+): boolean =>
+  (input.manual === undefined &&
+    totalBytesBefore > input.retention.maxTotalBytes &&
+    queue.length > 0) ||
+  queue.some((item) => item.due);
+
 const isPositiveInteger = (value: number): boolean =>
   Number.isSafeInteger(value) && value > 0;
 
@@ -2388,31 +2431,21 @@ export const pruneWorktreeArchives = (
   const manualId = input.manual?.archiveId;
   const plan =
     manualId === undefined
-      ? automaticPlan(context, listings, totalBytesBefore)
+      ? automaticPlan(context, listings)
       : manualPlan(context, listings, manualId);
-  if (!input.dryRun && plan.prune.length > 0) {
+  if (!input.dryRun && queueWouldPrune(input, plan.queue, totalBytesBefore)) {
     // A damaged log refuses before any pin or folder is touched.
     readArchivePruneLog(input.commonGitDirectory);
   }
-  const outcomes = plan.prune.map((item) => ({
-    item,
-    outcome: input.dryRun
-      ? plannedPrune(context, item)
-      : executePrune(context, item),
-  }));
+  const { outcomes, totalBytesAfter } = runQueue(
+    context,
+    plan.queue,
+    totalBytesBefore
+  );
   const keptForAttention = [
     ...plan.keptForAttention,
     ...outcomes.flatMap(({ outcome }) => (outcome.kept ? [outcome.kept] : [])),
   ];
-  // Only an archive whose folder is gone frees its bytes.
-  const prunedBytes = outcomes.reduce(
-    (sum, { item, outcome }) =>
-      sum +
-      (outcome.pruned?.folderRemoved && item.manifest
-        ? outcome.pruned.bytes
-        : 0),
-    0
-  );
   const pruned = outcomes.flatMap(({ outcome }) =>
     outcome.pruned
       ? [(({ folderRemoved: _removed, ...entry }) => entry)(outcome.pruned)]
@@ -2430,7 +2463,7 @@ export const pruneWorktreeArchives = (
         ? archivePruneLogPath(input.commonGitDirectory)
         : null,
     skipped: plan.skipped,
-    totalBytesAfter: totalBytesBefore - prunedBytes,
+    totalBytesAfter,
     totalBytesBefore,
   };
 };

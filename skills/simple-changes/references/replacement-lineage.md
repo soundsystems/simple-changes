@@ -193,8 +193,10 @@ its expiry and pins.
 Archives never need managing. Each expires after the repository policy's
 `archiveRetention.days` (default 14), or sooner, oldest first, once the
 archives together exceed `archiveRetention.maxTotalBytes` (default 2 GiB);
-an archive that is kept frees nothing, so the next-oldest is chosen until
-the total is under the cap.
+an archive that is kept, because a pin is blocked or its deletion fails
+when tried, frees nothing, so the next-oldest is chosen until the total is
+under the cap (a dry run plans from the pin values it reads, so it cannot
+foresee a deletion that fails only when tried).
 `prune`, `worktree cleanup` and `loop finalize` prune expired archives
 automatically, at the end of a run whose removals succeeded (never the
 archive that run made, and never on a run that refused), and report what

@@ -95,6 +95,8 @@ const UNPARSABLE_PATTERN = /Its state does not parse/u;
 const RECHECK_FAILED_PATTERN =
   /The re-check failed and the archive was pruned/u;
 const MOVED_PIN_PATTERN = /now points at [0-9a-f]{40}, not the pinned/u;
+const LOCKED_PIN_PATTERN =
+  /Its pins could not all be deleted \(refs\/simple-changes\/archives\/[^)]+\/head\): .*could not be deleted: .*lock.*The archive stays whole/u;
 const OVERSIZED_COPY_PATTERN =
   /The copied private Git directory holds FETCH_HEAD \([0-9]+ bytes\), larger than the [0-9]+ bytes the object scan reads.*The partial archive was removed/u;
 const STAYS_WHOLE_PATTERN =
@@ -1187,32 +1189,77 @@ describe("pruning", () => {
     );
   });
 
-  test("selects the next-oldest when a kept archive frees nothing under the size cap", () => {
-    const twoUnexpiredOverCap = () => {
-      const fixture = repository();
-      const replacement = git(fixture.root, ["rev-parse", "main"]);
-      const unexpired = {
-        expiresAt: ago(-30),
-        payloadBytes: 600 * 1024,
-        pins: "head" as const,
-        replacement,
-      };
-      const oldest = syntheticArchive(fixture, {
-        ...unexpired,
-        createdAt: ago(5),
-      });
-      const newer = syntheticArchive(fixture, {
-        ...unexpired,
-        createdAt: ago(2),
-      });
-      return {
-        fixture,
-        newer,
-        oldest,
-        retention: { days: 14, maxTotalBytes: 1024 * 1024 },
-      };
+  // Two unexpired archives whose sum is over a 1 MiB cap; pruning the oldest
+  // alone brings the total under it.
+  const twoUnexpiredOverCap = () => {
+    const fixture = repository();
+    const replacement = git(fixture.root, ["rev-parse", "main"]);
+    const unexpired = {
+      expiresAt: ago(-30),
+      payloadBytes: 600 * 1024,
+      pins: "head" as const,
+      replacement,
     };
+    const oldest = syntheticArchive(fixture, {
+      ...unexpired,
+      createdAt: ago(5),
+    });
+    const newer = syntheticArchive(fixture, {
+      ...unexpired,
+      createdAt: ago(2),
+    });
+    return {
+      fixture,
+      newer,
+      oldest,
+      retention: { days: 14, maxTotalBytes: 1024 * 1024 },
+    };
+  };
 
+  // The healthy control: the oldest alone brings the total under the cap,
+  // and the newer archive stays.
+  const expectOldestAlonePruned = (): void => {
+    const healthy = twoUnexpiredOverCap();
+    const control = prune(healthy.fixture, { retention: healthy.retention });
+    expect(control.pruned.map((item) => [item.archiveId, item.cause])).toEqual([
+      [healthy.oldest.archiveId, "size-cap"],
+    ]);
+    expect(control.keptForAttention).toEqual([]);
+    expect(control.totalBytesAfter).toBe(archiveBytes(healthy.newer));
+    expect(existsSync(healthy.newer.directory)).toBe(true);
+  };
+
+  test("advances past an archive whose pin deletion fails when tried under the size cap", () => {
+    const stalled = twoUnexpiredOverCap();
+    const common = commonDirectoryOf(stalled.fixture.root);
+    const pin = `${archivePinNamespace(stalled.oldest.archiveId)}/head`;
+    // A stale lock file, as an interrupted Git leaves behind: the pin reads
+    // fine, so the plan finds it deletable, and only the deletion fails.
+    writeFileSync(join(common, `${pin}.lock`), "");
+
+    const result = prune(stalled.fixture, { retention: stalled.retention });
+
+    expect(result.pruned.map((item) => [item.archiveId, item.cause])).toEqual([
+      [stalled.newer.archiveId, "size-cap"],
+    ]);
+    expect(result.keptForAttention.map((item) => item.archiveId)).toEqual([
+      stalled.oldest.archiveId,
+    ]);
+    expect(result.keptForAttention[0]?.reason).toMatch(LOCKED_PIN_PATTERN);
+    expect(result.totalBytesAfter).toBe(archiveBytes(stalled.oldest));
+    expect(existsSync(join(stalled.oldest.directory, "manifest.json"))).toBe(
+      true
+    );
+    expect(existsSync(stalled.newer.directory)).toBe(false);
+    expect(git(stalled.fixture.root, ["rev-parse", pin])).toBe(
+      stalled.oldest.manifest.pinRefs[0]?.object ?? ""
+    );
+    expect(readArchivePruneLog(common)).toHaveLength(1);
+
+    expectOldestAlonePruned();
+  });
+
+  test("selects the next-oldest when a kept archive frees nothing under the size cap", () => {
     const blocked = twoUnexpiredOverCap();
     writeFixture(blocked.fixture.root, "other.txt", "other\n");
     git(blocked.fixture.root, ["add", "."]);
@@ -1246,16 +1293,7 @@ describe("pruning", () => {
     expect(existsSync(blocked.newer.directory)).toBe(false);
     expect(git(blocked.fixture.root, ["rev-parse", movedPin])).toBe(other);
 
-    // Control: with healthy pins the oldest alone brings the total under the
-    // cap, and the newer archive stays.
-    const healthy = twoUnexpiredOverCap();
-    const control = prune(healthy.fixture, { retention: healthy.retention });
-    expect(control.pruned.map((item) => [item.archiveId, item.cause])).toEqual([
-      [healthy.oldest.archiveId, "size-cap"],
-    ]);
-    expect(control.keptForAttention).toEqual([]);
-    expect(control.totalBytesAfter).toBe(archiveBytes(healthy.newer));
-    expect(existsSync(healthy.newer.directory)).toBe(true);
+    expectOldestAlonePruned();
   });
 
   test("keeps archives whose target reverted or lost a replacement, until pruned by ID", () => {

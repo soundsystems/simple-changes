@@ -203,9 +203,10 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    closed object (`evals/schemas/identity-receipt.schema.json`) with
    `schemaVersion` 1, `harness`, `session`, the `model` ID, and optionally
    `instance` and `parentSession`. Its session must be the one the
-   environment reports for its harness, and `--harness`, `--agent` and
-   `--instance` must agree with it; any conflict or invalid receipt exits 2
-   and records nothing. It corrects a confused identity and is never stored,
+   environment reports for its harness, and `--harness`, `--session`,
+   `--agent` and `--instance` must agree with it, on any command; any
+   conflict or invalid receipt exits 2 before the command runs. It corrects
+   a confused identity and is never stored,
    so it proves nothing against a forged one. The same options apply to
    `proposal record-authors`. A
    worktree claim makes an agent eligible only from the session that holds

@@ -589,8 +589,9 @@ loop lock a live holder owns, then runs once; it never recovers a lock.
 runs in. When the environment names sessions of two harnesses, as when one
 harness starts another, a command that records or checks the executing
 session (author attest, proposal record-authors, worktree claim commands,
-loop start, resume and takeover, a direct loop turn-check) refuses without
-one. A receipt must agree with the session the environment reports.
+every loop start, resume and takeover, workdir inside a run, a direct loop
+turn-check) refuses without one. A receipt must agree with the session the
+environment reports and with --harness, --session, --agent and --instance.
 `;
 
 const WHOLE_NUMBER_PATTERN = /^[0-9]+$/u;

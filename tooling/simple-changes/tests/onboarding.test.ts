@@ -1671,17 +1671,26 @@ describe("authoring and review questions", () => {
   test("R3' binds the running harness and rejects the author's own model", async () => {
     expect(
       reviewModelProblem("author-model", { model: "author-model" })
-    ).toContain("review its own work");
+    ).toContain("this choice asks for a different model");
     expect(reviewModelProblem("most-capable", undefined)).toContain(
-      "review its own work"
+      "this choice asks for a different model"
     );
+    // The same model is refused only because this choice asks for a
+    // different one, never as self-review: a separate session of it is an
+    // independent reviewer, which the answer points to.
+    const sameModel = reviewModelProblem("author-model", {
+      model: "author-model",
+    });
+    expect(sameModel).toContain("still an independent reviewer");
+    expect(sameModel).toContain("Any independent reviewer");
+    expect(sameModel).not.toContain("its own work");
     expect(
       reviewModelProblem("reviewer-model", { model: "author-model" })
     ).toBeNull();
     // The author's own model ID, however it is cased or prefixed.
     for (const variant of ["AUTHOR-MODEL", "vendor/author-model"]) {
       expect(reviewModelProblem(variant, { model: "author-model" })).toContain(
-        "review its own work"
+        "this choice asks for a different model"
       );
     }
     // A name that is not a model ID is refused with the next step, since

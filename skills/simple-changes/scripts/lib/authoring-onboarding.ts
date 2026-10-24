@@ -243,7 +243,7 @@ export const reviewerChoices = (input: {
   if (input.runningHarness) {
     choices.push({
       description:
-        "Name the model; the author's model is never its own reviewer. This covers one model shipping and another reviewing inside a single agent.",
+        "Name a model other than the author's. This covers one model shipping and another reviewing inside a single agent; a separate session of the author's own model is an independent reviewer too, under Any independent reviewer.",
       label: "A different model in the same agent (Recommended otherwise)",
       recommended: !multiple,
       value: "different-model",
@@ -284,9 +284,12 @@ export const reviewAgentCandidates = (input: {
   });
 
 /**
- * Question R3': the named review model must differ from the model recorded
- * for the running harness (absent means the most capable model). Returns the
- * reason to ask again, or null when the name is acceptable.
+ * Question R3': under "A different model in the same agent", the named review
+ * model must differ from the model recorded for the running harness (absent
+ * means the most capable model), since that choice records model diversity.
+ * The same model is not self-review, which is the same agent instance; it is
+ * what "Any independent reviewer" records. Returns the reason to ask again,
+ * or null when the name is acceptable.
  */
 export const reviewModelProblem = (
   name: string,
@@ -308,8 +311,11 @@ export const reviewModelProblem = (
   if (authorId === null) {
     return `The model recorded for this agent, ${authorModel}, is not a model ID, so a different reviewer cannot be confirmed; record the agent's model ID first.`;
   }
+  // The same model is never refused as self-review: a separate session of it
+  // is independent. This choice asks for a different model, so the same one
+  // belongs under "Any independent reviewer" instead.
   return reviewId === authorId
-    ? "That is the model recorded for this agent, so it would review its own work; name a different model."
+    ? "That is the model recorded for this agent, and this choice asks for a different model. A separate session of the same model is still an independent reviewer: name a different model here, or choose Any independent reviewer for that."
     : null;
 };
 

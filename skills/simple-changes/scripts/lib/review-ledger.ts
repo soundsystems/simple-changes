@@ -40,8 +40,13 @@ import {
   assertStateDestination,
   ensureStateDirectory,
 } from "./git-location.ts";
-import { currentHarnessSession } from "./harness-session.ts";
+import {
+  ambiguousSessionMessage,
+  mismatchedSessionMessage,
+  resolveHarnessSession,
+} from "./harness-session.ts";
 import { sha256 } from "./hash.ts";
+import { type IdentityReceipt, receiptSession } from "./identity-receipt.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   type LoopLockWait,
@@ -51,6 +56,7 @@ import {
 } from "./loop-lease-core.ts";
 import { gitExecutable, runGit, runGitWithInput } from "./process.ts";
 import type {
+  LoopControllerSession,
   LoopLease,
   RepositoryInventory,
   WorktreeClaim,
@@ -2097,31 +2103,28 @@ export const latestRecordedHead = (proposal: ProposalRecord): string | null =>
 // Identity comparison
 
 /**
- * Executor independence, the existing rule: a different instance (both
- * known) or a different session (both known). A background agent with its
- * own instance passes beside its parent's session. Logical ids, models and
- * harnesses are never consulted here.
+ * Executor independence, per agent instance: a reviewer is independent of
+ * an author only when their records show different agent instances. The
+ * same model, and the same harness, are no objection. The same instance
+ * never is independent, whatever harness or model either record names: an
+ * equal instance id is the same agent even under different sessions, and
+ * one session is the same agent unless both records name different
+ * instances in it, as a background agent beside its parent does. Different
+ * instance ids, or else different sessions, are different agents. Anything
+ * else cannot tell the instance, and the gate refuses it. Logical ids,
+ * models and harnesses are never consulted here.
  */
 const executorIndependence = (
   reviewer: RuntimeIdentity,
   author: RuntimeIdentity
 ): "independent" | "same" | "unknown" => {
-  const instanceDiffers =
-    reviewer.instance !== null &&
-    author.instance !== null &&
-    reviewer.instance !== author.instance;
-  const sessionDiffers =
-    reviewer.session !== null &&
-    author.session !== null &&
-    reviewer.session !== author.session;
-  if (instanceDiffers || sessionDiffers) {
-    return "independent";
+  if (reviewer.instance !== null && author.instance !== null) {
+    return reviewer.instance === author.instance ? "same" : "independent";
   }
-  const instanceEqual =
-    reviewer.instance !== null && reviewer.instance === author.instance;
-  const sessionEqual =
-    reviewer.session !== null && reviewer.session === author.session;
-  return instanceEqual || sessionEqual ? "same" : "unknown";
+  if (reviewer.session !== null && author.session !== null) {
+    return reviewer.session === author.session ? "same" : "independent";
+  }
+  return "unknown";
 };
 
 /**
@@ -2820,8 +2823,19 @@ export interface ExecutingIdentityInput {
   /** The model name and version the executing harness reports. */
   agent?: string;
   environment?: Environment;
-  /** Refused unless it equals the executing session's harness. */
+  /**
+   * The harness this agent runs in. With one harness session in the
+   * environment it must name that harness; with more than one, as when one
+   * harness starts another and the child inherits the parent's variable, it
+   * says which one is this agent's, and the command refuses without it.
+   */
   harness?: string;
+  /**
+   * `--identity-receipt`: what the executing harness reports about itself.
+   * Its session must be the one the environment reports for its harness,
+   * and `--harness`, `--agent`, and `--instance` must agree with it.
+   */
+  identityReceipt?: IdentityReceipt;
   /** The runtime agent instance id the executing harness reports. */
   instance?: string;
   /** `--agent-id`; falls back to `AGENT_ID`. Never compared. */
@@ -2850,28 +2864,72 @@ const optionalValue = (
   return trimmed;
 };
 
+// The session this agent runs in. An identity receipt names it, checked
+// against the environment; otherwise the environment's one session decides,
+// or, when it names more than one, the `--harness` the agent passed.
+const executingSession = (
+  input: ExecutingIdentityInput,
+  environment: Environment,
+  command: string
+): LoopControllerSession | null => {
+  const requested = input.harness === undefined ? null : input.harness.trim();
+  if (input.identityReceipt) {
+    return receiptSession(input.identityReceipt, environment, {
+      agent: input.agent ?? null,
+      harness: requested,
+      instance: input.instance ?? null,
+      session: input.session ?? null,
+    });
+  }
+  const resolution = resolveHarnessSession(environment, requested);
+  if (resolution.status === "ambiguous") {
+    throw new SimpleChangesError(
+      ambiguousSessionMessage(resolution.present, command),
+      EXIT_CODES.usage
+    );
+  }
+  if (resolution.status === "mismatch") {
+    throw new SimpleChangesError(
+      mismatchedSessionMessage(requested ?? "", resolution.present),
+      EXIT_CODES.unsafe
+    );
+  }
+  return resolution.session;
+};
+
+// The reported model and instance: an identity receipt's, which the session
+// check already found `--agent` and `--instance` agree with, or else the
+// arguments alone.
+const executingAgent = (input: ExecutingIdentityInput): string | null => {
+  const named = optionalValue(input.agent, isModelName, "--agent");
+  return input.identityReceipt ? input.identityReceipt.model : named;
+};
+
+const executingInstance = (input: ExecutingIdentityInput): string | null => {
+  const named = optionalValue(input.instance, isToken, "--instance");
+  return input.identityReceipt?.instance ?? named;
+};
+
 /**
  * Session and harness come only from the executing process's environment
  * through the session adapter; an argument that disagrees is refused, so an
- * agent can attest only as the session it runs in. Instance and agent are
+ * agent can attest only as the session it runs in. When the environment
+ * names sessions of more than one harness, `--harness` or an identity
+ * receipt picks this agent's own, and without one the command refuses
+ * rather than recording a parent harness's session. Instance and agent are
  * what the harness reported to the agent, recorded `null` when absent.
  */
 const executingIdentity = (
-  input: ExecutingIdentityInput
+  input: ExecutingIdentityInput,
+  command: string
 ): ExecutingIdentity => {
   const environment = input.environment ?? process.env;
-  const session = currentHarnessSession(environment);
+  const session = executingSession(input, environment, command);
   const sessionId = session?.sessionId ?? null;
   const harness = session?.harness ?? null;
   if (input.session !== undefined && input.session.trim() !== sessionId) {
     throw new SimpleChangesError(
       `--session ${input.session} disagrees with the executing session (${sessionId ?? "none reported"}); the session is read from the executing process only.`,
-      EXIT_CODES.unsafe
-    );
-  }
-  if (input.harness !== undefined && input.harness.trim() !== harness) {
-    throw new SimpleChangesError(
-      `--harness ${input.harness} disagrees with the executing harness (${harness ?? "none reported"}); the harness is read from the executing process only.`,
       EXIT_CODES.unsafe
     );
   }
@@ -2884,9 +2942,9 @@ const executingIdentity = (
   }
   return {
     identity: {
-      agent: optionalValue(input.agent, isModelName, "--agent"),
+      agent: executingAgent(input),
       harness,
-      instance: optionalValue(input.instance, isToken, "--instance"),
+      instance: executingInstance(input),
       session: sessionId,
     },
     logicalId: logical,
@@ -3640,7 +3698,7 @@ const assertAttestInput = (input: AuthorAttestInput): void => {
  */
 export const attestCommits = (input: AuthorAttestInput): AuthorAttestResult => {
   assertAttestInput(input);
-  const { identity, logicalId } = executingIdentity(input);
+  const { identity, logicalId } = executingIdentity(input, "author attest");
   if (!logicalId) {
     throw new SimpleChangesError(
       "author attest needs the executing agent's id: pass --agent-id or set AGENT_ID.",
@@ -3925,7 +3983,7 @@ export const recordProposalAuthors = (
   input: RecordAuthorsInput
 ): RecordAuthorsResult => {
   const proposalId = requireProposalId(input.proposalId);
-  const { identity } = executingIdentity(input);
+  const { identity } = executingIdentity(input, "proposal record-authors");
   const cwd = input.repositoryPath;
   const { commonGitDirectory } = locateRepository(cwd).repository;
   const recordedAt = new Date().toISOString();

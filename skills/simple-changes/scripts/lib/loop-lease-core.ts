@@ -25,6 +25,7 @@ import {
   currentHarnessSession,
   forgetControllerSession,
   recordControllerSession,
+  requireHarnessSession,
 } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import {
@@ -915,7 +916,9 @@ const removeControllerBinding = (lease: LoopLease): void => {
 /**
  * Bind the run to the harness session issuing an owner command, so a restarted
  * harness process or a resumed session keeps a current binding. Only commands
- * that already proved ownership call this.
+ * that already proved ownership call this. When the environment names
+ * sessions of two harnesses and the command did not say which is its own,
+ * the binding stays as it was.
  */
 const refreshControllerSession = (lease: LoopLease): void => {
   const session = currentHarnessSession();
@@ -1009,7 +1012,11 @@ const transferController = (
   const now = new Date().toISOString();
   const previous = controllerLifecycle(lease);
   const frozenAt = effectiveShipmentScopeFrozenAt(lease);
-  const session = currentHarnessSession();
+  // The run binds to the new controller's own session, so with sessions of
+  // two harnesses in the environment the command must say which is its own.
+  const session = requireHarnessSession(
+    kind === "resume" ? "loop start --mode resume" : "loop takeover"
+  );
   const previousBinding = readControllerBinding(lease);
   const mayRebindLegacyDestinations =
     !lease.remoteBindings &&

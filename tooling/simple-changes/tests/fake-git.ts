@@ -11,6 +11,8 @@ import { spawnSync, which } from "bun";
 
 const decoder = new TextDecoder();
 
+export type FakeGitLoss = "empty" | "first-line" | `lines:${number}`;
+
 export interface FakeGitRun {
   /** A child Bun script that prints one JSON value. */
   body: string;
@@ -24,10 +26,11 @@ export interface FakeGitRun {
   /** How many answers to lose. */
   lost: number;
   /**
-   * `empty`: exit 0 with no output. `first-line`: exit 0 with only the
-   * first line of the real answer, an answer cut short.
+   * `empty`: exit 0 with no output. `first-line` and `lines:<n>`: exit 0
+   * with only the first line, or the first n lines, of the real answer, an
+   * answer cut short.
    */
-  mode?: "empty" | "first-line";
+  mode?: FakeGitLoss;
 }
 
 // A Git on PATH that answers truthfully, except as the environment says:
@@ -59,9 +62,10 @@ if [ -n "$FAKE_GIT_EMPTY_FLAG" ] && [ -d "$FAKE_GIT_EMPTY_TOKENS" ]; then
     *" $FAKE_GIT_EMPTY_FLAG "*)
       for token in "$FAKE_GIT_EMPTY_TOKENS"/*; do
         if rm "$token" 2>/dev/null; then
-          if [ "$FAKE_GIT_EMPTY_MODE" = "first-line" ]; then
-            "$real" "$@" | head -n 1
-          fi
+          case "$FAKE_GIT_EMPTY_MODE" in
+            first-line) "$real" "$@" | head -n 1 ;;
+            lines:*) "$real" "$@" | head -n "\${FAKE_GIT_EMPTY_MODE#lines:}" ;;
+          esac
           exit 0
         fi
       done

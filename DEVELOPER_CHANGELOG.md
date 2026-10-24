@@ -480,9 +480,11 @@
   pruning deletes an archive's pins in one `update-ref --stdin`
   transaction (`applyRefTransaction`), all or none; `merge-base` without
   `--is-ancestor` is now a required answer, so a lost fork point withholds
-  deletion proposals; and those reflog reads and the patch audit's
-  listings go through the new `countedRevisionList`, checked whole against
-  Git's own count.
+  deletion proposals; those reflog reads and the patch audit's listings go
+  through the new `countedRevisionList`, checked whole against Git's own
+  count; and `patchIdFor` accepts a diff only when its hunks and totals
+  match `diff-tree --shortstat`, so a cut-short diff can no longer make a
+  false `patch-equivalent` proof.
 - Lineage wiring: `policy.ts` adds `DEFAULT_ARCHIVE_RETENTION_DAYS` (14),
   `DEFAULT_ARCHIVE_TOTAL_BYTES` (2147483648), and
   `archiveRetentionPolicy(policy)` (`days` 1 to 3650, `maxTotalBytes` 1

@@ -467,7 +467,11 @@ branch whose every unique commit patch-id-matches a target commit (the normal
 result of a squash or rebase merge) is deleted with method `patch-equivalent`
 recorded, so merged provider branches stop accumulating locally. A branch with
 any unmatched commit, or one too far ahead to audit cheaply, is preserved and
-named. It then restores or fast-forwards the primary under the controller and
+named. Patch evidence counts only when it came back whole: each listing must
+match Git's own count, and each commit's diff must have the files, insertions
+and deletions `git diff-tree --shortstat` counts, so an answer lost or cut
+short under load is asked again and then refused, never read as a match. It
+then restores or fast-forwards the primary under the controller and
 coordination locks. Without an exact verified shipment outcome, a missing or
 stale target, dirty or off-target primary, or remaining cleanup candidate keeps
 the run open. With that outcome, clean source worktrees proven contained in the
@@ -526,9 +530,8 @@ cannot be held and is reported as pending. A check that fails is listed in
 finalize again), a head with more than 200 commits outside the target (too
 many to prove by patch equivalence, so classify it yourself), any other Git
 failure while settling containment (such as a missing ancestor object, or a
-merge base or commit listing Git lost or cut short twice under load; a
-listing must match Git's own count, and a branch that seems unmatched is
-audited once more before it is settled as not contained), any
+merge base, commit listing, diff or patch ID Git lost or cut short twice
+under load), any
 answer short of a positive proof in a shallow clone, or holds that cannot be
 read (a shallow clone always loses its fork-point holds). Holds apply first,
 so a held branch's unsettled audit is neither pending nor an error. Unknown

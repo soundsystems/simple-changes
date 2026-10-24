@@ -621,12 +621,11 @@ const reportMergeBase = (
 };
 
 // Whether every commit of the head outside the target has a patch-id match
-// in it, from the settled merge base; every Git call on this path throws on
-// failure instead of reading as "not contained", and every listing is
-// checked whole against Git's count. A lost diff or patch ID can hide a
-// match but never make one, and Git may rightly give some commits no patch
-// ID, so a miss is confirmed by a second audit, read afresh with no cache,
-// before it settles.
+// in it, from the settled merge base. Every Git call on this path throws on
+// failure instead of reading as "not contained", every listing is checked
+// whole against Git's count, and patch evidence is used only when it is
+// whole, so a lost or cut-short answer is an error, never a settled match
+// or miss.
 const patchEquivalence = (
   repositoryPath: string,
   head: string,
@@ -634,19 +633,20 @@ const patchEquivalence = (
   mergeBase: string,
   patchIdCache: Map<string, Map<string, string>>
 ): boolean | "too-many" => {
-  const audit = (cache: Map<string, Map<string, string>> | undefined) =>
-    commitEquivalenceAgainstTarget(repositoryPath, head, targetRevision, {
+  const audit = commitEquivalenceAgainstTarget(
+    repositoryPath,
+    head,
+    targetRevision,
+    {
       maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS,
       mergeBase,
-      targetPatchIdCache: cache,
-    });
-  const first = audit(patchIdCache);
-  if (first.exceededMaxCommits) {
+      targetPatchIdCache: patchIdCache,
+    }
+  );
+  if (audit.exceededMaxCommits) {
     return "too-many";
   }
-  const settled =
-    first.commitCount > 0 && !first.fullyMatched ? audit(undefined) : first;
-  return settled.commitCount > 0 && settled.fullyMatched;
+  return audit.commitCount > 0 && audit.fullyMatched;
 };
 
 /**

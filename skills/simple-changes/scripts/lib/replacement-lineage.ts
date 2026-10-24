@@ -34,6 +34,7 @@ import {
   type ArchiveBranchConfig,
   type ArchiveCopy,
   type ArchivePinRef,
+  applyRefTransaction,
   archivePinNamespace,
   assertArchiveCapacity,
   compareLiveWithManifest,
@@ -1554,20 +1555,48 @@ const deleteTrackedPin = (
   }
 };
 
+// All the pins in one transaction, as pruning deletes an archive's pins:
+// one Git command however many there are, and all or none.
+const deletedTogether = (
+  primaryCheckout: string,
+  pins: readonly ArchivePinRef[],
+  overrides: readonly string[]
+): boolean => {
+  try {
+    for (const pin of pins) {
+      throwForTests(pin.ref);
+    }
+  } catch {
+    return false;
+  }
+  return (
+    applyRefTransaction(
+      primaryCheckout,
+      overrides,
+      pins.map((pin) => `delete ${pin.ref} ${pin.object}`)
+    ) === null
+  );
+};
+
 /**
  * Deletes pins by their exact recorded value, never following a symbolic
  * ref, and returns the refs that could not be deleted with the reason, so
- * the caller reports exactly what remains. It never throws: every pin is
- * attempted, whatever happened to the ones before it.
+ * the caller reports exactly what remains. It never throws. The pins go in
+ * one transaction first. When that fails it deleted none, and each pin is
+ * then attempted on its own, whatever happened to the ones before it: the
+ * caller is discarding an archive whose checkout was never removed, so no
+ * kept archive depends on these pins, and fewer stray refs is better.
  */
 export const deleteTrackedPins = (
   primaryCheckout: string,
   pins: readonly ArchivePinRef[],
   overrides: readonly string[] = []
 ): string[] =>
-  pins
-    .map((pin) => deleteTrackedPin(primaryCheckout, pin, overrides))
-    .filter((leftover): leftover is string => leftover !== null);
+  pins.length === 0 || deletedTogether(primaryCheckout, pins, overrides)
+    ? []
+    : pins
+        .map((pin) => deleteTrackedPin(primaryCheckout, pin, overrides))
+        .filter((leftover): leftover is string => leftover !== null);
 
 // Removes the archive folder and exactly the pins this run wrote (tracked
 // as they were made, never rediscovered), so a refusal that says no archive

@@ -177,22 +177,51 @@ export const recordedExternalDeletionPins = (
   [];
 
 /**
- * Pins the last head of each branch deleted outside the run, when Git has it,
- * under `refs/simple-changes/external/<runId>/<head>`, so gc cannot remove
- * the work while the user decides. A head that is not present locally is
- * reported later, unpinned; it never stops the record. Pins from earlier
- * receipts of the same run are kept, with their first pin time.
+ * The pins this record will make: each last head of a branch deleted outside
+ * the run that Git has locally and that no earlier receipt of the run already
+ * pinned. A head that is not present locally is reported later, unpinned; it
+ * never stops the record.
+ */
+const newExternalPins = (
+  repositoryPath: string,
+  deletions: readonly RemoteBranchExternalDeletion[],
+  previous: readonly RemoteBranchExternalDeletionPin[]
+): RemoteBranchExternalDeletionPin[] => {
+  const pinnedAt = new Date().toISOString();
+  return deletions
+    .filter(
+      ({ branch, lastHeadRevision }) =>
+        !previous.some(
+          (pin) =>
+            pin.branch === branch && pin.headRevision === lastHeadRevision
+        ) &&
+        runGit(
+          repositoryPath,
+          ["cat-file", "-e", `${lastHeadRevision}^{commit}`],
+          true
+        ).exitCode === 0
+    )
+    .map(({ branch, lastHeadRevision }) => ({
+      branch,
+      headRevision: lastHeadRevision,
+      pinnedAt,
+    }));
+};
+
+/**
+ * Pins each last head under `refs/simple-changes/external/<runId>/<head>`, so
+ * gc cannot remove the work while the user decides. Pins of earlier receipts
+ * are made again, which is a no-op when they still exist.
  */
 const pinExternallyDeletedHeads = (
   repositoryPath: string,
   runId: string,
-  deletions: readonly RemoteBranchExternalDeletion[],
-  previous: readonly RemoteBranchExternalDeletionPin[]
-): RemoteBranchExternalDeletionPin[] => {
-  const pins = [...previous];
-  const pinnedAt = new Date().toISOString();
+  pins: readonly RemoteBranchExternalDeletionPin[],
+  deletions: readonly RemoteBranchExternalDeletion[]
+): void => {
   for (const { branch, lastHeadRevision } of deletions) {
     if (
+      !pins.some((pin) => pin.headRevision === lastHeadRevision) ||
       runGit(
         repositoryPath,
         ["cat-file", "-e", `${lastHeadRevision}^{commit}`],
@@ -214,19 +243,11 @@ const pinExternallyDeletedHeads = (
     );
     if (pinned.exitCode !== 0) {
       throw new SimpleChangesError(
-        `Could not pin last head ${lastHeadRevision} of ${branch}, which was deleted outside this run: ${pinned.stderr.trim()}. Nothing was recorded; fix the Git error and record the final reconciliation again.`,
+        `Could not pin last head ${lastHeadRevision} of ${branch}, which was deleted outside this run: ${pinned.stderr.trim()}. The reconciliation was not recorded; fix the Git error and record the final reconciliation again.`,
         EXIT_CODES.unsafe
       );
     }
-    if (
-      !pins.some(
-        (pin) => pin.branch === branch && pin.headRevision === lastHeadRevision
-      )
-    ) {
-      pins.push({ branch, headRevision: lastHeadRevision, pinnedAt });
-    }
   }
-  return pins;
 };
 
 /**
@@ -301,8 +322,9 @@ const pinTime = (
  * Removes pins of branches deleted outside earlier runs once their retention
  * has passed. It reads every ref under `refs/simple-changes/external/`, skips
  * the run named by `currentRunId`, and judges age by the pin time its run
- * recorded, or, for a pin its run's record does not list, by the time encoded
- * in the run ID. A ref whose name or value does not match a pin this module
+ * recorded. A record always lists a pin's time before the pin exists, so only
+ * a missing or unreadable record falls back to the time encoded in the run
+ * ID. A ref whose name or value does not match a pin this module
  * makes is left alone, and each removal names the exact old value, so a ref
  * that changed meanwhile is kept.
  */
@@ -831,6 +853,48 @@ const assertCurrentRemoteBranchReconciliation = (
   );
 };
 
+/**
+ * Pins the last heads of branches deleted outside the run and returns every
+ * pin the run has made. Each new pin's time is written to the record before
+ * its ref exists, still bound to the receipt the lease holds now, so an
+ * interrupted record never leaves a pin whose age is unknown and never
+ * invalidates the receipt recorded earlier.
+ */
+const pinExternalDeletions = (
+  lease: LoopLease,
+  receipt: RemoteBranchReconciliationReceipt,
+  externalDeletions: readonly RemoteBranchExternalDeletion[]
+): RemoteBranchExternalDeletionPin[] => {
+  const previous = storedExternalDeletionRecord(
+    lease.commonGitDirectory,
+    lease.runId
+  );
+  const addedPins = newExternalPins(
+    lease.primaryCheckout,
+    externalDeletions,
+    previous?.pins ?? []
+  );
+  const pins = [...(previous?.pins ?? []), ...addedPins];
+  if (addedPins.length > 0) {
+    const recorded = lease.remoteBranchReconciliation ?? receipt;
+    writeRemoteBranchExternalDeletions(
+      lease,
+      recorded,
+      previous?.receiptDigest === remoteBranchReconciliationDigest(recorded)
+        ? previous.deletions
+        : [],
+      pins
+    );
+  }
+  pinExternallyDeletedHeads(
+    lease.primaryCheckout,
+    lease.runId,
+    pins,
+    externalDeletions
+  );
+  return pins;
+};
+
 export const recordRemoteBranchReconciliation = (
   repositoryPath: string,
   runId: string,
@@ -929,11 +993,10 @@ export const recordRemoteBranchReconciliation = (
         targetPatchIdCache
       );
       pinSupersededHeads(lease.primaryCheckout, lease.runId, supersessions);
-      const externalPins = pinExternallyDeletedHeads(
-        lease.primaryCheckout,
-        lease.runId,
-        externalDeletions,
-        recordedExternalDeletionPins(lease)
+      const externalPins = pinExternalDeletions(
+        lease,
+        receipt,
+        externalDeletions
       );
       writeRemoteBranchAncestry(lease, receipt, ancestryProofs);
       writeRemoteBranchSupersession(lease, receipt, supersessions);

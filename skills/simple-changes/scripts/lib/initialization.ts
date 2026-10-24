@@ -13,6 +13,7 @@ import {
   type GuidanceUpdateQuestion,
   inspectGuidanceUpdate,
 } from "./guidance-updates.ts";
+import type { PolicyRequestReport } from "./policy.ts";
 import type { ReviewerResolution } from "./review-ledger.ts";
 import type {
   ChangelogCoordination,
@@ -85,6 +86,11 @@ export interface InitializationStatus {
   mutationAllowed: boolean;
   onboardingRequired: boolean;
   policyPath: string | null;
+  /**
+   * This invocation's `--policy-request`: `applied` when nothing is saved,
+   * `ignored` under a saved policy; absent or null without one.
+   */
+  policyRequest?: PolicyRequestReport | null;
   policySource: PolicySource;
   policyTrust: PolicyTrust;
   preLoopActionRequired: boolean;
@@ -211,7 +217,8 @@ const initializationReason = (
   onboardingRequired: boolean,
   updateActionRequired: boolean,
   changelogUpdateActionRequired: boolean,
-  handoff: HandoffState
+  handoff: HandoffState,
+  policySource: PolicySource
 ): string => {
   if (!writeCapable) {
     return "This mode is read-only or preservation-only.";
@@ -240,7 +247,9 @@ const initializationReason = (
   if (handoff.action === "proceed" && handoff.resolvedMode) {
     return `The handoff may proceed in ${handoff.resolvedMode} mode after confirming the completed assignment is attributable and verified.`;
   }
-  return "Saved preferences are available.";
+  return policySource === "request"
+    ? "This run's confirmed setup answers apply through --policy-request; nothing is saved, so onboarding returns on the next run."
+    : "Saved preferences are available.";
 };
 
 export const inspectInitialization = (
@@ -282,6 +291,8 @@ export const inspectInitialization = (
   } = {}
 ): InitializationStatus => {
   const writeCapable = WRITE_CAPABLE_MODES.has(mode);
+  // A `request` policy is a run-only setup the user confirmed in this run:
+  // onboarding is done for the run, and every other check below still runs.
   const onboardingRequired =
     writeCapable && mode !== "sync" && policy.source === "default";
   const guidanceUpdate = inspectGuidanceUpdate(
@@ -339,7 +350,8 @@ export const inspectInitialization = (
       onboardingRequired,
       updateActionRequired,
       changelogUpdateActionRequired,
-      handoff
+      handoff,
+      policy.source
     ),
     resolvedMode: handoff.resolvedMode,
     shippingMode: policy.value ? policy.value.shippingMode : "standard",

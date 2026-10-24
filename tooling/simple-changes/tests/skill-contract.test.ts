@@ -434,6 +434,38 @@ describe("Simple Changes skill contract", () => {
     );
   });
 
+  test("run-only setup tells agents to pass its policy back for the run", async () => {
+    const [skill, onboarding, setupAndPolicy] = await Promise.all([
+      readFile(skillPath, "utf8"),
+      readFile(onboardingPath, "utf8"),
+      readFile(setupAndPolicyPath, "utf8"),
+    ]);
+    const normalize = (text: string) => text.replace(/\s+/g, " ");
+    expect(normalize(skill)).toContain(
+      "after run-only setup, pass its `policy` as `--policy-request`"
+    );
+    expect(normalize(skill)).toContain(
+      "only when `mutationAllowed` is true (run-only setup: `--policy-request`)"
+    );
+    const runOnly = normalize(onboarding);
+    expect(runOnly).toContain("### Run-only setup");
+    expect(runOnly).toContain(
+      "pass setup's `policy` object, unchanged, as `--policy-request '<json>'` (or `@<file>`) to every later `initialize` and `loop start` of that run"
+    );
+    expect(runOnly).toContain(
+      "and its `authoringAnswer`, when not null, as `--authoring-request`"
+    );
+    expect(runOnly).toContain(
+      "It is never trusted with consequential authority"
+    );
+    expect(runOnly).toContain(
+      "A malformed, partial, or stale request exits 2 and changes nothing"
+    );
+    expect(normalize(setupAndPolicy)).toContain(
+      "pass its printed `policy` as `--policy-request` to every later `initialize` and `loop start` of that run"
+    );
+  });
+
   test("installed update notices use clear copy before any shipment loop", async () => {
     const [skill, guidance] = await Promise.all([
       readFile(skillPath, "utf8"),

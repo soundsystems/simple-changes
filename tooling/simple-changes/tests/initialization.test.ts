@@ -75,9 +75,9 @@ describe("first-run initialization", () => {
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
       26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30,
       31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32,
-      // <!-- lineage -->: guidance 33 has nine changes with the archived
-      // reviewed removal and eight without it; drop one 33 from each list.
-      33, 33, 33, 33, 33, 33, 33, 33, 33,
+      // <!-- lineage -->: guidance 33 has ten changes with the archived
+      // reviewed removal and nine without it; drop one 33 from each list.
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
@@ -130,7 +130,7 @@ describe("first-run initialization", () => {
     );
     expect(from29.changes.map((item) => item.version)).toEqual([
       30, 30, 31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32,
-      32, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from29.summaryBullets.join(" ")).toContain(
       "`author attest --complete-identity`"
@@ -144,7 +144,7 @@ describe("first-run initialization", () => {
     );
     expect(from30.changes.map((item) => item.version)).toEqual([
       31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32, 33,
-      33, 33, 33, 33, 33, 33, 33, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from30.requiredAnswers).toEqual([]);
     const from31 = inspectGuidanceUpdate(
@@ -155,7 +155,7 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from31.changes.map((item) => item.version)).toEqual([
-      32, 32, 32, 32, 32, 32, 32, 32, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      32, 32, 32, 32, 32, 32, 32, 32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from31.requiredAnswers).toEqual([]);
     expect(from31.summaryBullets.join(" ")).toContain(
@@ -169,7 +169,7 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from32.changes.map((item) => item.version)).toEqual([
-      33, 33, 33, 33, 33, 33, 33, 33, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from32.requiredAnswers).toEqual([]);
     expect(from32.summaryBullets).toHaveLength(3);
@@ -360,6 +360,44 @@ describe("first-run initialization", () => {
       onboardingRequired: false,
       policySource: "repository",
     });
+  });
+
+  test("treats a run-only policy request as finished onboarding for the run", () => {
+    const request = {
+      path: null,
+      source: "request" as const,
+      value: DEFAULT_POLICY,
+    };
+    const status = inspectInitialization("queue", request);
+    expect(status).toMatchObject({
+      firstUseWalkthroughAvailable: false,
+      guidanceUpdate: { status: "current" },
+      mutationAllowed: true,
+      onboardingRequired: false,
+      policyPath: null,
+      policySource: "request",
+      preLoopActionRequired: false,
+    });
+    expect(status.reason).toContain("onboarding returns on the next run");
+    // Readiness still gates a handoff, and an older guidance version in the
+    // layer still pauses, exactly as for a saved policy.
+    expect(inspectInitialization("handoff", request)).toMatchObject({
+      handoffAction: "confirm-readiness",
+      mutationAllowed: false,
+    });
+    expect(
+      inspectInitialization("queue", {
+        ...request,
+        value: {
+          ...DEFAULT_POLICY,
+          guidance: { disposition: "accepted", version: 32 },
+        },
+      })
+    ).toMatchObject({ mutationAllowed: false, preLoopActionRequired: true });
+    // Negative control: the same value as the default layer still onboards.
+    expect(
+      inspectInitialization("queue", { ...request, source: "default" })
+    ).toMatchObject({ mutationAllowed: false, onboardingRequired: true });
   });
 
   test("pauses once for a meaningful installed guidance update", () => {

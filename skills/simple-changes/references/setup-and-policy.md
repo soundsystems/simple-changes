@@ -104,7 +104,12 @@ In an interactive terminal, `initialize` directly launches setup. In a
 non-interactive agent runtime, it emits a closed machine-readable status that
 the agent presents as onboarding in chat, as
 [onboarding](onboarding.md#confirm-apply-and-continue) describes. A valid
-repository or personal policy suppresses repeat onboarding.
+repository or personal policy suppresses repeat onboarding. Run-only setup
+saves nothing: pass its printed `policy` as `--policy-request` to every later
+`initialize` and `loop start` of that run, and its `authoringAnswer` as
+`--authoring-request`, as [onboarding](onboarding.md#run-only-setup)
+describes. The request is policy source `request`, applies only when nothing
+is saved, and never carries consequential authority.
 
 A saved policy with an older meaningful guidance version triggers the separate
 installed-update checkpoint before write-capable mutation or loop creation. It

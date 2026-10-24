@@ -1148,6 +1148,12 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
           "The final `remote-inventory build` proposes deleting a provider branch a merged proposal recorded at exactly its head when the head did not move during the run, the branch is unprotected and not the target, and no open proposal, live worktree, claim, upstream, or fork point uses it, or one a `--decisions` entry approves at its unchanged opening head, listed under `deletionProposals` with `heldBranches` beside it; nothing is deleted automatically, each proposal still goes through `loop guard`, an exact provider deletion, and `loop verify`, and a shallow clone proposes nothing. `loop finalize` reports `cleanupStatus: pending`, naming each branch, head, and proof under `remoteBranches.pending`, whenever it kept a provider branch a merged proposal or Git ancestry proves finished, lists branches still in use under `remoteBranches.held`, and treats evidence Git cannot settle as an error that keeps cleanup pending; pending never blocks delivery. Proposal pages may carry `openProposalTargets`, which older builders reject.",
         version: 33,
       },
+      {
+        kind: "onboarding",
+        summary:
+          "Run-only setup can now finish the request it was started for. `initialize` and `loop start` accept `--policy-request <json-or-@path>`, the `policy` object run-only `setup` printed, unchanged: when no repository or personal policy is saved it applies with policy source `request` for that one command, so onboarding no longer blocks the run, and nothing is written. A saved policy always wins and the request is reported as ignored, consequential settings (automatic push configuration, production allow, non-standard shipping, automatic migration apply) fall back to their safe values with `policyTrust: untrusted`, and a malformed, partial, or stale-guidance request is a usage error, exit 2, that changes nothing. `setup --scope run` and the `initialize` hand-off print the exact value to pass on as `runRequest`, and the hand-off also prints the resulting initialization status. Every other check stays the same, and a plain `initialize` still asks again on the next run.",
+        version: 33,
+      },
       // <!-- lineage -->
       {
         kind: "behavior",

@@ -203,7 +203,8 @@ a newly discovered boundary or invalidated target.
 ## Hold one controller lease
 
 For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
-only after initialization returns `preLoopActionRequired: false`. Start the
+only after initialization returns `preLoopActionRequired: false`; after
+run-only setup, pass its `policy` as `--policy-request` (see onboarding). Start the
 loop before the first integration mutation and retain its run ID. A second
 controller is rejected; independent authors use distinct claimed worktrees.
 When the target is GitLab, first paginate the complete opening remote inventory
@@ -281,7 +282,7 @@ simple-changes initialize \
 
 If confirmation is required, ask: **The implementation and checks are complete.
 Is this ready for Simple Changes, or do you want more changes first?** Continue
-only when `mutationAllowed` is true. Do not invoke it after planning, diagnosis,
+only when `mutationAllowed` is true (run-only setup: `--policy-request`). Do not invoke it after planning, diagnosis,
 read-only work, or incomplete verification.
 
 ## Reports

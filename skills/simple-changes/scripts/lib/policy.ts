@@ -803,3 +803,111 @@ export const loadPolicy = (
     options.personalPolicyPath ?? resolvePersonalPolicyPath();
   return loadPersonalPolicy(personalPolicyPath);
 };
+
+/** What became of this invocation's `--policy-request`. */
+export interface PolicyRequestReport {
+  reason: string;
+  /** `applied` only when no repository or personal policy is saved. */
+  status: "applied" | "ignored";
+}
+
+const POLICY_REQUEST_KEYS = Object.keys(DEFAULT_POLICY);
+
+const policyRequestError = (detail: string): SimpleChangesError =>
+  new SimpleChangesError(
+    `--policy-request is invalid: ${detail}. Pass the \`policy\` object that run-only \`setup\` printed, unchanged.`,
+    EXIT_CODES.usage
+  );
+
+/**
+ * Parses and validates `--policy-request`: the complete `policy` object a
+ * run-only `setup` printed, as JSON or @path. It is checked against the
+ * repository policy schema and the current guidance version before any other
+ * input is read, so an invalid or stale request is a usage error that changes
+ * nothing. A valid one is the policy layer for one invocation and is never
+ * written.
+ */
+export const parsePolicyRequest = (text: string): RepoPolicy => {
+  let parsed: unknown;
+  try {
+    const source = text.startsWith("@")
+      ? new TextDecoder("utf-8", { fatal: true }).decode(
+          readFileSync(resolve(text.slice(1)))
+        )
+      : text;
+    parsed = JSON.parse(source) as unknown;
+  } catch (error) {
+    throw SimpleChangesError.withCause(
+      `--policy-request must be JSON or @path to a JSON file: ${(error as Error).message}`,
+      EXIT_CODES.usage,
+      error
+    );
+  }
+  let validated: StoredRepoPolicy & Pick<RepoPolicy, "execGuard">;
+  try {
+    validated = validateSchema<StoredRepoPolicy>("repo-policy", parsed);
+  } catch (error) {
+    throw policyRequestError((error as Error).message);
+  }
+  // Only a complete object is setup's own output; a partial one would be
+  // filled from defaults the user never confirmed.
+  const missing = POLICY_REQUEST_KEYS.filter((key) => !(key in validated));
+  if (missing.length > 0 || validated.guidance.disposition === undefined) {
+    throw policyRequestError(
+      `it lacks ${[...missing, ...(validated.guidance.disposition === undefined ? ["guidance.disposition"] : [])].join(", ")}`
+    );
+  }
+  // The command guard belongs to a saved repository policy only.
+  if (validated.execGuard !== undefined) {
+    throw policyRequestError("execGuard can only be saved repository policy");
+  }
+  if (validated.guidance.version !== CURRENT_GUIDANCE_VERSION) {
+    throw policyRequestError(
+      `it records guidance ${validated.guidance.version}, not the current ${CURRENT_GUIDANCE_VERSION}; run setup again`
+    );
+  }
+  return validated as RepoPolicy;
+};
+
+/**
+ * Layers a validated `--policy-request` under the saved policies. A saved
+ * repository or personal policy always wins and the request is reported as
+ * ignored. Otherwise the request applies with source `request`, and like an
+ * unconfirmed repository policy it is never trusted with consequential
+ * authority: push configuration, production deploy, shipping mode, and
+ * automatic migration apply fall back to their safe values.
+ */
+export const applyPolicyRequest = (
+  loaded: LoadedPolicy,
+  request: RepoPolicy | null
+): { policy: LoadedPolicy; report: PolicyRequestReport | null } => {
+  if (request === null) {
+    return { policy: loaded, report: null };
+  }
+  if (loaded.source !== "default") {
+    return {
+      policy: loaded,
+      report: {
+        reason: `The saved ${loaded.source === "repository" ? "repository" : "personal"} policy at ${loaded.path} applies; the run-only request was ignored and cannot override or loosen it.`,
+        status: "ignored",
+      },
+    };
+  }
+  const consequential = requiresRepositoryTrust(request);
+  return {
+    policy: {
+      path: null,
+      source: "request",
+      trust: consequential ? "untrusted" : "not-required",
+      value: consequential
+        ? withoutUntrustedConsequentialAuthority(request)
+        : request,
+    },
+    report: {
+      reason: consequential
+        ? "This run's setup answers apply for this invocation only and nothing was saved. A run-only request is never trusted with consequential authority, so automatic push configuration, production deploy, non-standard shipping, and automatic migration apply use their safe values."
+        : "This run's setup answers apply for this invocation only and nothing was saved.",
+      status: "applied",
+    },
+  };
+};

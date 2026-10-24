@@ -463,6 +463,27 @@
   `--extract-to`, `--older-than`, and the new `worktree` actions, so a
   receipt is never silently ignored, and a policy that sets
   `archiveRetention` needs 0.33.0 or later.
+- Run-only policy request: `policy.ts` adds `parsePolicyRequest` (JSON or
+  @path, validated against `repo-policy.schema.json`, every
+  `DEFAULT_POLICY` key and `guidance.disposition` required, no
+  `execGuard`, guidance equal to `CURRENT_GUIDANCE_VERSION`, else exit 2)
+  and `applyPolicyRequest`, which applies it only over a `default` policy
+  as the new `PolicySource` `request` and runs it through
+  `withoutUntrustedConsequentialAuthority`, reporting `policyTrust:
+  untrusted` when `requiresRepositoryTrust` holds; over a saved policy it
+  reports `ignored`. `initialize` and `loop start` take
+  `--policy-request` and parse it before anything else is read, so no
+  handoff claim is released on a bad value. The initialization status and
+  schema gain `policyRequest` (`{ status, reason }` or null), and
+  `inspectInitialization` gives source `request` its own reason;
+  `onboardingRequired` stays `source === "default"`, so every other check
+  is unchanged. `runSetup` is split into `performSetup`, and a confirmed
+  run-only setup adds `runRequest` (`policyRequest`, `authoringRequest`)
+  to its output; the `initialize` hand-off also prints `initialization`,
+  the status `--policy-request` would give. Nothing is written. The
+  inventory schema is unchanged because inventory never reports
+  `request`. Tests: new `policy-request.test.ts` (10) and blocks in
+  `initialization.test.ts` and `skill-contract.test.ts`.
 - Tests: new `git-location.test.ts`, `test-isolation.test.ts`,
   `lost-answer-proofs.test.ts`, `finalize-policy.test.ts` (6),
   `run-created-retirement.test.ts` (8), `preserved-source-handoff.test.ts`
@@ -486,8 +507,9 @@
   units, the preserved-source handoff, bounded lock waits, replan deltas,
   the reviewer room, and remote-branch deletion proposals and pending
   reports<!-- lineage -->, and archived reviewed removals with automatic
-  expiry<!-- /lineage -->, and an integration change for renamed
-  changelog providers, with three notice bullets<!-- lineage --> plus one for
+  expiry<!-- /lineage -->, an integration change for renamed changelog
+  providers, and an onboarding change for run-only policy requests, with
+  three notice bullets<!-- lineage --> plus one for
   archived removals<!-- /lineage --> and no required answer.
 <!-- simple-changelogs-signature agent="Claude Opus 5.5 high" at="2026-10-23T12:51:46-05:00" -->
 

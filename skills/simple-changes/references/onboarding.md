@@ -393,7 +393,8 @@ setup saves it with the policy and reports the confirmed answer as
 `authoringAnswer` and the file written, if any, as `authoring`; after
 run-only, apply `authoringAnswer` to the current request only: pass it as
 `--authoring-request` to every `initialize`, `proposal record-review`, and
-`loop start --mode resume` of the run, and save nothing. Otherwise, and
+`loop start --mode resume` of the run, and save nothing; pass its `policy`
+too, as [Run-only setup](#run-only-setup) describes. Otherwise, and
 for an existing repository, record it with `simple-changes setup --authoring
 '<json>' --scope <repository|personal> --confirm`, a transaction that writes
 only the sidecar.
@@ -466,6 +467,31 @@ Before writing, show a plain-language receipt containing:
 Ask for confirmation only after displaying the receipt. If confirmed, apply the
 selected setup and state exactly what was written. If declined, write nothing.
 Then continue the original request without another setup gate.
+
+### Run-only setup
+
+Run-only setup writes nothing, so a plain `initialize` in the same run still
+reports `onboardingRequired: true` and `mutationAllowed: false`. To continue
+the run, pass setup's `policy` object, unchanged, as
+`--policy-request '<json>'` (or `@<file>`) to every later `initialize` and
+`loop start` of that run, and its `authoringAnswer`, when not null, as
+`--authoring-request` to every `initialize`, `proposal record-review`, and
+`loop start --mode resume`. Setup prints both exact values as `runRequest`
+(`policyRequest` and `authoringRequest`); the `initialize` hand-off also
+prints the resulting status as `initialization`. Never save them.
+
+- The request applies only when no repository or personal policy is saved.
+  Under a saved policy it is reported as `policyRequest.status: ignored` and
+  changes nothing. It is not the user's current request, whose explicit
+  instructions still apply as usual.
+- It is never trusted with consequential authority: automatic push
+  configuration, production allow, non-standard shipping, and automatic
+  migration apply fall back to ask, standard, or review, with
+  `policyTrust: untrusted`. Ask for those at their boundaries as usual.
+- A malformed, partial, or stale request exits 2 and changes nothing; run
+  setup again.
+- Every other check is unchanged: update notices, handoff readiness, the
+  loop, ownership, and review. The next run asks again.
 
 In a non-TTY agent runtime, `initialize --json` is only the machine-readable
 handshake. The agent must present this same conversational flow in chat and pass

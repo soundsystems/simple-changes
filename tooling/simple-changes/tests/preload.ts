@@ -1,17 +1,15 @@
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { HARNESS_ENVIRONMENT_VARIABLES } from "./harness-environment.ts";
 
 // Tests must never bind a loop to the harness session running them: that
 // would write controller pointers into the developer's real configuration
-// directory and make liveness depend on the live session. Tests that cover
-// session binding set these variables, and an isolated config directory,
-// explicitly.
-for (const name of [
-  "CLAUDE_CODE_SESSION_ID",
-  "CLAUDE_PID",
-  "CODEX_THREAD_ID",
-]) {
+// directory and make liveness depend on the live session. Nor may the
+// running agent's identity or harness settings directories decide which
+// agent a test detects or which settings it reads. Tests that cover these
+// set the variables, and an isolated config directory, explicitly.
+for (const name of HARNESS_ENVIRONMENT_VARIABLES) {
   delete process.env[name];
 }
 

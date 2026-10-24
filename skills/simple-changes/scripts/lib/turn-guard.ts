@@ -126,6 +126,10 @@ export const turnCheck = (
   input: TurnCheckInput,
   environment: Environment = process.env
 ): TurnCheckResult => {
+  // The hook names the ending session. Without it, the environment's session
+  // decides only when it is clear: with sessions of two harnesses and none
+  // named, as in a harness started from another, there is none, so a child's
+  // turn never ends on its parent's runs or the other way round.
   const sessionId =
     input.sessionId?.trim() ||
     currentHarnessSession(environment)?.sessionId ||

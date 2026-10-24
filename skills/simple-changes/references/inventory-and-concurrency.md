@@ -780,8 +780,16 @@ continues the work under the same ID takes the claim over with the user's
 approval. A claim made without a session, or before this rule, binds to the
 first known session that claims it. Subagents that share their parent's
 session share its claims, and a harness without a session variable binds
-nothing. The session comes from the environment, so this stops mistakes and
-misread recovery steps, not deliberate impersonation.
+nothing. A harness started from another inherits the parent's session
+variable beside its own, so when the environment names sessions of two
+harnesses, a command that binds or checks a claim's session (claim, takeover,
+and every owner command on a bound claim) refuses with exit 2 until
+`--harness <id>` or `--identity-receipt` names the harness it runs in; it
+never binds a child's claim to its parent's session. `loop start`, its
+resume, and `loop takeover` bind the run the same way, and a direct `loop
+turn-check` needs the same answer, while the turn-end hook reads the ending
+session from the harness. The session comes from the environment, so this
+stops mistakes and misread recovery steps, not deliberate impersonation.
 
 An active claim excludes its checkout from packaging, merge, and cleanup, so a
 finished branch stays unshippable until its owner runs `worktree release

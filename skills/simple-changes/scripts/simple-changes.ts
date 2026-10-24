@@ -52,7 +52,17 @@ import {
   type GuidanceUpdateAction,
   type GuidanceUpdateContext,
 } from "./lib/guidance-updates.ts";
-import { currentHarnessSession } from "./lib/harness-session.ts";
+import {
+  currentHarnessSession,
+  requireHarnessSession,
+  resolveHarnessSession,
+  selectInvocationHarness,
+} from "./lib/harness-session.ts";
+import {
+  type IdentityReceipt,
+  parseIdentityReceipt,
+  receiptSession,
+} from "./lib/identity-receipt.ts";
 import {
   type InitializationStatus,
   inspectInitialization,
@@ -462,7 +472,7 @@ Usage:
     [--json] [--repo PATH]
   simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
     [--awaiting-user TEXT ...] [--json] [--repo PATH]
-  simple-changes loop turn-check [--hook] [--json]
+  simple-changes loop turn-check [--hook] [--harness ID] [--json]
   simple-changes harness stop-hook [--harness claude-code|codex] [--write]
     [--json]
   simple-changes worktree status [--json] [--repo PATH]
@@ -542,6 +552,7 @@ Usage:
   simple-changes proposal audit --file FILE [--template FILE] [--json]
   simple-changes proposal record-authors --proposal ID --base SHA --head SHA
     [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent MODEL_ID]
+    [--harness ID | --identity-receipt JSON|@FILE]
     [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes proposal record-review --proposal ID --head SHA
     --attempt-id UUID --receipt ATTEMPT_FILE [--authoring-request JSON|@FILE]
@@ -552,6 +563,7 @@ Usage:
   simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
     [--contribution implementation] [--replays SHA[,SHA ...]]
     [--worktree PATH] [--instance ID] [--agent MODEL_ID] [--complete-identity]
+    [--harness ID | --identity-receipt JSON|@FILE]
     [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes author coverage --base REF --head REF [--json] [--repo PATH]
   simple-changes reviewer room --would-author HARNESS/MODEL_ID
@@ -572,6 +584,13 @@ Exit codes:
 
 --wait-lock waits up to --timeout-ms (default ${LOOP_LOCK_WAIT_DEFAULT_MS}, at most ${LOOP_LOCK_WAIT_MAX_MS}) for a
 loop lock a live holder owns, then runs once; it never recovers a lock.
+
+--harness ID or --identity-receipt JSON|@FILE names the harness this command
+runs in. When the environment names sessions of two harnesses, as when one
+harness starts another, a command that records or checks the executing
+session (author attest, proposal record-authors, worktree claim commands,
+loop start, resume and takeover, a direct loop turn-check) refuses without
+one. A receipt must agree with the session the environment reports.
 `;
 
 const WHOLE_NUMBER_PATTERN = /^[0-9]+$/u;
@@ -674,6 +693,9 @@ interface CliOptions {
   holdScope?: ShipHoldScope;
   holdSeverity?: ShipHoldSeverity;
   hook: boolean;
+  // --identity-receipt: what the harness running this command reports about
+  // itself, checked against the environment before the command runs.
+  identityReceipt?: IdentityReceipt;
   instanceId?: string;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
@@ -845,6 +867,7 @@ const VALUED_OPTIONS = new Set([
   "--authors-digest",
   "--commit",
   "--contribution",
+  "--identity-receipt",
   "--instance",
   "--leave-uncovered",
   "--lineage-receipt",
@@ -1426,6 +1449,10 @@ const applyLedgerValuedOption = (
   }
   if (option === "--verified-route") {
     options.verifiedRoutes.push(value);
+    return true;
+  }
+  if (option === "--identity-receipt") {
+    options.identityReceipt = parseIdentityReceipt(value);
     return true;
   }
   if (option === "--replays") {
@@ -3704,6 +3731,7 @@ const runProposalLedgerCommand = (
       ...(options.instanceId === undefined
         ? {}
         : { instance: options.instanceId }),
+      ...executingIdentityOptions(options),
       ...lockWaitInput(options),
     });
     writeOutput(result, options.json, renderRecordedAuthors(result));
@@ -3804,6 +3832,22 @@ const runAuthorCoverage = (options: CliOptions): number => {
     : EXIT_CODES.validation;
 };
 
+// The executing identity a ledger write is told about: the session and
+// harness it must agree with, and the identity receipt its harness gave.
+const executingIdentityOptions = (
+  options: CliOptions
+): {
+  harness?: string;
+  identityReceipt?: IdentityReceipt;
+  session?: string;
+} => ({
+  ...(options.sessionId === undefined ? {} : { session: options.sessionId }),
+  ...(options.harness === undefined ? {} : { harness: options.harness }),
+  ...(options.identityReceipt === undefined
+    ? {}
+    : { identityReceipt: options.identityReceipt }),
+});
+
 // `author attest` is a public command that takes the loop lock itself, so it
 // runs after `loop exec` returns and never inside it.
 const runAuthorCommand = (options: CliOptions): number => {
@@ -3824,8 +3868,7 @@ const runAuthorCommand = (options: CliOptions): number => {
     ...(options.instanceId === undefined
       ? {}
       : { instance: options.instanceId }),
-    ...(options.sessionId === undefined ? {} : { session: options.sessionId }),
-    ...(options.harness === undefined ? {} : { harness: options.harness }),
+    ...executingIdentityOptions(options),
     ...(options.contribution === undefined
       ? {}
       : { contribution: options.contribution }),
@@ -4697,6 +4740,9 @@ const readHookInput = async (): Promise<string> => {
  */
 const runLoopTurnCheck = async (options: CliOptions): Promise<void> => {
   if (!options.hook) {
+    // Run directly, it reports on this session, so it must know which one;
+    // the hook reads the ending session from the harness instead.
+    requireHarnessSession("loop turn-check");
     const result = turnCheck({ sessionId: null, stopHookActive: false });
     writeOutput(
       result,
@@ -6233,14 +6279,19 @@ const notInstallableHere = (): string =>
   isForkRuntime(SCRIPT_FILE) ? NOT_INSTALLABLE_FROM_FORK : NOT_INSTALLABLE_HERE;
 
 const resolveHarness = (options: CliOptions): TurnGuardHarness => {
-  const harness = options.harness ?? currentHarnessSession()?.harness;
-  if (!harness) {
+  if (options.harness) {
+    return options.harness;
+  }
+  const resolution = resolveHarnessSession(process.env, null);
+  if (!resolution.session) {
     throw new SimpleChangesError(
-      "No harness session detected; pass --harness claude-code or --harness codex.",
+      resolution.status === "ambiguous"
+        ? `Sessions of ${resolution.present.join(" and ")} are both visible, so the running harness is unclear; pass --harness claude-code or --harness codex.`
+        : "No harness session detected; pass --harness claude-code or --harness codex.",
       EXIT_CODES.usage
     );
   }
-  return harness;
+  return resolution.session.harness;
 };
 
 const shellWord = (value: string): string =>
@@ -6321,15 +6372,32 @@ const lockWaitInput = (options: CliOptions): { lockWait?: LoopLockWait } => {
   return lockWait ? { lockWait } : {};
 };
 
-const executeCommand = async (
+// The harness this command runs in, when it names one: an identity receipt,
+// checked against the environment before anything else runs, or else
+// `--harness`. `harness stop-hook --harness <id>` names the harness to
+// install for instead, so that command names none.
+const invocationHarnessFor = (
+  command: string,
+  options: CliOptions
+): string | null => {
+  if (command === "harness") {
+    return null;
+  }
+  if (options.identityReceipt) {
+    receiptSession(
+      options.identityReceipt,
+      process.env,
+      options.harness ?? null
+    );
+    return options.identityReceipt.harness;
+  }
+  return options.harness ?? null;
+};
+
+const dispatchCommand = async (
   command: string,
   options: CliOptions
 ): Promise<number> => {
-  if (options.help) {
-    process.stdout.write(HELP);
-    return EXIT_CODES.success;
-  }
-  assertLockWaitApplies(command, options);
   switch (command) {
     case "help":
     case "--help":
@@ -6476,6 +6544,25 @@ const executeCommand = async (
         `Unknown command: ${command}. Run 'simple-changes help' for usage.`,
         EXIT_CODES.usage
       );
+  }
+};
+
+const executeCommand = async (
+  command: string,
+  options: CliOptions
+): Promise<number> => {
+  if (options.help) {
+    process.stdout.write(HELP);
+    return EXIT_CODES.success;
+  }
+  assertLockWaitApplies(command, options);
+  const restore = selectInvocationHarness(
+    invocationHarnessFor(command, options)
+  );
+  try {
+    return await dispatchCommand(command, options);
+  } finally {
+    restore();
   }
 };
 

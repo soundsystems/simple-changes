@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AuthoringSidecar } from "./authoring.ts";
 import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { currentHarnessSession } from "./harness-session.ts";
+import { requireHarnessSession } from "./harness-session.ts";
 import { sha256Json } from "./hash.ts";
 import {
   captureInventory,
@@ -207,7 +207,9 @@ export const startLoop = (
             return resumed;
           }
           const now = new Date().toISOString();
-          const session = currentHarnessSession();
+          // The run binds to this controller's own session, so with sessions
+          // of two harnesses in the environment it must say which is its own.
+          const session = requireHarnessSession("loop start");
           const currentPath = inventory.repository.currentCheckout;
           const concurrentWork =
             inventory.policy.value.concurrentWork === "strict"

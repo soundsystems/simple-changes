@@ -12,7 +12,7 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { ensureStateDirectory, gitReportedPath } from "./git-location.ts";
-import { currentHarnessSession } from "./harness-session.ts";
+import { requireHarnessSession } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import {
   assertExactBranch,
@@ -408,17 +408,25 @@ const replaceClaim = (
 // marker existed, or with no harness session) is unbound and refuses no one.
 // The session comes from the harness environment, so this stops mistakes and
 // recovery steps from acting under another agent's ID; it is not
-// authentication.
+// authentication. When the environment names sessions of two harnesses, a
+// command that binds or checks a session needs `--harness` (or an identity
+// receipt) to say which is its own, and refuses without it rather than bind
+// the claim to a parent harness's session.
 
 const SESSION_EVENT_PREFIX = "event-session-";
 const UNBOUND_SESSION_MARK = "unbound";
 const SESSION_DIGEST_LENGTH = 32;
 
-/** The executing harness session as `harness:sessionId`, or null. */
+/**
+ * The executing harness session as `harness:sessionId`, or null when the
+ * environment names none. Refuses when it names more than one and this
+ * command did not say which is its own.
+ */
 export const executingClaimSession = (
-  environment: Record<string, string | undefined> = process.env
+  environment: Record<string, string | undefined> = process.env,
+  command = "This worktree command"
 ): string | null => {
-  const session = currentHarnessSession(environment);
+  const session = requireHarnessSession(command, environment);
   return session ? `${session.harness}:${session.sessionId}` : null;
 };
 
@@ -571,16 +579,24 @@ export const claimTakeoverState = (
   };
 };
 
-/** Refuses when `claim` belongs to another harness session. */
+/**
+ * Refuses when `claim` belongs to another harness session. The executing
+ * session is read only for a bound claim, since an unbound one refuses no
+ * one; `session` passes one already read.
+ */
 export const assertClaimSession = (
   document: WorktreeCoordinationDocument,
   claim: WorktreeClaim,
   current: TakeoverState | null,
-  session: string | null = executingClaimSession()
+  session?: string | null
 ): void => {
-  if (claimHeldByAnotherSession(document, claim, session)) {
+  if (claimSessionBinding(document, claim) === null) {
+    return;
+  }
+  const executing = session === undefined ? executingClaimSession() : session;
+  if (claimHeldByAnotherSession(document, claim, executing)) {
     throw new SimpleChangesError(
-      claimSessionRefusal(claim, current, session),
+      claimSessionRefusal(claim, current, executing),
       EXIT_CODES.unsafe
     );
   }
@@ -929,7 +945,7 @@ export const claimWorktree = (
           EXIT_CODES.unsafe
         );
       }
-      const session = executingClaimSession();
+      const session = executingClaimSession(process.env, "worktree claim");
       assertClaimantSession(
         document,
         inventory,
@@ -2371,7 +2387,7 @@ export const takeoverWorktreeClaim = (
         { ...options, approvedBy, claimId, newAgentId, reason },
         expected
       );
-      const session = executingClaimSession();
+      const session = executingClaimSession(process.env, "worktree takeover");
       const recovered = recoverAppliedTakeoverIntent(
         commonGitDirectory,
         takeoverHistory,

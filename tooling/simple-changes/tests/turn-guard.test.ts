@@ -17,6 +17,9 @@ import { dirname, join, resolve } from "node:path";
 import {
   currentHarnessSession,
   listControllerSessionEntries,
+  requireHarnessSession,
+  resolveHarnessSession,
+  selectInvocationHarness,
 } from "../../../skills/simple-changes/scripts/lib/harness-session.ts";
 import {
   finalizeLoop,
@@ -145,6 +148,58 @@ describe("harness session detection", () => {
     expect(
       currentHarnessSession({ CLAUDE_CODE_SESSION_ID: "not a/valid id" })
     ).toBeNull();
+  });
+
+  test("two harnesses' variables name no session until the command names its harness", () => {
+    // A child harness started from another sees the parent's variable too.
+    const nested = {
+      CLAUDE_CODE_SESSION_ID: SESSION,
+      CODEX_THREAD_ID: OTHER_SESSION,
+    };
+    expect(resolveHarnessSession(nested, null)).toMatchObject({
+      present: ["claude-code", "codex"],
+      session: null,
+      status: "ambiguous",
+    });
+    expect(currentHarnessSession(nested, null)).toBeNull();
+    expect(resolveHarnessSession(nested, "codex")).toMatchObject({
+      session: { harness: "codex", hostPid: null, sessionId: OTHER_SESSION },
+      status: "selected",
+    });
+    expect(currentHarnessSession(nested, "claude-code")?.sessionId).toBe(
+      SESSION
+    );
+    expect(
+      resolveHarnessSession({ CLAUDE_CODE_SESSION_ID: SESSION }, "codex")
+    ).toMatchObject({ session: null, status: "mismatch" });
+    expect(resolveHarnessSession({}, null).status).toBe("none");
+    const exitCode = (step: () => unknown): number | null => {
+      try {
+        step();
+        return null;
+      } catch (error) {
+        return (error as { exitCode?: number }).exitCode ?? -1;
+      }
+    };
+    expect(exitCode(() => requireHarnessSession("test", nested, null))).toBe(2);
+    expect(
+      exitCode(() =>
+        requireHarnessSession(
+          "test",
+          { CLAUDE_CODE_SESSION_ID: SESSION },
+          "codex"
+        )
+      )
+    ).toBe(5);
+    expect(requireHarnessSession("test", {}, null)).toBeNull();
+    // The command line's choice holds for one command, then is restored.
+    const restore = selectInvocationHarness("codex");
+    try {
+      expect(currentHarnessSession(nested)?.sessionId).toBe(OTHER_SESSION);
+    } finally {
+      restore();
+    }
+    expect(currentHarnessSession(nested)).toBeNull();
   });
 });
 

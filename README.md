@@ -422,7 +422,7 @@ simple-changes help
 `post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
 `worktree-archive`, `worktree-archive-prune`, `worktree-cleanup`,
 `worktree-coordination`, `worktree-takeover`,
-`worktree-equivalence`, or `branch-audit` (the schema filenames under
+`worktree-equivalence`, `identity-receipt`, or `branch-audit` (the schema filenames under
 `skills/simple-changes/evals/schemas/`).
 
 Before reapplying an old branch, use `branch audit` from the primary checkout

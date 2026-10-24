@@ -193,7 +193,21 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    reports for this agent; omit what it does not report. `--agent` is the
    model ID the harness reports, such as `model-5-5`: lowercase, no spaces,
    with no effort word or note. Adversarial review compares model IDs only,
-   so a display name such as `Model 5.5 high` is missing evidence there. A
+   so a display name such as `Model 5.5 high` is missing evidence there.
+   The session and harness come from the environment. When it names sessions
+   of two harnesses, as when one harness starts another and the child
+   inherits the parent's variable, pass `--harness <id>` naming the harness
+   you run in, and its own session is recorded; without it the command
+   refuses (exit 2) rather than record the parent's session. A harness or
+   its wrapper may instead pass `--identity-receipt <json-or-@path>`, a
+   closed object (`evals/schemas/identity-receipt.schema.json`) with
+   `schemaVersion` 1, `harness`, `session`, the `model` ID, and optionally
+   `instance` and `parentSession`. Its session must be the one the
+   environment reports for its harness, and `--harness`, `--agent` and
+   `--instance` must agree with it; any conflict or invalid receipt exits 2
+   and records nothing. It corrects a confused identity and is never stored,
+   so it proves nothing against a forged one. The same options apply to
+   `proposal record-authors`. A
    worktree claim makes an agent eligible only from the session that holds
    it, so another session, or one that reports none, cannot attest under
    that agent ID; a replacement session first takes the claim over with

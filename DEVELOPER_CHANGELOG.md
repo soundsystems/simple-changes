@@ -85,21 +85,22 @@
   policy and retire semantically equivalent authors"): new
   `trustBoundPolicyPaths(primaryCheckout, commonGitDirectory)` in
   `policy.ts` returns `.simple-changes.json` plus any primary-relative
-  `policyPath` the trust receipt names. `reconcileTargetEquivalentPrimaryChanges`
-  takes `targetBranch` and returns `CarriedPolicyPaths | null`.
-  `withoutPolicyPaths` always removes policy paths and their rename
-  partners from the restore set; when every other dirty path normalizes
-  and `primaryCanFastForwardInPlace`, `stagePolicyPathsAtTarget`
-  (`git restore --source=<target> --staged`, index only) lets
-  `fastForwardCleanPrimary` (now `--no-autostash`, optional `carried`)
-  carry them unwritten, and `settleCarriedPolicyPaths` notes the result
-  and returns an entry this run staged to its old HEAD entry when the
-  fast-forward did not land. Every path-taking Git call in primary
-  normalization (`diffMatchesRevision`, `indexHasOnlyOrdinaryEntries`,
-  each `git restore`) runs with `--literal-pathspecs`. New non-blocking
-  notes ("Kept <path> in the primary checkout byte for byte: ...",
-  "Carried <path> through the fast-forward to <target> without rewriting
-  it; ...") and a cleanup error when staging fails.
+  `policyPath` the trust receipt names.
+  `reconcileTargetEquivalentPrimaryChanges` takes `targetBranch` and
+  returns `CarriedPolicyPaths | null`. `withoutPolicyPaths` always removes
+  policy paths and their rename partners from the restore set; when every
+  other dirty path normalizes and `primaryCanFastForwardInPlace`,
+  `stagePolicyPathsAtTarget` (`git restore --source=<target> --staged`,
+  index only) lets `fastForwardCleanPrimary` (now `--no-autostash`,
+  optional `carried`) carry them unwritten, and `settleCarriedPolicyPaths`
+  notes the result and returns an entry this run staged to its old HEAD
+  entry when the fast-forward did not land. Every path-taking Git call in
+  primary normalization (`diffMatchesRevision`,
+  `indexHasOnlyOrdinaryEntries`, each `git restore`) runs with
+  `--literal-pathspecs`. New non-blocking notes ("Kept <path> in the
+  primary checkout byte for byte: ...", "Carried <path> through the
+  fast-forward to <target> without rewriting it; ...") and a cleanup error
+  when staging fails.
 - Run-created retirement (new `lib/exact-byte-proof.ts` and
   `lib/run-created-retirement.ts`):
   `proveExactByteTargetContainment(repositoryPath, { sourceHead,
@@ -537,27 +538,25 @@
   run with a handoff and a held sibling could never finalize (pinned by
   af52e2f). The three shipment commands moved into `runLoopShipmentAction`
   pass `lockWaitOption(options)`; `loop hold-unit` takes no lock wait.
-- Compatibility: no key is added to the coordination state, review
-  ledger, authoring sidecar, cleanup history, finalization receipt
-  schema, or any shipped receipt, and the lease is unchanged except
-  `heldUnits` on a run with holds, which runtimes before 0.33.0 reject.
-  New files that older runtimes ignore: `held-units/`,
-  `preserved-source-handoff/`, `run-created-retirement-*.json`,
-  `status-observations/`, `replan-approval-delta.json`,
-  `remote-branch-open-targets/`, and the `refs/simple-changes/held/` ref
-  namespace. Older
-  runtimes then fail stricter: a handoff outcome's digest cannot match
-  without its sidecar, so they refuse to finish, end, or archive it (and a
-  stale handoff file left by an older re-record is refused by 0.33.0 until
-  it records again); a delta-accepted replan retried before the lease move
-  refuses; an absent run-created checkout stays unproven; a missing
-  open-targets sidecar reads as `unknown`, which counts more branches as
-  pending. Older builders reject pages with `openProposalTargets`, a final
-  receipt file holding it, and a present-branch decision. Older runtimes
-  reject `--wait-lock`, `--timeout-ms`, `--would-author`,
-  `--verified-route`, `--readiness-evidence`, and
-  `--observation-digest` as unknown options, and they lack
-  `reviewer room` and `loop hold-unit`.
+- Compatibility: no key is added to the coordination state, review ledger,
+  authoring sidecar, cleanup history, finalization receipt schema, or any
+  shipped receipt, and the lease is unchanged except `heldUnits` on a run
+  with holds, which runtimes before 0.33.0 reject. New files that older
+  runtimes ignore: `held-units/`, `preserved-source-handoff/`,
+  `run-created-retirement-*.json`, `status-observations/`,
+  `replan-approval-delta.json`, `remote-branch-open-targets/`, and the
+  `refs/simple-changes/held/` ref namespace. Older runtimes then fail
+  stricter: a handoff outcome's digest cannot match without its sidecar,
+  so they refuse to finish, end, or archive it (and a stale handoff file
+  left by an older re-record is refused by 0.33.0 until it records again);
+  a delta-accepted replan retried before the lease move refuses; an absent
+  run-created checkout stays unproven; a missing open-targets sidecar
+  reads as `unknown`, which counts more branches as pending. Older
+  builders reject pages with `openProposalTargets`, a final receipt file
+  holding it, and a present-branch decision. Older runtimes reject
+  `--wait-lock`, `--timeout-ms`, `--would-author`, `--verified-route`,
+  `--readiness-evidence`, and `--observation-digest` as unknown options,
+  and they lack `reviewer room` and `loop hold-unit`.
 - Identity and external-deletion compatibility: `--identity-receipt` is
   read for one command and never stored, and attestations, claims,
   leases, and controller bindings keep their shapes. Older runtimes reject
@@ -611,16 +610,17 @@
   `fixtures/lock-wait/holder.ts`), `held-units.test.ts` (30 plus the
   integration cases), `replan-approval-delta.test.ts` (17 plus fa117ae),
   `reviewer-room.test.ts`, `remote-branch-prune.test.ts` (32, six of them
-  "branches deleted outside the run"), and `agent-instance-identity.test.ts`
-  (15), and new blocks in `changelog-coordination.test.ts`
-  ("repository-owned renamed changelog providers"),
-  `remote-inventory.test.ts`, `loop-lease.test.ts`,
+  "branches deleted outside the run"), and
+  `agent-instance-identity.test.ts` (15), and new blocks in
+  `changelog-coordination.test.ts` ("repository-owned renamed changelog
+  providers"), `remote-inventory.test.ts`, `loop-lease.test.ts`,
   `worktree-maintenance.test.ts` (rebaselined checkouts survive finalize
   and close-equivalent), `turn-guard.test.ts` (session resolution), and
-  `onboarding.test.ts` (reviewer-model wording). Each behavior test was confirmed to fail on the
-  code before it. The last full suite on `integration/0.33.0` before the
-  threat-model merge (7ddc71d, load up to about 214) passed: 1574 pass, 1
-  skip, publish-skill 19, update-local-forks 103.
+  `onboarding.test.ts` (reviewer-model wording). Each behavior test was
+  confirmed to fail on the code before it. The last full suite on
+  `integration/0.33.0` before the threat-model merge (7ddc71d, load up to
+  about 214) passed: 1574 pass, 1 skip, publish-skill 19,
+  update-local-forks 103.
 - Filed for later: #19 (upstream hold reads the last `merge` value), #20
   (filter driver names that do not read back exactly), #21 (one versioned
   state store with history retention), #22 (record outcomes, reconcile

@@ -30,29 +30,29 @@
   locally or a Git command failed, that is an error that also keeps
   cleanup pending, so missing evidence never reads as clean. A pending
   status never blocks delivery or the next shipment.
-- To approve deleting a contained branch that no merged merge request
-  covers, add an entry for it to the `--decisions` file you already use.
-  The build then lists it as a deletion proposal with basis `decision`,
-  and after the guarded deletion the same entry records it. The build
-  refuses that entry when the branch is the target or protected, when its
-  head moved during the run, when an open merge request comes from it or
-  goes into it, when live work holds it, or when it is a merged head, which
-  needs no entry.
+- To approve deleting a branch whose work the target already contains but
+  that no merged merge request covers, add an entry for it to the
+  `--decisions` file you already use. The build then lists it as a
+  deletion proposal with basis `decision`, and after the guarded deletion
+  the same entry records it. The build refuses that entry when the branch
+  is the target or protected, when its head moved during the run, when an
+  open merge request comes from it or goes into it, when live work holds
+  it, or when it is a merged head, which needs no entry.
 - A branch on your Git host that someone else deleted during a run no
   longer stops the run from finishing. Before, when a branch from the
   opening inventory disappeared and no merged merge request proved it
   finished, the final `remote-inventory build` refused, so the run could
-  not record its host branches or end. Now the build records the branch
-  as deleted outside the run, and never counts it as delivered, merged,
-  or obsolete. `loop reconcile-remote-branches` keeps the branch's last
+  not record its host branches or end. Now the build records the branch as
+  deleted outside the run, and never counts it as delivered, merged, or
+  obsolete. `loop reconcile-remote-branches` keeps the branch's last
   commit reachable under `refs/simple-changes/external/` when that commit
   is on this machine, so the work can still be recovered. `loop finalize`
   names the branch under `remoteBranches.deletedExternally` and in its
-  plain output, with a note giving its last commit, keeps
-  `cleanupStatus` at `pending`, and still closes the run. The kept
-  reference removes itself the next time a run closes, once 14 days have
-  passed since it was made. A branch deleted while its merge request is
-  still open still stops the build.
+  plain output, with a note giving its last commit, keeps `cleanupStatus`
+  at `pending`, and still closes the run. The kept reference is removed
+  the next time `loop finalize` closes a run, once 14 days have passed
+  since it was made. A branch deleted while its merge request is still
+  open still stops the build.
 - Commands that record review and shipment details can now wait for a
   busy lock instead of failing at once. When another Simple Changes command
   is in the middle of writing, these commands used to exit 5 right away.
@@ -74,13 +74,13 @@
   froze, for example when an independent review found defects in it. Run
   `simple-changes loop hold-unit --run-id <run> --agent-id <you> --unit
   <unit ID> --reason <text> --readiness-evidence "<unit ID>: <evidence>"`.
-  Without approval flags it changes nothing and prints exactly what it saw:
-  the unit's files, its checkout, branch, head, claim, the target, and a
-  digest of that observation. You approve that exact observation now, and
-  the command runs again with `--approved-by`, `--approval-reference`, and
-  `--observation-digest`. The approver must be neither the controller nor
-  the agent that owns the work, and any change since the observation
-  refuses.
+  Without approval flags it changes nothing and prints exactly what it
+  saw: the unit's files, its checkout, branch, head, claim, the target,
+  and a digest of that observation. After you approve that exact
+  observation, the agent runs the same command again with `--approved-by`,
+  `--approval-reference`, and `--observation-digest`. The approver must be
+  neither the controller nor the agent that owns the work, and any change
+  since the observation refuses.
 - A held unit is never reported as delivered or as already in the target.
   `loop record-outcome` refuses it and no longer requires it, and
   `loop draft-outcome` warns about it instead of suggesting an outcome,
@@ -159,13 +159,14 @@
   efforts; `unverified`, `alternative-only`, `closed`, and `unknown` exit
   3. It writes nothing.
 - When one coding agent starts another, each one is now recorded as
-  itself. The agent that was started can see its parent's session
-  variable beside its own, and Simple Changes used to pick one by a fixed
-  order, so the child could be recorded as its parent and then pass review
-  of its own work. Now, when the environment shows the sessions of two
-  different harnesses, every command that records or checks which session
-  is running stops with exit 2, before it takes a lock or writes anything,
-  and asks for `--harness <id>` naming the harness it runs in. These are
+  itself. The agent that was started can see its parent's session variable
+  beside its own, and Simple Changes used to pick one by a fixed order, so
+  the child could be recorded as its parent and then pass review of its
+  own work. Now, when the environment shows the sessions of two coding
+  tools, such as Codex started from Claude Code, every command that
+  records or checks which session is running stops with exit 2, before it
+  takes a lock or writes anything, and asks for `--harness <id>` naming
+  the tool it runs in (`claude-code` or `codex`). These are
   `author attest`, `proposal record-authors`, `worktree claim`,
   `takeover`, `pause`, `detach`, `attach`, and `release`,
   `initialize --mode handoff --agent-id`, every `loop start`,
@@ -179,16 +180,16 @@
   `--session`, `--agent`, and `--instance` on any command; otherwise the
   command stops with exit 2 and does nothing. It is never stored. It fixes
   a confused identity; it does not prove anything against a forged one.
-- Review independence is now decided per agent instance. The same model,
-  even in the same harness, may review work as long as it is a different
-  instance, and the same instance never may, even when its records name
-  different sessions, harnesses, or models. A record that shows neither
-  an instance nor a session is still refused. None of the checks became
-  more permissive. In setup, naming the author's own model under "A
-  different model in the same agent" still asks for a different model,
-  but the message no longer calls that self-review: it says a separate
-  session of that model is an independent reviewer under "Any independent
-  reviewer".
+- Review independence for the review check is now decided per agent
+  instance. The same model, even in the same harness, may review work as
+  long as it is a different instance, and the same instance never may,
+  even when its records name different sessions, harnesses, or models. A
+  record that shows neither an instance nor a session is still refused.
+  None of the checks became more permissive. In setup, naming the author's
+  own model under "A different model in the same agent" still asks for a
+  different model, but the message no longer calls that self-review: it
+  says a separate session of that model is an independent reviewer under
+  "Any independent reviewer".
 - Finishing a run no longer undoes approved repository settings. When the
   primary checkout had uncommitted changes and already held the target's
   `.simple-changes.json`, for example an approved migration setting,
@@ -236,10 +237,10 @@
   `<shared Git folder>/simple-changes` is now created one level at a time,
   and a symbolic link anywhere on that path is refused instead of
   followed.
-- The new checks that compare files with the target, list a source
-  checkout's files, or read one file from the target now also tell a real
-  "nothing there" from an answer Git lost, and refuse instead of treating
-  a lost answer as proof.
+- The checks added in this release that compare files with the target,
+  list a source checkout's files, or read one file from the target now
+  also tell a real "nothing there" from an answer Git lost, and refuse
+  instead of treating a lost answer as proof.
 - A repository can keep its own changelog helper under a folder name of
   its choosing in its skill folders, such as
   `.agents/skills/team-changelog-maintainer`, as long as that folder holds
@@ -339,35 +340,36 @@
   request you started it for. Before, run-only setup saved nothing and
   told the agent nothing, so every later check in the same run still said
   setup was required and `loop start --changelog-required` stopped with
-  exit 5. Now setup prints, as `runRequest`, the exact value to pass on,
-  and the agent passes setup's `policy` as `--policy-request` to each
+  exit 5. Now setup prints the exact value to pass on, under `runRequest`
+  in its output, and the agent passes it as `--policy-request` to each
   later `initialize` and `loop start` of that run. It applies only when no
   repository or personal policy is saved, is never written anywhere, and
   never turns on automatic pushes, production deploys, non-standard
-  shipping, or automatic migrations, which stay at ask. A saved policy
-  always wins. A malformed or out-of-date value is refused with exit 2
-  and changes nothing. The next run asks the setup questions again, as
-  before. Older copies reject `--policy-request` as unknown.
+  shipping, or automatic migrations; those fall back to their safe
+  settings, such as asking first or standard shipping. A saved policy
+  always wins. A malformed or out-of-date value is refused with exit 2 and
+  changes nothing. The next run asks the setup questions again, as before.
+  Older copies reject `--policy-request` as unknown.
 - Sharing a repository with an older release: the lease, coordination,
-  review ledger, and authoring files keep their shapes, except that a run
-  with a held unit adds `heldUnits` to its lease, which older copies
-  refuse. Every other new record is a new file that older copies ignore,
-  which leaves them stricter, not looser: they cannot finish a run with a
-  handoff, they still refuse an approval that only a verified release
-  changed, they treat a renamed changelog helper as absent, and an older
-  `loop end` refuses a run whose host branch was deleted outside it. They
-  reject the new flags and commands, such as `--wait-lock`,
-  `--identity-receipt`, and `reviewer room`, as unknown, and an older
-  builder rejects proposal pages that list `openProposalTargets`. Older
-  copies still remove a clean rebaselined checkout.
+  review ledger, and authoring files keep their shapes, except a held
+  run's lease, described above. Every other new record is a new file that
+  older copies ignore, which leaves them stricter, not looser: they cannot
+  finish a run with a handoff, they still refuse an approval that only a
+  verified release changed, they treat a renamed changelog helper as
+  absent, and an older `loop end` refuses a run whose host branch was
+  deleted outside it. They reject the new flags and commands, such as
+  `--wait-lock`, `--identity-receipt`, and `reviewer room`, as unknown,
+  and an older builder rejects proposal pages that list
+  `openProposalTargets`. Older copies still remove a clean rebaselined
+  checkout.
 - Older copies also still record whichever harness session comes first in
   their fixed order, which for an agent started by another agent may be
-  its parent's, so update every copy that such agents use. A claim one of them made that way is bound to
-  the parent's session: with 0.33.0 the started agent passes `--harness`
-  and is refused as another session, and the existing approved
-  `worktree takeover` moves the claim. A review that an older copy
-  accepted from the author's own instance under another session is
-  refused when 0.33.0 resumes the run.
+  its parent's, so update every copy that such agents use. A claim one of
+  them made that way is bound to the parent's session: with 0.33.0 the
+  started agent passes `--harness` and is refused as another session, and
+  the existing approved `worktree takeover` moves the claim. A review that
+  an older copy accepted from the author's own instance under another
+  session is refused when 0.33.0 resumes the run.
 - Filed for a later release:
   - soundsystems/simple-changes#19: a local branch with more than one
     `branch.<name>.merge` value, which only a hand edit or

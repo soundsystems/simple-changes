@@ -1209,7 +1209,7 @@ const GUIDANCE_UPDATES: GuidanceUpdateDefinition[] = [
       {
         priority: 180,
         summary:
-          "A clean checkout whose work shipped as reworked commits can now be removed after review and your approval, and it is archived first: `worktree restore-archive` brings it back, and the archive is deleted on its own after 14 days or when archives pass 2 GiB, both settable under `archiveRetention`.",
+          "A clean checkout whose work shipped as reworked commits can now be removed after review and your approval, and it is archived first: `worktree restore-archive` brings it back, and the archive is removed at the next cleanup once it is 14 days old or archives pass 2 GiB, both settable under `archiveRetention`.",
       },
     ],
     version: 33,

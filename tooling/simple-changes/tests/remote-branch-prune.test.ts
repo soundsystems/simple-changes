@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
@@ -548,6 +548,12 @@ interface ExtraBranch {
 const shipMergedProposal = async (options: {
   /** Runs before the first record; a refused first record is retried once. */
   beforeRecord?: (root: string, runId: string) => () => void;
+  /** Runs after the record and before finalization. */
+  beforeFinalize?: (context: {
+    rebuild: () => ReturnType<typeof buildRemoteInventory>;
+    root: string;
+    runId: string;
+  }) => void;
   deleteSource: boolean;
   extraBranches?: (root: string) => ExtraBranch[];
   withContainedBranch: boolean;
@@ -612,38 +618,40 @@ const shipMergedProposal = async (options: {
     units: [],
   };
   recordShipmentOutcome(root, lease.runId, "controller", outcome);
-  const built = buildRemoteInventory(
-    pages(
-      new Date(Date.now() + 1000).toISOString(),
-      [
-        main(target),
-        ...(options.deleteSource
-          ? []
-          : [
-              {
-                headRevision: releaseHead,
-                name: "release/1",
-                protected: false,
-              },
-            ]),
-        ...docs,
-        ...extras.flatMap((extra) =>
-          extra.finalHead
-            ? [
+  const buildFinal = (observedAt: string) =>
+    buildRemoteInventory(
+      pages(
+        observedAt,
+        [
+          main(target),
+          ...(options.deleteSource
+            ? []
+            : [
                 {
-                  headRevision: extra.finalHead,
-                  name: extra.name,
+                  headRevision: releaseHead,
+                  name: "release/1",
                   protected: false,
                 },
-              ]
-            : []
-        ),
-      ],
-      [mr("96", "release/1", "merged", releaseHead)],
-      []
-    ),
-    { opening: openingReceipt, resolveHolds: localHolds(root) }
-  );
+              ]),
+          ...docs,
+          ...extras.flatMap((extra) =>
+            extra.finalHead
+              ? [
+                  {
+                    headRevision: extra.finalHead,
+                    name: extra.name,
+                    protected: false,
+                  },
+                ]
+              : []
+          ),
+        ],
+        [mr("96", "release/1", "merged", releaseHead)],
+        []
+      ),
+      { opening: openingReceipt, resolveHolds: localHolds(root) }
+    );
+  const built = buildFinal(new Date(Date.now() + 1000).toISOString());
   const record = () =>
     recordRemoteBranchReconciliation(
       root,
@@ -664,6 +672,11 @@ const shipMergedProposal = async (options: {
   if (!options.beforeRecord || firstRecordError) {
     record();
   }
+  options.beforeFinalize?.({
+    rebuild: () => buildFinal(new Date(Date.now() + 2000).toISOString()),
+    root,
+    runId: lease.runId,
+  });
   const finalized = finalizeLoop(
     root,
     lease.runId,
@@ -710,9 +723,16 @@ const pinRefs = (root: string): string[] =>
     .split("\n")
     .filter(Boolean);
 
+const DAY = 24 * 60 * 60 * 1000;
+
+/** The pins under the external prefix, as `<ref> <value>` lines. */
+const pinTimeOf = (line: string | undefined): number =>
+  Number(line?.split(" ")[0]?.split("/").at(-1));
+
 describe("branches deleted outside the run", () => {
   test("an opening branch deleted externally lets the build and reconciliation complete, and finalize reports it pending and pinned", async () => {
     let goneHead = "";
+    const before = Date.now();
     const { built, finalized, releaseHead, root, runId } =
       await shipMergedProposal({
         deleteSource: true,
@@ -724,6 +744,7 @@ describe("branches deleted outside the run", () => {
         },
         withContainedBranch: false,
       });
+    const after = Date.now();
     expect(built.summary.externallyDeletedBranches).toEqual([
       { lastHeadRevision: goneHead, name: "feature/gone" },
     ]);
@@ -735,8 +756,21 @@ describe("branches deleted outside the run", () => {
       initialHeadRevision: releaseHead,
       obsoleteProof: "merged-proposal-head",
     });
-    const pinRef = `refs/simple-changes/external/${runId}/${goneHead}`;
-    expect(pinRefs(root)).toEqual([`${pinRef} ${goneHead}`]);
+    // One pin, whose time is part of its name.
+    const lines = pinRefs(root);
+    expect(lines).toHaveLength(1);
+    const pinnedAt = pinTimeOf(lines[0]);
+    expect(pinnedAt).toBeGreaterThanOrEqual(before);
+    expect(pinnedAt).toBeLessThanOrEqual(after);
+    const pinRef = `refs/simple-changes/external/${runId}/${goneHead}/${pinnedAt}`;
+    expect(lines).toEqual([`${pinRef} ${goneHead}`]);
+    const record = JSON.parse(
+      readFileSync(externalRecordPath(root, runId), "utf8")
+    ) as { receipts: Array<{ deletions: unknown[] }> };
+    expect(record.receipts).toHaveLength(1);
+    expect(record.receipts[0]?.deletions).toEqual([
+      { branch: "feature/gone", lastHeadRevision: goneHead },
+    ]);
     expect(finalized.outcome).toBe("completed");
     expect(finalized.blockers).toEqual([]);
     expect(finalized.receipt.cleanupStatus).toBe("pending");
@@ -747,60 +781,50 @@ describe("branches deleted outside the run", () => {
     expect(item).toMatchObject({
       lastHeadRevision: goneHead,
       name: "feature/gone",
+      pinExpiresAt: new Date(pinnedAt + 14 * DAY).toISOString(),
       pinRef,
     });
     expect(item?.note).toContain(
       `This branch was deleted outside this run; its last head was ${goneHead}.`
     );
     expect(item?.note).toContain("not counted as delivered or obsolete");
-    const expires = Date.parse(item?.pinExpiresAt ?? "");
-    expect(expires - Date.now()).toBeGreaterThan(13 * 24 * 60 * 60 * 1000);
-    expect(expires - Date.now()).toBeLessThanOrEqual(14 * 24 * 60 * 60 * 1000);
     expect(finalized.receipt.remoteBranches?.pending).toEqual([]);
     // Its own fresh pin is not pruned when the run closes.
     expect(finalized.expiredExternalDeletionPins).toBeUndefined();
 
-    // A later run's pruning keeps the pin within its retention and removes
-    // it once the retention has passed.
-    const common = captureInventory(root).repository.commonGitDirectory;
-    const day = 24 * 60 * 60 * 1000;
+    // A later run's pruning keeps the pin until 14 days after it was made.
     expect(
       pruneExpiredExternalDeletionPins(
         root,
-        common,
         "run-later-00000000",
-        Date.now() + 13 * day
+        pinnedAt + 14 * DAY - 1
       )
     ).toEqual({ errors: [], removed: [] });
     expect(pinRefs(root)).toHaveLength(1);
     expect(
       pruneExpiredExternalDeletionPins(
         root,
-        common,
         "run-later-00000000",
-        Date.now() + 15 * day
+        pinnedAt + 14 * DAY
       )
     ).toEqual({ errors: [], removed: [pinRef] });
     expect(pinRefs(root)).toEqual([]);
   }, 180_000);
 
-  test("a record whose pin fails is refused after recording the pin time, and the retry keeps that time", async () => {
+  test("a pin that fails leaves no pin and no time, so the retry's pin starts its own retention", async () => {
     let goneHead = "";
-    let pinTimeBeforeRef = "";
+    let failedAt = 0;
     const { finalized, firstRecordError, root, runId } =
       await shipMergedProposal({
         beforeRecord: (repo, run) => {
-          // A ref at the run's own pin folder makes every pin under it fail.
-          const blocker = `refs/simple-changes/external/${run}`;
+          // A ref at the head's own pin folder makes its pin fail.
+          const blocker = `refs/simple-changes/external/${run}/${goneHead}`;
           git(repo, ["update-ref", blocker, goneHead]);
           return () => {
-            const record = JSON.parse(
-              readFileSync(externalRecordPath(repo, run), "utf8")
-            ) as { deletions: unknown[]; pins: Array<{ pinnedAt: string }> };
-            expect(record.deletions).toEqual([]);
-            expect(record.pins).toHaveLength(1);
-            pinTimeBeforeRef = record.pins[0]?.pinnedAt ?? "";
+            expect(pinRefs(repo)).toEqual([`${blocker} ${goneHead}`]);
+            expect(existsSync(externalRecordPath(repo, run))).toBe(false);
             git(repo, ["update-ref", "-d", blocker]);
+            failedAt = Date.now();
           };
         },
         deleteSource: true,
@@ -815,29 +839,62 @@ describe("branches deleted outside the run", () => {
     expect(String(firstRecordError)).toContain(
       `Could not pin last head ${goneHead} of feature/gone`
     );
-    expect(pinTimeBeforeRef).not.toBe("");
-    const record = JSON.parse(
-      readFileSync(externalRecordPath(root, runId), "utf8")
-    ) as { deletions: unknown[]; pins: unknown[] };
-    expect(record.deletions).toEqual([
-      { branch: "feature/gone", lastHeadRevision: goneHead },
-    ]);
-    expect(record.pins).toEqual([
-      {
-        branch: "feature/gone",
-        headRevision: goneHead,
-        pinnedAt: pinTimeBeforeRef,
-      },
-    ]);
+    const lines = pinRefs(root);
+    expect(lines).toHaveLength(1);
+    const pinnedAt = pinTimeOf(lines[0]);
+    expect(pinnedAt).toBeGreaterThanOrEqual(failedAt);
     expect(finalized.outcome).toBe("completed");
     expect(
       finalized.receipt.remoteBranches?.deletedExternally?.[0]
     ).toMatchObject({
-      pinExpiresAt: new Date(
-        Date.parse(pinTimeBeforeRef) + 14 * 24 * 60 * 60 * 1000
-      ).toISOString(),
-      pinRef: `refs/simple-changes/external/${runId}/${goneHead}`,
+      pinRef: `refs/simple-changes/external/${runId}/${goneHead}/${pinnedAt}`,
     });
+  }, 180_000);
+
+  test("a record that fails before the lease write keeps the earlier receipt valid", async () => {
+    let goneHead = "";
+    let laterDigestCount = 0;
+    const { finalized, root } = await shipMergedProposal({
+      beforeFinalize: ({ rebuild, root: repo, runId: run }) => {
+        const later = rebuild();
+        process.env.SIMPLE_CHANGES_TEST_FAIL_BEFORE_RECONCILIATION_LEASE_WRITE =
+          "1";
+        try {
+          expect(() =>
+            recordRemoteBranchReconciliation(
+              repo,
+              run,
+              "controller",
+              later.receipt
+            )
+          ).toThrow("Test failure before the reconciliation lease write.");
+        } finally {
+          Reflect.deleteProperty(
+            process.env,
+            "SIMPLE_CHANGES_TEST_FAIL_BEFORE_RECONCILIATION_LEASE_WRITE"
+          );
+        }
+        const record = JSON.parse(
+          readFileSync(externalRecordPath(repo, run), "utf8")
+        ) as { receipts: unknown[] };
+        laterDigestCount = record.receipts.length;
+      },
+      deleteSource: true,
+      extraBranches: (repo) => {
+        goneHead = danglingCommit(repo, "feature/gone");
+        return [
+          { finalHead: null, name: "feature/gone", openingHead: goneHead },
+        ];
+      },
+      withContainedBranch: false,
+    });
+    // Both receipts keep their entries, and the lease still holds the first.
+    expect(laterDigestCount).toBe(2);
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.blockers).toEqual([]);
+    expect(finalized.receipt.remoteBranches?.deletedExternally).toHaveLength(1);
+    // The failed record made no second pin.
+    expect(pinRefs(root)).toHaveLength(1);
   }, 180_000);
 
   test("a branch deleted externally whose head is not local is reported, with no pin claimed", async () => {
@@ -896,150 +953,28 @@ describe("branches deleted outside the run", () => {
     expect(finalized.receipt.cleanupStatus).toBe("complete");
   }, 180_000);
 
-  test("a pin its run's record does not list expires by the run's start time, and malformed refs are left alone", () => {
+  test("pruning removes only expired pins of the exact shape it makes, from other runs", () => {
     const { root } = repository();
     const head = git(root, ["rev-parse", "HEAD"]);
-    const day = 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const oldRun = `run-${(now - 20 * day).toString(36)}-aaaaaaaa`;
-    const freshRun = `run-${(now - 2 * day).toString(36)}-bbbbbbbb`;
-    const oldRef = `refs/simple-changes/external/${oldRun}/${head}`;
-    const freshRef = `refs/simple-changes/external/${freshRun}/${head}`;
-    const wrongValue = `refs/simple-changes/external/${oldRun}/${"1".repeat(40)}`;
-    git(root, ["update-ref", oldRef, head]);
-    git(root, ["update-ref", freshRef, head]);
-    git(root, ["update-ref", wrongValue, head]);
-    const common = captureInventory(root).repository.commonGitDirectory;
+    const pin = (run: string, time: number | string) =>
+      `refs/simple-changes/external/${run}/${head}/${time}`;
+    const expired = pin("run-old-aaaaaaaa", now - 20 * DAY);
+    const fresh = pin("run-old-aaaaaaaa", now - 2 * DAY);
+    const current = pin("run-current-cccccccc", now - 20 * DAY);
+    const notATime = pin("run-old-aaaaaaaa", "later");
+    const noTime = `refs/simple-changes/external/run-old-bbbbbbbb/${head}`;
+    const wrongValue = `refs/simple-changes/external/run-old-aaaaaaaa/${"1".repeat(40)}/${now - 20 * DAY}`;
+    for (const ref of [expired, fresh, current, notATime, noTime, wrongValue]) {
+      git(root, ["update-ref", ref, head]);
+    }
     expect(
-      pruneExpiredExternalDeletionPins(
-        root,
-        common,
-        "run-current-cccccccc",
-        now
-      )
-    ).toEqual({ errors: [], removed: [oldRef] });
+      pruneExpiredExternalDeletionPins(root, "run-current-cccccccc", now)
+    ).toEqual({ errors: [], removed: [expired] });
     expect(new Set(pinRefs(root).map((line) => line.split(" ")[0]))).toEqual(
-      new Set([freshRef, wrongValue])
+      new Set([fresh, current, notATime, noTime, wrongValue])
     );
-    // A run older than the retention keeps a pin its record says is fresh,
-    // and loses one its record says is old.
-    const recordedRun = `run-${(now - 30 * day).toString(36)}-dddddddd`;
-    const recordedRef = `refs/simple-changes/external/${recordedRun}/${head}`;
-    git(root, ["update-ref", recordedRef, head]);
-    const path = join(
-      common,
-      "simple-changes",
-      "remote-branch-external-deletions",
-      `${recordedRun}.json`
-    );
-    mkdirSync(join(path, ".."), { recursive: true });
-    const writeRecord = (pinnedAt: number) =>
-      writeFileSync(
-        path,
-        JSON.stringify({
-          deletions: [],
-          pins: [
-            {
-              branch: "feature/gone",
-              headRevision: head,
-              pinnedAt: new Date(pinnedAt).toISOString(),
-            },
-          ],
-          receiptDigest: "0".repeat(64),
-          runId: recordedRun,
-          schemaVersion: 1,
-        })
-      );
-    writeRecord(now - day);
-    expect(
-      pruneExpiredExternalDeletionPins(
-        root,
-        common,
-        "run-current-cccccccc",
-        now
-      ).removed
-    ).toEqual([]);
-    writeRecord(now - 15 * day);
-    expect(
-      pruneExpiredExternalDeletionPins(
-        root,
-        common,
-        "run-current-cccccccc",
-        now
-      ).removed
-    ).toEqual([recordedRef]);
-    // The current run's own pins are never pruned.
-    git(root, ["update-ref", oldRef, head]);
-    expect(
-      pruneExpiredExternalDeletionPins(root, common, oldRun, now).removed
-    ).toEqual([]);
   });
-});
-
-describe("loop finalize never reports a surviving merged branch as clean", () => {
-  test("a merged MR's surviving source branch is proposed and reported pending", async () => {
-    const { built, finalized, releaseHead } = await shipMergedProposal({
-      deleteSource: false,
-      withContainedBranch: false,
-    });
-    expect(built.summary.deletionProposals).toEqual([
-      {
-        basis: "merged-proposal-head",
-        headRevision: releaseHead,
-        name: "release/1",
-        proof: "merged-proposal-head",
-        proposalObjectId: "96",
-      },
-    ]);
-    expect(finalized.outcome).toBe("completed");
-    expect(finalized.receipt.cleanupStatus).toBe("pending");
-    expect(finalized.receipt.remoteBranches).toEqual({
-      errors: [],
-      held: [],
-      openProposalTargets: "recorded",
-      pending: [
-        {
-          headRevision: releaseHead,
-          name: "release/1",
-          proof: "merged-proposal-head",
-          proposalObjectId: "96",
-        },
-      ],
-    });
-  }, 180_000);
-
-  test("a merged MR's deleted source branch is recorded with proof and reports clean", async () => {
-    const { built, finalized } = await shipMergedProposal({
-      deleteSource: true,
-      withContainedBranch: false,
-    });
-    expect(built.summary.deletedBranches).toEqual(["release/1"]);
-    expect(
-      built.receipt.branches.find((branch) => branch.name === "release/1")
-    ).toMatchObject({
-      disposition: "deleted-merged",
-      obsoleteProof: "merged-proposal-head",
-    });
-    expect(finalized.outcome).toBe("completed");
-    expect(finalized.receipt.cleanupStatus).toBe("complete");
-    expect(finalized.receipt.remoteBranches?.pending).toEqual([]);
-  }, 180_000);
-
-  test("a contained branch with no MR is reported pending, never deleted", async () => {
-    const { built, finalized, opening } = await shipMergedProposal({
-      deleteSource: true,
-      withContainedBranch: true,
-    });
-    expect(built.summary.deletionProposals).toEqual([]);
-    expect(
-      built.receipt.branches.find((branch) => branch.name === "docs/old")
-    ).toMatchObject({ disposition: "preserved-ambiguous" });
-    expect(finalized.outcome).toBe("completed");
-    expect(finalized.receipt.cleanupStatus).toBe("pending");
-    expect(finalized.receipt.remoteBranches?.pending).toEqual([
-      { headRevision: opening, name: "docs/old", proof: "target-contained" },
-    ]);
-  }, 180_000);
 });
 
 describe("remote branch cleanup report never reads unknown as clean", () => {

@@ -55,7 +55,6 @@ import {
   assertCurrentRemoteBranchReconciliation,
   type ExpiredExternalDeletionPins,
   pruneExpiredExternalDeletionPins,
-  recordedExternalDeletionPins,
   recordedOpenProposalTargets,
 } from "./loop-lease-remote.ts";
 import {
@@ -2340,7 +2339,6 @@ const remoteBranchesField = (
         claims: readCoordinationDocumentFromCommonDirectory(
           lease.commonGitDirectory
         ).claims,
-        externalDeletionPins: recordedExternalDeletionPins(lease),
         inventory,
         openTargets: recordedOpenProposalTargets(lease),
         receipt,
@@ -3103,7 +3101,6 @@ export const finalizeLoop = (
           // retention passes.
           const expired = pruneExpiredExternalDeletionPins(
             repositoryPath,
-            lease.commonGitDirectory,
             lease.runId
           );
           return {

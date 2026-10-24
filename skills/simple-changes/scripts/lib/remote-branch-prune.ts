@@ -1,8 +1,8 @@
 import { PATCH_EQUIVALENCE_MAX_COMMITS } from "./cleanup-core.ts";
 import { runGit } from "./process.ts";
 import { isExternalDeletionShape } from "./remote-branch-reconciliation.ts";
+import { RUN_ID_PATTERN } from "./run-id.ts";
 import type {
-  RemoteBranchExternalDeletionPin,
   RemoteBranchOpenProposalTarget,
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
@@ -339,27 +339,96 @@ export const EXTERNAL_DELETION_PIN_RETENTION_DAYS = 14;
 export const EXTERNAL_DELETION_PIN_RETENTION_MS =
   EXTERNAL_DELETION_PIN_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
-export const externalDeletionPinRef = (runId: string, head: string): string =>
-  `${EXTERNAL_DELETION_REF_PREFIX}${runId}/${head}`;
+/**
+ * The pin ref: `refs/simple-changes/external/<runId>/<head>/<ms>`. The time
+ * the pin was made is part of its name, so the ref and its age are created
+ * together in one atomic `update-ref`, and nothing else records either.
+ */
+export const externalDeletionPinRef = (
+  runId: string,
+  head: string,
+  pinnedAtMs: number
+): string => `${EXTERNAL_DELETION_REF_PREFIX}${runId}/${head}/${pinnedAtMs}`;
 
-/** Whether the pin ref exists now and names exactly that head. */
-export const externalDeletionPinIsLive = (
+export interface ExternalDeletionPin {
+  head: string;
+  pinnedAtMs: number;
+  ref: string;
+  runId: string;
+}
+
+const HEAD_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+
+const PIN_TIME_PATTERN = /^[0-9]{1,15}$/u;
+
+/**
+ * One `for-each-ref` line (`<refname> <objectname>`), when it is a pin this
+ * module makes: exactly `<prefix><runId>/<head>/<ms>`, with a valid run ID
+ * and head, pointing at that head. Anything else is not ours.
+ */
+export const parseExternalDeletionPin = (
+  line: string
+): ExternalDeletionPin | null => {
+  const [ref = "", value, ...extra] = line.split(" ");
+  if (!ref.startsWith(EXTERNAL_DELETION_REF_PREFIX) || extra.length > 0) {
+    return null;
+  }
+  const [runId = "", head = "", time = "", ...rest] = ref
+    .slice(EXTERNAL_DELETION_REF_PREFIX.length)
+    .split("/");
+  if (
+    rest.length > 0 ||
+    value !== head ||
+    !RUN_ID_PATTERN.test(runId) ||
+    !HEAD_PATTERN.test(head) ||
+    !PIN_TIME_PATTERN.test(time)
+  ) {
+    return null;
+  }
+  return { head, pinnedAtMs: Number(time), ref, runId };
+};
+
+/**
+ * The pins under a prefix of `refs/simple-changes/external/`. It throws when
+ * Git cannot list them, so a failed listing never reads as no pin.
+ */
+export const listExternalDeletionPins = (
+  repositoryPath: string,
+  prefix: string = EXTERNAL_DELETION_REF_PREFIX
+): ExternalDeletionPin[] => {
+  const listed = runGit(
+    repositoryPath,
+    ["for-each-ref", "--format=%(refname) %(objectname)", prefix],
+    true
+  );
+  if (listed.exitCode !== 0) {
+    throw new Error(
+      `cannot list pins under ${prefix}: ${listed.stderr.trim() || `exit ${listed.exitCode}`}`
+    );
+  }
+  return listed.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map(parseExternalDeletionPin)
+    .filter((pin): pin is ExternalDeletionPin => pin !== null);
+};
+
+/** The newest pin that exists now for this run and head, if any. */
+export const liveExternalDeletionPin = (
   repositoryPath: string,
   runId: string,
   head: string
-): boolean => {
-  const resolved = runGit(
+): ExternalDeletionPin | null =>
+  listExternalDeletionPins(
     repositoryPath,
-    [
-      "rev-parse",
-      "--verify",
-      "--quiet",
-      `${externalDeletionPinRef(runId, head)}^{commit}`,
-    ],
-    true
-  );
-  return resolved.exitCode === 0 && resolved.stdout.trim() === head;
-};
+    `${EXTERNAL_DELETION_REF_PREFIX}${runId}/${head}/`
+  )
+    .filter((pin) => pin.runId === runId && pin.head === head)
+    .reduce<ExternalDeletionPin | null>(
+      (newest, pin) =>
+        newest === null || pin.pinnedAtMs > newest.pinnedAtMs ? pin : newest,
+      null
+    );
 
 /**
  * A branch deleted outside the run. It is never delivered or obsolete: it
@@ -406,8 +475,6 @@ export interface RemoteBranchCleanupReport {
 
 export interface RemoteBranchCleanupInput {
   claims: readonly WorktreeClaim[];
-  /** Pins the run recorded for branches deleted outside it. */
-  externalDeletionPins?: readonly RemoteBranchExternalDeletionPin[];
   inventory: Pick<RepositoryInventory, "branches" | "repository" | "worktrees">;
   openTargets: RemoteBranchOpenProposalTarget[] | null;
   receipt: RemoteBranchReconciliationReceipt;
@@ -418,26 +485,6 @@ export interface RemoteBranchCleanupInput {
 const headIsLocal = (repositoryPath: string, head: string): boolean =>
   runGit(repositoryPath, ["cat-file", "-e", `${head}^{commit}`], true)
     .exitCode === 0;
-
-/**
- * The latest time a run recorded pinning this head, optionally for one branch
- * only, or undefined when it recorded none.
- */
-export const latestPinTime = (
-  pins: readonly RemoteBranchExternalDeletionPin[],
-  head: string,
-  branch?: string
-): number | undefined => {
-  const times = pins
-    .filter(
-      (pin) =>
-        pin.headRevision === head &&
-        (branch === undefined || pin.branch === branch)
-    )
-    .map((pin) => Date.parse(pin.pinnedAt))
-    .filter((time) => Number.isFinite(time));
-  return times.length === 0 ? undefined : Math.max(...times);
-};
 
 const keepNote = (
   repositoryPath: string,
@@ -474,19 +521,16 @@ const externallyDeletedItems = (
     ) {
       return [];
     }
-    const { runId } = input;
-    const pinRef =
-      runId !== undefined &&
-      externalDeletionPinIsLive(repositoryPath, runId, head)
-        ? externalDeletionPinRef(runId, head)
-        : null;
-    const pinnedAt = pinRef
-      ? latestPinTime(input.externalDeletionPins ?? [], head, entry.name)
+    const pin =
+      input.runId === undefined
+        ? null
+        : liveExternalDeletionPin(repositoryPath, input.runId, head);
+    const pinRef = pin?.ref ?? null;
+    const pinExpiresAt = pin
+      ? new Date(
+          pin.pinnedAtMs + EXTERNAL_DELETION_PIN_RETENTION_MS
+        ).toISOString()
       : undefined;
-    const pinExpiresAt =
-      pinnedAt === undefined
-        ? undefined
-        : new Date(pinnedAt + EXTERNAL_DELETION_PIN_RETENTION_MS).toISOString();
     return [
       {
         lastHeadRevision: head,

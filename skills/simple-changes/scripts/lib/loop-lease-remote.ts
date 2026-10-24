@@ -32,29 +32,28 @@ import { verificationAgainst } from "./loop-lease-verify.ts";
 import { runGit } from "./process.ts";
 import {
   EXTERNAL_DELETION_PIN_RETENTION_MS,
-  EXTERNAL_DELETION_REF_PREFIX,
+  type ExternalDeletionPin,
   externalDeletionPinRef,
-  latestPinTime,
+  listExternalDeletionPins,
+  liveExternalDeletionPin,
 } from "./remote-branch-prune.ts";
 import {
+  externalDeletionsForReceipt,
   isExternalDeletionShape,
   openProposalTargetsForReceipt,
   remoteBranchReconciliationDigest,
   remoteInventoryDigest,
   splitRemoteBranchReconciliationInput,
   validateRemoteBranchAncestryRecord,
-  validateRemoteBranchExternalDeletionRecord,
   validateRemoteBranchReconciliation,
   validateRemoteBranchSupersessionRecord,
 } from "./remote-branch-reconciliation.ts";
-import { RUN_ID_PATTERN } from "./run-id.ts";
 import { validateSchema } from "./schema.ts";
 import type {
   LoopLease,
   RemoteBranchAncestryProof,
   RemoteBranchAncestryRecord,
   RemoteBranchExternalDeletion,
-  RemoteBranchExternalDeletionPin,
   RemoteBranchExternalDeletionRecord,
   RemoteBranchOpenProposalTarget,
   RemoteBranchOpenTargetsRecord,
@@ -142,9 +141,9 @@ const writeRemoteBranchOpenTargets = (
   );
 
 /**
- * The external-deletion record for this run, whatever receipt it was written
- * for, or null when there is none or it cannot be read. Only pins are read
- * from it this way; validation re-joins deletions with the exact receipt.
+ * The external-deletion record for this run, or null when there is none or it
+ * cannot be read. Only a record writer uses it this way, to keep the entry
+ * of the receipt the lease already holds; loop end reads it strictly.
  */
 const storedExternalDeletionRecord = (
   commonGitDirectory: string,
@@ -169,59 +168,23 @@ const storedExternalDeletionRecord = (
   }
 };
 
-/** The pins this run recorded for branches deleted outside it. */
-export const recordedExternalDeletionPins = (
-  lease: LoopLease
-): RemoteBranchExternalDeletionPin[] =>
-  storedExternalDeletionRecord(lease.commonGitDirectory, lease.runId)?.pins ??
-  [];
-
 /**
- * The pins this record will make: each last head of a branch deleted outside
- * the run that Git has locally and that no earlier receipt of the run already
- * pinned. A head that is not present locally is reported later, unpinned; it
- * never stops the record.
- */
-const newExternalPins = (
-  repositoryPath: string,
-  deletions: readonly RemoteBranchExternalDeletion[],
-  previous: readonly RemoteBranchExternalDeletionPin[]
-): RemoteBranchExternalDeletionPin[] => {
-  const pinnedAt = new Date().toISOString();
-  return deletions
-    .filter(
-      ({ branch, lastHeadRevision }) =>
-        !previous.some(
-          (pin) =>
-            pin.branch === branch && pin.headRevision === lastHeadRevision
-        ) &&
-        runGit(
-          repositoryPath,
-          ["cat-file", "-e", `${lastHeadRevision}^{commit}`],
-          true
-        ).exitCode === 0
-    )
-    .map(({ branch, lastHeadRevision }) => ({
-      branch,
-      headRevision: lastHeadRevision,
-      pinnedAt,
-    }));
-};
-
-/**
- * Pins each last head under `refs/simple-changes/external/<runId>/<head>`, so
- * gc cannot remove the work while the user decides. Pins of earlier receipts
- * are made again, which is a no-op when they still exist.
+ * Pins the last head of each branch deleted outside the run, when Git has it
+ * and no pin of this run already keeps it, at
+ * `refs/simple-changes/external/<runId>/<head>/<ms>`, so gc cannot remove
+ * the work while the user decides. The pin's time is in its name, so a pin
+ * that exists always has a known age and a failed one leaves nothing. A head
+ * that is not present locally is reported later, unpinned; it never stops
+ * the record.
  */
 const pinExternallyDeletedHeads = (
   repositoryPath: string,
   runId: string,
-  pins: readonly RemoteBranchExternalDeletionPin[],
   deletions: readonly RemoteBranchExternalDeletion[]
 ): void => {
   for (const { branch, lastHeadRevision } of deletions) {
     if (
-      !pins.some((pin) => pin.headRevision === lastHeadRevision) ||
+      liveExternalDeletionPin(repositoryPath, runId, lastHeadRevision) ||
       runGit(
         repositoryPath,
         ["cat-file", "-e", `${lastHeadRevision}^{commit}`],
@@ -236,7 +199,7 @@ const pinExternallyDeletedHeads = (
         "update-ref",
         "-m",
         `simple-changes: pin ${branch}, deleted outside ${runId}`,
-        externalDeletionPinRef(runId, lastHeadRevision),
+        externalDeletionPinRef(runId, lastHeadRevision, Date.now()),
         lastHeadRevision,
       ],
       true
@@ -251,135 +214,86 @@ const pinExternallyDeletedHeads = (
 };
 
 /**
- * Branches deleted outside the run follow the other sidecars' rules: beside
- * the lease, bound to the exact receipt digest, and replaced whenever a
- * receipt is recorded. The pins list carries over between receipts of the
- * same run, so the record stays while any pin it made may still exist, and
- * pin expiry can always find when a pin was made.
+ * Branches deleted outside the run live beside the lease, keyed by receipt
+ * digest. A record keeps the entry for the receipt the lease already holds
+ * and adds the new one, so a record interrupted before the lease is written
+ * never leaves the earlier receipt without its entry. Entries for any other
+ * receipt are dropped, and a record with no entry is removed.
  */
 const writeRemoteBranchExternalDeletions = (
   lease: LoopLease,
   receipt: RemoteBranchReconciliationReceipt,
-  deletions: RemoteBranchExternalDeletion[],
-  pins: RemoteBranchExternalDeletionPin[]
-): void =>
+  deletions: RemoteBranchExternalDeletion[]
+): void => {
+  const current = lease.remoteBranchReconciliation
+    ? remoteBranchReconciliationDigest(lease.remoteBranchReconciliation)
+    : null;
+  const next = remoteBranchReconciliationDigest(receipt);
+  const kept =
+    storedExternalDeletionRecord(
+      lease.commonGitDirectory,
+      lease.runId
+    )?.receipts.filter(
+      (entry) => entry.receiptDigest === current && current !== next
+    ) ?? [];
+  const receipts = [
+    ...kept,
+    ...(deletions.length > 0 ? [{ deletions, receiptDigest: next }] : []),
+  ];
   writeReceiptSidecar(
     lease,
     REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY,
-    deletions.length === 0 && pins.length === 0
+    receipts.length === 0
       ? null
       : validateSchema<RemoteBranchExternalDeletionRecord>(
           "remote-branch-external-deletions",
-          {
-            deletions,
-            pins,
-            receiptDigest: remoteBranchReconciliationDigest(receipt),
-            runId: lease.runId,
-            schemaVersion: 1,
-          }
+          { receipts, runId: lease.runId, schemaVersion: 1 }
         )
   );
+};
 
 export interface ExpiredExternalDeletionPins {
   errors: string[];
   removed: string[];
 }
 
-const RUN_ID_TIME_PATTERN = /^run-([a-z0-9]+)-/u;
-
-/**
- * One `for-each-ref` line, when it names a pin this module makes: exactly
- * `<prefix><runId>/<head>`, with a valid run ID, pointing at that head.
- */
-const parsePinLine = (
-  line: string
-): { head: string; ref: string; runId: string } | null => {
-  const [ref = "", value] = line.split(" ");
-  const [runId, head, ...rest] = ref
-    .slice(EXTERNAL_DELETION_REF_PREFIX.length)
-    .split("/");
-  if (!(runId && head && value === head) || rest.length > 0) {
-    return null;
-  }
-  return RUN_ID_PATTERN.test(runId) ? { head, ref, runId } : null;
-};
-
-/** When the run made the pin, or when the run started if it did not say. */
-const pinTime = (
-  record: RemoteBranchExternalDeletionRecord | null,
-  runId: string,
-  head: string
-): number => {
-  const recorded = latestPinTime(record?.pins ?? [], head);
-  if (recorded !== undefined) {
-    return recorded;
-  }
-  const [, encoded] = RUN_ID_TIME_PATTERN.exec(runId) ?? [];
-  return encoded ? Number.parseInt(encoded, 36) : Number.NaN;
-};
-
 /**
  * Removes pins of branches deleted outside earlier runs once their retention
- * has passed. It reads every ref under `refs/simple-changes/external/`, skips
- * the run named by `currentRunId`, and judges age by the pin time its run
- * recorded. A record always lists a pin's time before the pin exists, so only
- * a missing or unreadable record falls back to the time encoded in the run
- * ID. A ref whose name or value does not match a pin this module
- * makes is left alone, and each removal names the exact old value, so a ref
- * that changed meanwhile is kept.
+ * has passed. It reads only refs: a ref of exactly the shape this module makes
+ * whose value is its own head, from a run other than `currentRunId`, made
+ * more than the retention ago by the time in its name. Each removal names the
+ * exact old value, so a ref that changed meanwhile is kept.
  */
 export const pruneExpiredExternalDeletionPins = (
   repositoryPath: string,
-  commonGitDirectory: string,
   currentRunId: string,
   now: number = Date.now()
 ): ExpiredExternalDeletionPins => {
   const result: ExpiredExternalDeletionPins = { errors: [], removed: [] };
-  const listed = runGit(
-    repositoryPath,
-    [
-      "for-each-ref",
-      "--format=%(refname) %(objectname)",
-      EXTERNAL_DELETION_REF_PREFIX,
-    ],
-    true
-  );
-  if (listed.exitCode !== 0) {
-    result.errors.push(
-      `Could not list pins under ${EXTERNAL_DELETION_REF_PREFIX}: ${listed.stderr.trim() || `exit ${listed.exitCode}`}`
-    );
+  let pins: ExternalDeletionPin[];
+  try {
+    pins = listExternalDeletionPins(repositoryPath);
+  } catch (error) {
+    result.errors.push(error instanceof Error ? error.message : String(error));
     return result;
   }
-  const records = new Map<string, RemoteBranchExternalDeletionRecord | null>();
-  for (const line of listed.stdout.split("\n").filter(Boolean)) {
-    const pin = parsePinLine(line);
-    if (!pin || pin.runId === currentRunId) {
-      continue;
-    }
-    const { head, ref, runId } = pin;
-    if (!records.has(runId)) {
-      records.set(
-        runId,
-        storedExternalDeletionRecord(commonGitDirectory, runId)
-      );
-    }
-    const pinnedAt = pinTime(records.get(runId) ?? null, runId, head);
+  for (const pin of pins) {
     if (
-      !Number.isFinite(pinnedAt) ||
-      now - pinnedAt < EXTERNAL_DELETION_PIN_RETENTION_MS
+      pin.runId === currentRunId ||
+      now - pin.pinnedAtMs < EXTERNAL_DELETION_PIN_RETENTION_MS
     ) {
       continue;
     }
     const removal = runGit(
       repositoryPath,
-      ["update-ref", "-d", ref, head],
+      ["update-ref", "-d", pin.ref, pin.head],
       true
     );
     if (removal.exitCode === 0) {
-      result.removed.push(ref);
+      result.removed.push(pin.ref);
     } else {
       result.errors.push(
-        `Could not remove expired pin ${ref}: ${removal.stderr.trim() || `exit ${removal.exitCode}`}`
+        `Could not remove expired pin ${pin.ref}: ${removal.stderr.trim() || `exit ${removal.exitCode}`}`
       );
     }
   }
@@ -472,6 +386,21 @@ const assertRemoteBranchAncestry = (
         EXIT_CODES.unsafe
       );
     }
+  }
+};
+
+// Lets a test fail a record after its sidecars are written and before the
+// lease is, as an interrupted or failed lease write would.
+const failBeforeReconciliationLeaseWriteForTest = (): void => {
+  if (
+    process.env.NODE_ENV === "test" &&
+    process.env.SIMPLE_CHANGES_TEST_FAIL_BEFORE_RECONCILIATION_LEASE_WRITE ===
+      "1"
+  ) {
+    throw new SimpleChangesError(
+      "Test failure before the reconciliation lease write.",
+      EXIT_CODES.unsafe
+    );
   }
 };
 
@@ -748,11 +677,7 @@ const validateRecordedRemoteBranchReconciliation = (
   const externalDeletions =
     storedExternal === null
       ? []
-      : validateRemoteBranchExternalDeletionRecord(
-          storedExternal,
-          lease.runId,
-          receipt
-        ).deletions;
+      : externalDeletionsForReceipt(storedExternal, lease.runId, receipt);
   try {
     validateRemoteBranchReconciliation(
       receipt,
@@ -779,7 +704,7 @@ const validateRecordedRemoteBranchReconciliation = (
         "supersession approval"
       ),
       ...needs(
-        storedExternal,
+        externalDeletions.length === 0 ? null : storedExternal,
         isExternalDeletionShape,
         "external deletion record"
       ),
@@ -851,48 +776,6 @@ const assertCurrentRemoteBranchReconciliation = (
       phase: "loop-end",
     }
   );
-};
-
-/**
- * Pins the last heads of branches deleted outside the run and returns every
- * pin the run has made. Each new pin's time is written to the record before
- * its ref exists, still bound to the receipt the lease holds now, so an
- * interrupted record never leaves a pin whose age is unknown and never
- * invalidates the receipt recorded earlier.
- */
-const pinExternalDeletions = (
-  lease: LoopLease,
-  receipt: RemoteBranchReconciliationReceipt,
-  externalDeletions: readonly RemoteBranchExternalDeletion[]
-): RemoteBranchExternalDeletionPin[] => {
-  const previous = storedExternalDeletionRecord(
-    lease.commonGitDirectory,
-    lease.runId
-  );
-  const addedPins = newExternalPins(
-    lease.primaryCheckout,
-    externalDeletions,
-    previous?.pins ?? []
-  );
-  const pins = [...(previous?.pins ?? []), ...addedPins];
-  if (addedPins.length > 0) {
-    const recorded = lease.remoteBranchReconciliation ?? receipt;
-    writeRemoteBranchExternalDeletions(
-      lease,
-      recorded,
-      previous?.receiptDigest === remoteBranchReconciliationDigest(recorded)
-        ? previous.deletions
-        : [],
-      pins
-    );
-  }
-  pinExternallyDeletedHeads(
-    lease.primaryCheckout,
-    lease.runId,
-    pins,
-    externalDeletions
-  );
-  return pins;
 };
 
 export const recordRemoteBranchReconciliation = (
@@ -993,19 +876,15 @@ export const recordRemoteBranchReconciliation = (
         targetPatchIdCache
       );
       pinSupersededHeads(lease.primaryCheckout, lease.runId, supersessions);
-      const externalPins = pinExternalDeletions(
-        lease,
-        receipt,
+      pinExternallyDeletedHeads(
+        lease.primaryCheckout,
+        lease.runId,
         externalDeletions
       );
       writeRemoteBranchAncestry(lease, receipt, ancestryProofs);
       writeRemoteBranchSupersession(lease, receipt, supersessions);
-      writeRemoteBranchExternalDeletions(
-        lease,
-        receipt,
-        externalDeletions,
-        externalPins
-      );
+      writeRemoteBranchExternalDeletions(lease, receipt, externalDeletions);
+      failBeforeReconciliationLeaseWriteForTest();
       writeRemoteBranchOpenTargets(lease, receipt, split.openProposalTargets);
       const reconciledAt = new Date().toISOString();
       return writeLease({

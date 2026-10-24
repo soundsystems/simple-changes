@@ -1392,18 +1392,18 @@ export interface RemoteBranchExternalDeletion {
   lastHeadRevision: string;
 }
 
-/** A last head this run pinned under `refs/simple-changes/external/`. */
-export interface RemoteBranchExternalDeletionPin {
-  branch: string;
-  headRevision: string;
-  pinnedAt: string;
+/** The branches one recorded receipt, named by digest, records as deleted. */
+export interface RemoteBranchExternalDeletionReceipt {
+  deletions: RemoteBranchExternalDeletion[];
+  receiptDigest: string;
 }
 
 export interface RemoteBranchExternalDeletionRecord {
-  deletions: RemoteBranchExternalDeletion[];
-  /** Every pin this run made, across all of its recorded receipts. */
-  pins: RemoteBranchExternalDeletionPin[];
-  receiptDigest: string;
+  /**
+   * The receipt the lease held before the latest record, when it had any,
+   * and the latest one; loop end uses the entry whose digest matches.
+   */
+  receipts: RemoteBranchExternalDeletionReceipt[];
   runId: string;
   schemaVersion: 1;
 }

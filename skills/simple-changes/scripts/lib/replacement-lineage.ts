@@ -22,7 +22,7 @@ import {
   type ArchiveRetentionPolicy,
   archiveRetentionPolicy,
 } from "./policy.ts";
-import { type CommandResult, runGit, runGitWithInput } from "./process.ts";
+import { countedRevisionList, runGit } from "./process.ts";
 import { headCoverage, readReviewLedger } from "./review-ledger.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -1231,60 +1231,25 @@ const namedObjectsOf = (
 // not kept for as long as a new archive is.
 const EXPIRING_PIN_REFS = "refs/simple-changes/*";
 
-// A `rev-list` question whose answer may rightly be empty, asked in the
-// checkout. An empty answer is checked against the same question with
-// `--count`, which Git always answers with a number: zero confirms it, and
-// anything else means the answer was lost on its way here (seen under heavy
-// load), so the question is asked once more and then refused rather than
-// read as "nothing there".
+// A `rev-list` listing asked in the checkout, checked whole against Git's
+// own count of it; a failure, or an answer lost or cut short twice, is the
+// reason it could not be read.
 const revisionListing = (
   path: string,
   overrides: readonly string[],
   question: readonly string[],
-  stdin: string | null
+  stdin?: string
 ): { commits: string[] } | { failure: string } => {
-  const ask = (count: boolean): CommandResult | string => {
-    const args = [
-      ...overrides,
-      "rev-list",
-      ...(count ? ["--count"] : []),
-      ...question,
-    ];
-    if (stdin === null) {
-      const result = runGit(path, args, true);
-      return result.exitCode === 0
-        ? result
-        : result.stderr.trim() || `exit ${result.exitCode}`;
-    }
-    try {
-      return runGitWithInput(path, args, stdin);
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error);
-    }
-  };
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const listed = ask(false);
-    if (typeof listed === "string") {
-      return { failure: listed };
-    }
-    const commits = listed.stdout.split("\n").filter(Boolean);
-    if (commits.length > 0) {
-      return commits.every((commit) => OBJECT_ID_PATTERN.test(commit))
-        ? { commits }
-        : { failure: "its answer was not a list of commits" };
-    }
-    const counted = ask(true);
-    if (typeof counted === "string") {
-      return { failure: counted };
-    }
-    if (counted.stdout.trim() === "0") {
-      return { commits: [] };
-    }
+  try {
+    return {
+      commits: countedRevisionList(path, question, {
+        gitOptions: overrides,
+        ...(stdin === undefined ? {} : { stdin }),
+      }),
+    };
+  } catch (error) {
+    return { failure: error instanceof Error ? error.message : String(error) };
   }
-  return {
-    failure:
-      "it printed nothing twice, although Git does not count the answer as empty, so the answer was lost on its way to this process (seen under heavy load); retry the command",
-  };
 };
 
 // The commits the checkout's reflogs name (its HEAD's log, its branch's log
@@ -1311,12 +1276,7 @@ const reflogOnlyCommitsOf = (
         .filter((name) => name.startsWith("refs/")),
     ]),
   ];
-  const walked = revisionListing(
-    path,
-    overrides,
-    ["--walk-reflogs", ...logs],
-    null
-  );
+  const walked = revisionListing(path, overrides, ["--walk-reflogs", ...logs]);
   if ("failure" in walked) {
     throw boundaryRefusal(
       path,

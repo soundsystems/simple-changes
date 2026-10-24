@@ -888,3 +888,55 @@ export const runGitWithInput = (
   }
   return { exitCode: result.exitCode, stderr, stdout };
 };
+
+const COUNT_ANSWER = /^[0-9]+\n$/u;
+const FULL_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+
+/**
+ * The commits a `rev-list` question lists, checked whole. Git is asked the
+ * same question with `--count`, whose answer is digits and a line break;
+ * the listing must end with a line break, hold only full object IDs, and
+ * have exactly that many lines. An answer lost or cut short on its way to
+ * this process (seen under heavy load) fails the check, so the question is
+ * asked once more and then refused with a retryable error: a partial
+ * listing never reads as "these are all of them". `question` is everything
+ * after `rev-list`; `gitOptions` go before it, and `stdin` feeds `--stdin`.
+ */
+export const countedRevisionList = (
+  cwd: string,
+  question: readonly string[],
+  options: { gitOptions?: readonly string[]; stdin?: string } = {}
+): string[] => {
+  const ask = (count: boolean): string => {
+    const args = [
+      ...(options.gitOptions ?? []),
+      "rev-list",
+      ...(count ? ["--count"] : []),
+      ...question,
+    ];
+    return (
+      options.stdin === undefined
+        ? runGit(cwd, args)
+        : runGitWithInput(cwd, args, options.stdin)
+    ).stdout;
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const listed = ask(false);
+    const counted = ask(true);
+    const commits = listed.split("\n");
+    // A whole listing ends with a line break, which leaves one empty item.
+    const ended = commits.pop() === "";
+    if (
+      COUNT_ANSWER.test(counted) &&
+      ended &&
+      commits.length === Number.parseInt(counted, 10) &&
+      commits.every((commit) => FULL_OBJECT_ID.test(commit))
+    ) {
+      return commits;
+    }
+  }
+  throw new SimpleChangesError(
+    `git rev-list ${boundedText(question.join(" "))} twice gave a listing that did not match its own count, so the answer was lost or cut short on its way to this process (seen under heavy load). Refusing to act on a partial answer; retry the command.`,
+    EXIT_CODES.inventory
+  );
+};

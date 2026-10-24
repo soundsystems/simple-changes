@@ -1,20 +1,12 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import {
-  chmodSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync, which } from "bun";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import {
   buildRemoteInventory,
   type RemoteInventoryPages,
 } from "../../../skills/simple-changes/scripts/lib/remote-inventory.ts";
+import { runWithFakeGit } from "./fake-git.ts";
 import {
   createTestRepository,
   git,
@@ -32,7 +24,6 @@ setDefaultTimeout(
 // proof refuses rather than reading the lost answer as "nothing there".
 
 const ENTRY_PATTERN = /^100644:blob:[0-9a-f]{40}$/u;
-const decoder = new TextDecoder();
 let cleanups: (() => void)[] = [];
 
 afterEach(() => {
@@ -56,78 +47,19 @@ const libraryPath = (name: string): string =>
     )
   );
 
-// A Git on PATH that answers truthfully, except that while token files
-// remain, a call whose arguments contain FAKE_GIT_EMPTY_FLAG (one argument,
-// or several in a row) removes one token and exits 0 with no output, and a
-// call whose arguments contain FAKE_GIT_FAIL_FLAG fails with exit 3.
-const fakeGitDirectory = (): string => {
-  const realGit = which("git");
-  if (!realGit) {
-    throw new Error("git is not on PATH");
-  }
-  const bin = mkdtempSync(join(tmpdir(), "simple-changes-fake-git-"));
-  cleanups.push(() => rmSync(bin, { force: true, recursive: true }));
-  writeFileSync(
-    join(bin, "git"),
-    `#!/bin/sh
-real='${realGit}'
-if [ -n "$FAKE_GIT_FAIL_FLAG" ]; then
-  case " $* " in
-    *" $FAKE_GIT_FAIL_FLAG "*)
-      echo "error: simulated failure" >&2
-      exit 3
-      ;;
-  esac
-fi
-if [ -n "$FAKE_GIT_EMPTY_FLAG" ] && [ -d "$FAKE_GIT_EMPTY_TOKENS" ]; then
-  case " $* " in
-    *" $FAKE_GIT_EMPTY_FLAG "*)
-      for token in "$FAKE_GIT_EMPTY_TOKENS"/*; do
-        rm "$token" 2>/dev/null && exit 0
-      done
-      ;;
-  esac
-fi
-exec "$real" "$@"
-`
-  );
-  chmodSync(join(bin, "git"), 0o755);
-  return bin;
-};
-
-// Runs `body` in a child whose Git is the fake one, with `lost` answers to
-// calls naming `flag` lost first, and returns what the child printed.
+// Runs `body` in a child whose Git is a fake on PATH (see fake-git.ts), with
+// `lost` answers to calls naming `flag` lost first (`mode`), and calls
+// naming `failFlag` failing, and returns what the child printed.
 const runInChild = (
   body: string,
   flag: string,
   lost: number,
-  failFlag = ""
-): { remaining: number; reply: unknown } => {
-  const bin = fakeGitDirectory();
-  const tokens = mkdtempSync(join(tmpdir(), "simple-changes-lost-"));
-  cleanups.push(() => rmSync(tokens, { force: true, recursive: true }));
-  for (let index = 0; index < lost; index += 1) {
-    writeFileSync(join(tokens, `token-${index}`), "");
-  }
-  const script = join(bin, "child.ts");
-  writeFileSync(script, body);
-  const result = spawnSync([process.execPath, script], {
-    env: {
-      ...process.env,
-      FAKE_GIT_EMPTY_FLAG: flag,
-      FAKE_GIT_EMPTY_TOKENS: tokens,
-      FAKE_GIT_FAIL_FLAG: failFlag,
-      PATH: `${bin}:${process.env.PATH ?? ""}`,
-    },
-    stderr: "pipe",
-    stdout: "pipe",
-  });
-  const stdout = decoder.decode(result.stdout);
-  if (result.exitCode !== 0) {
-    throw new Error(`child failed: ${decoder.decode(result.stderr)}${stdout}`);
-  }
-  return { remaining: readdirSync(tokens).length, reply: JSON.parse(stdout) };
-};
+  failFlag = "",
+  mode: "empty" | "first-line" = "empty"
+): { remaining: number; reply: unknown } =>
+  runWithFakeGit({ body, failFlag, flag, lost, mode }, (cleanup) =>
+    cleanups.push(cleanup)
+  );
 
 describe("exact-byte target proof with a lost Git answer", () => {
   // The author's tip changes a.txt, and the target holds a different a.txt,
@@ -387,52 +319,70 @@ console.log(JSON.stringify({
   });
 });
 
-describe("the cleanup report with a lost merge base", () => {
-  // side's only commit was cherry-picked onto main after another commit, so
-  // the report proves it finished by patch equivalence, which needs the
-  // merge base.
-  const report = (lost: number) => {
-    const fixture = repository();
-    const { root } = fixture;
-    git(root, ["switch", "--quiet", "-c", "side"]);
-    writeFixture(root, "side.txt", "side\n");
-    git(root, ["add", "side.txt"]);
-    git(root, ["commit", "--quiet", "-m", "Side"]);
-    const side = git(root, ["rev-parse", "HEAD"]);
-    git(root, ["switch", "--quiet", "main"]);
-    writeFixture(root, "main.txt", "main\n");
-    git(root, ["add", "main.txt"]);
-    git(root, ["commit", "--quiet", "-m", "Main"]);
-    git(root, ["cherry-pick", side]);
-    const head = git(root, ["rev-parse", "HEAD"]);
-    const snapshot = remotePages(
-      "2026-10-21T10:00:00.000Z",
-      [
-        { headRevision: head, name: "main", protected: true },
-        { headRevision: side, name: "side", protected: false },
-      ],
-      []
-    );
-    const { receipt } = buildRemoteInventory(snapshot, {
-      opening: buildRemoteInventory(snapshot).receipt,
-      resolveHolds: () => ({ byName: new Map(), byRevision: new Map() }),
-    });
-    return {
-      side,
-      ...runInChild(
-        `import { remoteBranchCleanupReport } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
+// side's only commit was cherry-picked onto main after another commit, so
+// the report proves it finished by patch equivalence, which needs the merge
+// base, the target's and side's commit listings, and each commit's patch ID.
+const patchEquivalentFixture = () => {
+  const fixture = repository();
+  const { root } = fixture;
+  const base = git(root, ["rev-parse", "HEAD"]);
+  git(root, ["switch", "--quiet", "-c", "side"]);
+  writeFixture(root, "side.txt", "side\n");
+  git(root, ["add", "side.txt"]);
+  git(root, ["commit", "--quiet", "-m", "Side"]);
+  const side = git(root, ["rev-parse", "HEAD"]);
+  git(root, ["switch", "--quiet", "main"]);
+  writeFixture(root, "main.txt", "main\n");
+  git(root, ["add", "main.txt"]);
+  git(root, ["commit", "--quiet", "-m", "Main"]);
+  git(root, ["cherry-pick", side]);
+  const head = git(root, ["rev-parse", "HEAD"]);
+  const snapshot = remotePages(
+    "2026-10-21T10:00:00.000Z",
+    [
+      { headRevision: head, name: "main", protected: true },
+      { headRevision: side, name: "side", protected: false },
+    ],
+    []
+  );
+  const { receipt } = buildRemoteInventory(snapshot, {
+    opening: buildRemoteInventory(snapshot).receipt,
+    resolveHolds: () => ({ byName: new Map(), byRevision: new Map() }),
+  });
+  return { base, head, receipt, root, side };
+};
+
+// The report for `fixture` in a child whose Git loses `lost` answers to
+// calls naming `flag`.
+const reportInChild = (
+  fixture: ReturnType<typeof patchEquivalentFixture>,
+  flag: string,
+  lost: number,
+  mode: "empty" | "first-line" = "empty"
+) =>
+  runInChild(
+    `import { remoteBranchCleanupReport } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
 const result = remoteBranchCleanupReport({
   claims: [],
-  inventory: ${inventoryFor(root)},
+  inventory: ${inventoryFor(fixture.root)},
   openTargets: [],
-  receipt: ${JSON.stringify(receipt)},
+  receipt: ${JSON.stringify(fixture.receipt)},
 });
 console.log(JSON.stringify({ errors: result.errors, pending: result.pending }));
 `,
-        // Only the merge-base question, not the ancestry check before it.
-        `merge-base ${side}^{commit}`,
-        lost
-      ),
+    flag,
+    lost,
+    "",
+    mode
+  );
+
+describe("the cleanup report with a lost merge base", () => {
+  const report = (lost: number) => {
+    const fixture = patchEquivalentFixture();
+    return {
+      side: fixture.side,
+      // Only the merge-base question, not the ancestry check before it.
+      ...reportInChild(fixture, `merge-base ${fixture.side}^{commit}`, lost),
     };
   };
 
@@ -467,6 +417,142 @@ console.log(JSON.stringify({ errors: result.errors, pending: result.pending }));
       `side at ${side}: Git could not find a merge base`
     );
     expect(errors.join(" ")).toContain("retry the command");
+  });
+});
+
+describe("the cleanup report with a target listing lost or cut short", () => {
+  // The target range lists main's own commit first, then the cherry-pick,
+  // so a listing cut to its first line leaves side's commit unmatched.
+  const expectPatchEquivalent = (
+    lost: number,
+    mode: "empty" | "first-line"
+  ): void => {
+    const fixture = patchEquivalentFixture();
+    const { remaining, reply } = reportInChild(
+      fixture,
+      `rev-list --reverse ${fixture.base}..${fixture.head}`,
+      lost,
+      mode
+    );
+    expect(remaining).toBe(0);
+    expect(reply).toEqual({
+      errors: [],
+      pending: [
+        { headRevision: fixture.side, name: "side", proof: "patch-equivalent" },
+      ],
+    });
+  };
+
+  test("with every answer kept, the branch is pending as patch-equivalent (control)", () => {
+    expectPatchEquivalent(0, "empty");
+  });
+
+  test("a target listing cut short is asked again, so the branch is still pending", () => {
+    expectPatchEquivalent(1, "first-line");
+  });
+
+  test("a lost target listing is asked again, so the branch is still pending", () => {
+    expectPatchEquivalent(1, "empty");
+  });
+
+  test("a target listing cut short twice is an error that keeps cleanup pending, never settled", () => {
+    const fixture = patchEquivalentFixture();
+    const { remaining, reply } = reportInChild(
+      fixture,
+      `rev-list --reverse ${fixture.base}..${fixture.head}`,
+      2,
+      "first-line"
+    );
+    expect(remaining).toBe(0);
+    const { errors, pending } = reply as {
+      errors: string[];
+      pending: unknown[];
+    };
+    expect(pending).toEqual([]);
+    expect(errors.join(" ")).toContain(
+      `side at ${fixture.side}: its containment could not be checked`
+    );
+    expect(errors.join(" ")).toContain("retry the command");
+  });
+});
+
+describe("the cleanup report with a lost diff", () => {
+  // Git may rightly give a commit no patch ID, so a miss is audited once
+  // more before it settles, and a lost diff of side's commit is then read
+  // whole.
+  test("with every answer kept, the branch is pending as patch-equivalent (control)", () => {
+    const fixture = patchEquivalentFixture();
+    expect(
+      reportInChild(fixture, `--full-index ${fixture.side}`, 0).reply
+    ).toEqual({
+      errors: [],
+      pending: [
+        { headRevision: fixture.side, name: "side", proof: "patch-equivalent" },
+      ],
+    });
+  });
+
+  test("a lost diff hides the match only until the miss is audited again", () => {
+    const fixture = patchEquivalentFixture();
+    const { remaining, reply } = reportInChild(
+      fixture,
+      `--full-index ${fixture.side}`,
+      1
+    );
+    expect(remaining).toBe(0);
+    expect(reply).toEqual({
+      errors: [],
+      pending: [
+        { headRevision: fixture.side, name: "side", proof: "patch-equivalent" },
+      ],
+    });
+  });
+});
+
+describe("a rev-list listing checked whole against its count", () => {
+  const listing = (lost: number, mode: "empty" | "first-line") => {
+    const fixture = repository();
+    for (const name of ["one", "two", "three"]) {
+      writeFixture(fixture.root, `${name}.txt`, `${name}\n`);
+      git(fixture.root, ["add", `${name}.txt`]);
+      git(fixture.root, ["commit", "--quiet", "-m", name]);
+    }
+    return runInChild(
+      `import { countedRevisionList } from ${JSON.stringify(libraryPath("process.ts"))};
+try {
+  console.log(JSON.stringify({ commits: countedRevisionList(${JSON.stringify(fixture.root)}, ["--reverse", "HEAD~3..HEAD"]).length }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message, exitCode: error.exitCode }));
+}
+`,
+      "rev-list --reverse",
+      lost,
+      "",
+      mode
+    );
+  };
+
+  test("a whole listing is returned (control)", () => {
+    expect(listing(0, "empty").reply).toEqual({ commits: 3 });
+  });
+
+  test("a listing lost or cut short once is asked again", () => {
+    for (const mode of ["empty", "first-line"] as const) {
+      const { remaining, reply } = listing(1, mode);
+      expect(remaining).toBe(0);
+      expect(reply).toEqual({ commits: 3 });
+    }
+  });
+
+  test("a listing lost or cut short twice refuses with a retryable error", () => {
+    for (const mode of ["empty", "first-line"] as const) {
+      const { remaining, reply } = listing(2, mode);
+      expect(remaining).toBe(0);
+      expect(reply).toMatchObject({ exitCode: 4 });
+      expect((reply as { error: string }).error).toContain(
+        "did not match its own count"
+      );
+    }
   });
 });
 
@@ -515,7 +601,7 @@ const result = remoteBranchCleanupReport({
 console.log(JSON.stringify({ errors: result.errors, pending: result.pending }));
 `,
         // Only the listing of side's own commits, not the target's.
-        `--reverse ${base}..${side}`,
+        `rev-list --reverse ${base}..${side}`,
         lost
       ),
     };

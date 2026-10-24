@@ -61,6 +61,7 @@ import {
   restoreArchivedWorktree,
   standaloneWorktreeCleanup,
 } from "../../../skills/simple-changes/scripts/lib/worktree-maintenance.ts";
+import { runWithFakeGit } from "./fake-git.ts";
 import {
   createTestRepository,
   git,
@@ -2614,5 +2615,122 @@ describe("commits only the checkout's reflogs keep", () => {
       report.reviewedReplacement?.pinRefs.length ?? 0
     );
     expect(pinRefs(root)).toBe("");
+  });
+});
+
+describe("commits only the checkout's reflogs keep, with an answer cut short", () => {
+  const cleanups: (() => void)[] = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      cleanup();
+    }
+  });
+  const worktreeMaintenancePath = fileURLToPath(
+    new URL(
+      "../../../skills/simple-changes/scripts/lib/worktree-maintenance.ts",
+      import.meta.url
+    )
+  );
+
+  // Two dropped drafts that only the reflogs name, then the reviewed
+  // removal in a child whose Git cuts `flag`'s answer to its first line for
+  // the first `lost` calls.
+  const removeWithShortAnswers = (flag: string, lost: number) => {
+    const lineage = lineageFixture(false);
+    const drafts = ["draft-one", "draft-two"].map((name) => {
+      writeFixture(lineage.path, `${name}.ts`, `export const d = "${name}";\n`);
+      git(lineage.path, ["add", `${name}.ts`]);
+      git(lineage.path, ["commit", "-m", `Unpushed ${name}`]);
+      const draft = git(lineage.path, ["rev-parse", "HEAD"]);
+      git(lineage.path, [
+        "checkout",
+        "-q",
+        "-B",
+        "source-unit",
+        lineage.headSha,
+      ]);
+      return draft;
+    });
+    rmSync(
+      join(git(lineage.path, ["rev-parse", "--absolute-git-dir"]), "ORIG_HEAD"),
+      { force: true }
+    );
+    const result = runWithFakeGit(
+      {
+        body: `import { pruneRepository } from ${JSON.stringify(worktreeMaintenancePath)};
+try {
+  const report = pruneRepository({
+    agentId: ${JSON.stringify(CONTROLLER)},
+    approvedBy: ${JSON.stringify(APPROVER)},
+    dryRun: false,
+    lineageReceipt: ${JSON.stringify(receiptFor(lineage))},
+    reason: "Remove the reviewed obsolete source.",
+    repositoryPath: ${JSON.stringify(lineage.fixture.root)},
+  });
+  console.log(JSON.stringify({
+    pinRefs: report.reviewedReplacement?.pinRefs ?? [],
+    removed: report.reviewedReplacement?.worktreeRemoved ?? false,
+  }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+        flag,
+        lost,
+        mode: "first-line",
+      },
+      (cleanup) => cleanups.push(cleanup)
+    );
+    return { drafts, lineage, ...result };
+  };
+
+  const expectBothPinned = (flag: string, lost: number): void => {
+    const { drafts, remaining, reply } = removeWithShortAnswers(flag, lost);
+    expect(remaining).toBe(0);
+    const { pinRefs: pinned, removed } = reply as {
+      pinRefs: string[];
+      removed: boolean;
+    };
+    expect(removed).toBe(true);
+    for (const draft of drafts) {
+      expect(pinned.some((ref) => ref.endsWith(`/objects/${draft}`))).toBe(
+        true
+      );
+    }
+  };
+
+  const expectRefusedAndKept = (flag: string, text: string): void => {
+    const { lineage, remaining, reply } = removeWithShortAnswers(flag, 2);
+    expect(remaining).toBe(0);
+    const { error } = reply as { error: string };
+    expect(error).toContain(text);
+    expect(error).toContain("retry the command");
+    expectNothingWritten(lineage);
+  };
+
+  const WALK = "rev-list --walk-reflogs";
+  const REACH = "rev-list --ignore-missing";
+
+  test("with every answer whole, both drafts are pinned (control)", () => {
+    expectBothPinned(WALK, 0);
+  });
+
+  test("a reflog listing cut short is asked again, so both drafts are pinned", () => {
+    expectBothPinned(WALK, 1);
+  });
+
+  test("a reflog listing cut short twice refuses and keeps the checkout", () => {
+    expectRefusedAndKept(WALK, "Git could not read the checkout's reflogs");
+  });
+
+  test("a reachability listing cut short is asked again, so both drafts are pinned", () => {
+    expectBothPinned(REACH, 1);
+  });
+
+  test("a reachability listing cut short twice refuses and keeps the checkout", () => {
+    expectRefusedAndKept(
+      REACH,
+      "Git could not tell which commits in the checkout's reflogs other refs keep"
+    );
   });
 });

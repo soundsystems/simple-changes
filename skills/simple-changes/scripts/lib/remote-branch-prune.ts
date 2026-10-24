@@ -584,6 +584,71 @@ const externallyDeletedItems = (
     ];
   });
 
+// The merge base the report hands the patch audit: a commit, null when the
+// head and the target share no history, or why Git could not settle it. The
+// runner asks a lost (empty) answer once more and refuses a second.
+const reportMergeBase = (
+  repositoryPath: string,
+  commit: string,
+  target: string
+): { mergeBase: string | null } | { failure: string } => {
+  let base: { exitCode: number; stderr: string; stdout: string };
+  try {
+    base = runGit(repositoryPath, ["merge-base", commit, target], true);
+  } catch (error) {
+    return {
+      failure: `Git could not find a merge base (${error instanceof Error ? error.message : String(error)}).`,
+    };
+  }
+  if (
+    base.exitCode === 1 &&
+    base.stdout.trim() === "" &&
+    base.stderr.trim() === ""
+  ) {
+    return { mergeBase: null };
+  }
+  if (base.exitCode !== 0) {
+    return {
+      failure: `Git could not find a merge base (${base.stderr.trim() || `exit ${base.exitCode}`}).`,
+    };
+  }
+  const mergeBase = base.stdout.trim();
+  return HEAD_PATTERN.test(mergeBase)
+    ? { mergeBase }
+    : {
+        failure: `Git's merge base answer ${JSON.stringify(mergeBase.slice(0, 80))} is not a commit.`,
+      };
+};
+
+// Whether every commit of the head outside the target has a patch-id match
+// in it, from the settled merge base; every Git call on this path throws on
+// failure instead of reading as "not contained", and every listing is
+// checked whole against Git's count. A lost diff or patch ID can hide a
+// match but never make one, and Git may rightly give some commits no patch
+// ID, so a miss is confirmed by a second audit, read afresh with no cache,
+// before it settles.
+const patchEquivalence = (
+  repositoryPath: string,
+  head: string,
+  targetRevision: string,
+  mergeBase: string,
+  patchIdCache: Map<string, Map<string, string>>
+): boolean | "too-many" => {
+  const audit = (cache: Map<string, Map<string, string>> | undefined) =>
+    commitEquivalenceAgainstTarget(repositoryPath, head, targetRevision, {
+      maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS,
+      mergeBase,
+      targetPatchIdCache: cache,
+    });
+  const first = audit(patchIdCache);
+  if (first.exceededMaxCommits) {
+    return "too-many";
+  }
+  const settled =
+    first.commitCount > 0 && !first.fullyMatched ? audit(undefined) : first;
+  return settled.commitCount > 0 && settled.fullyMatched;
+};
+
 /**
  * The finished-branch proof for one reportable entry, or null when Git proves
  * the target does not contain it. Reporting judges the final head alone, so a
@@ -652,53 +717,28 @@ const cleanupItem = (
       `Git could not check ancestry (${ancestry.stderr.trim() || `exit ${ancestry.exitCode}`}).`
     );
   }
-  let base: { exitCode: number; stderr: string; stdout: string };
-  try {
-    // The runner asks a lost (empty) answer once more and refuses a second.
-    base = runGit(repositoryPath, ["merge-base", commit, target], true);
-  } catch (error) {
-    return unsettled(
-      `Git could not find a merge base (${error instanceof Error ? error.message : String(error)}).`
-    );
+  const base = reportMergeBase(repositoryPath, commit, target);
+  if ("failure" in base) {
+    return unsettled(base.failure);
   }
-  if (
-    base.exitCode === 1 &&
-    base.stdout.trim() === "" &&
-    base.stderr.trim() === ""
-  ) {
+  if (base.mergeBase === null) {
     // No shared history: definitively not contained, given full history.
     return notContained();
   }
-  if (base.exitCode !== 0) {
-    return unsettled(
-      `Git could not find a merge base (${base.stderr.trim() || `exit ${base.exitCode}`}).`
-    );
-  }
-  const mergeBase = base.stdout.trim();
-  if (!HEAD_PATTERN.test(mergeBase)) {
-    return unsettled(
-      `Git's merge base answer ${JSON.stringify(mergeBase.slice(0, 80))} is not a commit.`
-    );
-  }
   try {
-    // Consume the settled merge base: every Git call left on this path
-    // throws on failure instead of reading as "not contained".
-    const equivalence = commitEquivalenceAgainstTarget(
+    const proof = patchEquivalence(
       repositoryPath,
       head,
       receipt.targetRevision,
-      {
-        maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS,
-        mergeBase,
-        targetPatchIdCache: patchIdCache,
-      }
+      base.mergeBase,
+      patchIdCache
     );
-    if (equivalence.exceededMaxCommits) {
+    if (proof === "too-many") {
       return unsettled(
         `more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits lie outside the target, too many to prove by patch equivalence; classify it yourself.`
       );
     }
-    return equivalence.commitCount > 0 && equivalence.fullyMatched
+    return proof
       ? {
           headRevision: head,
           ...moved,

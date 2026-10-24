@@ -13,7 +13,7 @@ import {
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { captureInventory } from "./inventory.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
-import { gitExecutable, runGit } from "./process.ts";
+import { countedRevisionList, gitExecutable, runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 import { validateSchema } from "./schema.ts";
 
@@ -102,49 +102,30 @@ const rawGit = (
   return { exitCode: result.exitCode, stdout: new Uint8Array(result.stdout) };
 };
 
-const revisionList = (cwd: string, range: string): string[] =>
-  runGit(cwd, ["rev-list", "--reverse", range])
-    .stdout.split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+const COUNT_ANSWER = /^[0-9]+\n$/u;
+const PATCH_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 
-const COUNT_PATTERN = /^[0-9]+$/u;
-
-const lostCount = (range: string, what: string): SimpleChangesError =>
-  new SimpleChangesError(
-    `git rev-list ${what} for ${range} twice, so its answer was lost on its way to this process (seen under heavy load). Refusing to act on a partial answer; retry the command.`,
-    EXIT_CODES.inventory
-  );
-
-// How many commits `range` holds. Git always prints a number for this, so
-// a missing or partial one is asked once more, then refused.
+// How many commits `range` holds. Git always prints digits and a line
+// break for this, so an answer lost or cut short on its way here (seen
+// under heavy load) is asked once more, then refused.
 const revisionCount = (cwd: string, range: string): number => {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const counted = runGit(cwd, ["rev-list", "--count", range]).stdout.trim();
-    if (COUNT_PATTERN.test(counted)) {
+    const counted = runGit(cwd, ["rev-list", "--count", range]).stdout;
+    if (COUNT_ANSWER.test(counted)) {
       return Number.parseInt(counted, 10);
     }
   }
-  throw lostCount(range, "printed no count");
+  throw new SimpleChangesError(
+    `git rev-list --count ${range} twice printed no whole count, so its answer was lost on its way to this process (seen under heavy load). Refusing to act on a partial answer; retry the command.`,
+    EXIT_CODES.inventory
+  );
 };
 
-// The commits in `range`, which Git counted as `count`. A listing that
-// disagrees with the count lost its answer, or part of it, on the way here:
-// it is asked once more, then refused, so a lost listing never reads as
-// "every commit has a match".
-const countedRevisionList = (
-  cwd: string,
-  range: string,
-  count: number
-): string[] => {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const listed = revisionList(cwd, range);
-    if (listed.length === count) {
-      return listed;
-    }
-  }
-  throw lostCount(range, `listed other than the ${count} commits it counted`);
-};
+// Every listing the audit reads is checked whole against Git's own count,
+// so a lost or partial listing never reads as "every commit has a match" or
+// as a target that lacks one.
+const revisionList = (cwd: string, range: string): string[] =>
+  countedRevisionList(cwd, ["--reverse", range]);
 
 const patchIdFor = (cwd: string, sha: string): string | null => {
   const diff = rawGit(cwd, [
@@ -161,7 +142,8 @@ const patchIdFor = (cwd: string, sha: string): string | null => {
     .decode(rawGit(cwd, ["patch-id", "--stable"], diff).stdout)
     .trim();
   const [patchId] = output.split(WHITESPACE_PATTERN);
-  return patchId || null;
+  // Only a whole patch ID can match, so a cut-short answer never does.
+  return patchId && PATCH_ID_PATTERN.test(patchId) ? patchId : null;
 };
 
 export interface CommitEquivalenceOptions {
@@ -228,10 +210,9 @@ export const commitEquivalenceAgainstTarget = (
     }
     options.targetPatchIdCache?.set(targetRange, targetPatchIds);
   }
-  const commits: WorktreeEquivalenceCommit[] = countedRevisionList(
+  const commits: WorktreeEquivalenceCommit[] = revisionList(
     repositoryPath,
-    `${mergeBase}..${headSha}`,
-    commitCount
+    `${mergeBase}..${headSha}`
   ).map((sha) => {
     const patchId = patchIdFor(repositoryPath, sha);
     const matchedTargetSha = patchId

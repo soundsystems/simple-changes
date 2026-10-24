@@ -526,7 +526,9 @@ cannot be held and is reported as pending. A check that fails is listed in
 finalize again), a head with more than 200 commits outside the target (too
 many to prove by patch equivalence, so classify it yourself), any other Git
 failure while settling containment (such as a missing ancestor object, or a
-merge base or commit listing Git returned empty twice under load), any
+merge base or commit listing Git lost or cut short twice under load; a
+listing must match Git's own count, and a branch that seems unmatched is
+audited once more before it is settled as not contained), any
 answer short of a positive proof in a shallow clone, or holds that cannot be
 read (a shallow clone always loses its fork-point holds). Holds apply first,
 so a held branch's unsettled audit is neither pending nor an error. Unknown

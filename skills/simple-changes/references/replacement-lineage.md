@@ -134,7 +134,8 @@ pins the head and every object the checkout named under
 so an autostash, a rebase's original head or a per-worktree ref stays
 reachable; pins the same way every commit that its HEAD's reflog, its
 branch's reflog or its own refs' reflogs name and that no ref reaches
-(Simple Changes' own expiring pins do not count), because the removal
+(Simple Changes' own expiring pins do not count; each listing must match
+Git's own count of it, or the removal refuses), because the removal
 deletes those reflogs and an amended-away or reset-away commit would
 otherwise be left to `git gc`; writes an intent record; compares the live
 files with the manifest once more, with no Git command in the checkout in

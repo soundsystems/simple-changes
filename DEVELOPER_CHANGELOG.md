@@ -478,9 +478,11 @@
   commits only the source's HEAD, branch, and own-ref reflogs keep (named
   with `rev-list --walk-reflogs`, refused above `REFLOG_PIN_LIMIT`, 2000);
   pruning deletes an archive's pins in one `update-ref --stdin`
-  transaction (`applyRefTransaction`), all or none; and `merge-base`
-  without `--is-ancestor` is now a required answer, so a lost fork point
-  withholds deletion proposals.
+  transaction (`applyRefTransaction`), all or none; `merge-base` without
+  `--is-ancestor` is now a required answer, so a lost fork point withholds
+  deletion proposals; and those reflog reads and the patch audit's
+  listings go through the new `countedRevisionList`, checked whole against
+  Git's own count.
 - Lineage wiring: `policy.ts` adds `DEFAULT_ARCHIVE_RETENTION_DAYS` (14),
   `DEFAULT_ARCHIVE_TOTAL_BYTES` (2147483648), and
   `archiveRetentionPolicy(policy)` (`days` 1 to 3650, `maxTotalBytes` 1

@@ -39,6 +39,7 @@ export const SCHEMA_NAMES = [
   "remote-branch-open-targets",
   "replacement-lineage-receipt",
   "replacement-lineage-removal",
+  "remote-branch-external-deletions",
   "remote-inventory-pages",
   "remote-inventory-decisions",
   "release-consistency",

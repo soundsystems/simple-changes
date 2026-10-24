@@ -1,6 +1,8 @@
 import { PATCH_EQUIVALENCE_MAX_COMMITS } from "./cleanup-core.ts";
 import { runGit } from "./process.ts";
+import { isExternalDeletionShape } from "./remote-branch-reconciliation.ts";
 import type {
+  RemoteBranchExternalDeletionPin,
   RemoteBranchOpenProposalTarget,
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
@@ -325,6 +327,55 @@ export const holdReasons = (
     .map((target) => `target of open proposal ${target.objectId}`),
 ];
 
+/** Where a run pins the last head of a branch deleted outside it. */
+export const EXTERNAL_DELETION_REF_PREFIX = "refs/simple-changes/external/";
+
+/**
+ * How long a pin keeps a branch deleted outside a run recoverable. A later
+ * completed finalization removes it once this has passed.
+ */
+export const EXTERNAL_DELETION_PIN_RETENTION_DAYS = 14;
+
+export const EXTERNAL_DELETION_PIN_RETENTION_MS =
+  EXTERNAL_DELETION_PIN_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+export const externalDeletionPinRef = (runId: string, head: string): string =>
+  `${EXTERNAL_DELETION_REF_PREFIX}${runId}/${head}`;
+
+/** Whether the pin ref exists now and names exactly that head. */
+export const externalDeletionPinIsLive = (
+  repositoryPath: string,
+  runId: string,
+  head: string
+): boolean => {
+  const resolved = runGit(
+    repositoryPath,
+    [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `${externalDeletionPinRef(runId, head)}^{commit}`,
+    ],
+    true
+  );
+  return resolved.exitCode === 0 && resolved.stdout.trim() === head;
+};
+
+/**
+ * A branch deleted outside the run. It is never delivered or obsolete: it
+ * always keeps cleanup pending so the user sees it, and it never blocks the
+ * run from closing.
+ */
+export interface RemoteBranchExternallyDeletedItem {
+  lastHeadRevision: string;
+  name: string;
+  note: string;
+  /** When a later finalization removes the pin, when it is known. */
+  pinExpiresAt?: string;
+  /** The ref that keeps the last head, or null when nothing pins it. */
+  pinRef: string | null;
+}
+
 export type RemoteBranchCleanupProof =
   | "merged-proposal-head"
   | "target-contained"
@@ -345,6 +396,8 @@ export interface RemoteBranchCleanupItem {
  * is still in use, so it is reported and never counted.
  */
 export interface RemoteBranchCleanupReport {
+  /** Present only when the receipt records a branch deleted outside the run. */
+  deletedExternally?: RemoteBranchExternallyDeletedItem[];
   errors: string[];
   held: Array<RemoteBranchCleanupItem & { reasons: string[] }>;
   openProposalTargets: "recorded" | "unknown";
@@ -353,14 +406,97 @@ export interface RemoteBranchCleanupReport {
 
 export interface RemoteBranchCleanupInput {
   claims: readonly WorktreeClaim[];
+  /** Pins the run recorded for branches deleted outside it. */
+  externalDeletionPins?: readonly RemoteBranchExternalDeletionPin[];
   inventory: Pick<RepositoryInventory, "branches" | "repository" | "worktrees">;
   openTargets: RemoteBranchOpenProposalTarget[] | null;
   receipt: RemoteBranchReconciliationReceipt;
+  /** The run whose pins to check; without it no pin is claimed. */
+  runId?: string;
 }
 
 const headIsLocal = (repositoryPath: string, head: string): boolean =>
   runGit(repositoryPath, ["cat-file", "-e", `${head}^{commit}`], true)
     .exitCode === 0;
+
+/**
+ * The latest time a run recorded pinning this head, optionally for one branch
+ * only, or undefined when it recorded none.
+ */
+export const latestPinTime = (
+  pins: readonly RemoteBranchExternalDeletionPin[],
+  head: string,
+  branch?: string
+): number | undefined => {
+  const times = pins
+    .filter(
+      (pin) =>
+        pin.headRevision === head &&
+        (branch === undefined || pin.branch === branch)
+    )
+    .map((pin) => Date.parse(pin.pinnedAt))
+    .filter((time) => Number.isFinite(time));
+  return times.length === 0 ? undefined : Math.max(...times);
+};
+
+const keepNote = (
+  repositoryPath: string,
+  head: string,
+  pinRef: string | null,
+  pinExpiresAt: string | undefined
+): string => {
+  if (pinRef) {
+    return `Its last head is pinned at ${pinRef}${pinExpiresAt ? ` until ${pinExpiresAt}` : ""}, so the work stays recoverable; restore the branch from that ref if it is still needed.`;
+  }
+  if (headIsLocal(repositoryPath, head)) {
+    return `Nothing pins its last head, so Git may remove it; create a branch or tag at ${head} if the work is still needed.`;
+  }
+  return "Its last head is not present locally, so nothing pins it; fetch it (GitLab keeps a merge request's head at refs/merge-requests/<iid>/head) if the work is still needed.";
+};
+
+/**
+ * Branches the receipt records as deleted outside the run, with whether a pin
+ * keeps each last head right now. The pin is checked live, so a pin that was
+ * never made, failed, or was removed is never claimed.
+ */
+const externallyDeletedItems = (
+  input: RemoteBranchCleanupInput,
+  repositoryPath: string
+): RemoteBranchExternallyDeletedItem[] =>
+  input.receipt.branches.flatMap((entry) => {
+    const head = entry.initialHeadRevision;
+    if (
+      !(
+        head &&
+        entry.finalHeadRevision === null &&
+        isExternalDeletionShape(entry)
+      )
+    ) {
+      return [];
+    }
+    const { runId } = input;
+    const pinRef =
+      runId !== undefined &&
+      externalDeletionPinIsLive(repositoryPath, runId, head)
+        ? externalDeletionPinRef(runId, head)
+        : null;
+    const pinnedAt = pinRef
+      ? latestPinTime(input.externalDeletionPins ?? [], head, entry.name)
+      : undefined;
+    const pinExpiresAt =
+      pinnedAt === undefined
+        ? undefined
+        : new Date(pinnedAt + EXTERNAL_DELETION_PIN_RETENTION_MS).toISOString();
+    return [
+      {
+        lastHeadRevision: head,
+        name: entry.name,
+        note: `This branch was deleted outside this run; its last head was ${head}. It is not counted as delivered or obsolete. ${keepNote(repositoryPath, head, pinRef, pinExpiresAt)}`,
+        pinRef,
+        ...(pinExpiresAt ? { pinExpiresAt } : {}),
+      },
+    ];
+  });
 
 /**
  * The finished-branch proof for one reportable entry, or null when Git proves
@@ -519,7 +655,9 @@ export const remoteBranchCleanupReport = (
     );
   }
   const shallow = mayBeShallow(repositoryPath);
+  const deletedExternally = externallyDeletedItems(input, repositoryPath);
   const report: RemoteBranchCleanupReport = {
+    ...(deletedExternally.length > 0 ? { deletedExternally } : {}),
     errors,
     held: [],
     openProposalTargets: openTargets === null ? "unknown" : "recorded",

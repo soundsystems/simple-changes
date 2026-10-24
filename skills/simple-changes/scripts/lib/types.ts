@@ -1378,6 +1378,36 @@ export interface RemoteBranchOpenTargetsRecord {
   schemaVersion: 1;
 }
 
+/**
+ * An opening branch absent from the final inventory with no merged proposal
+ * or decision that proves it obsolete: this run never proposed or approved
+ * deleting it. The receipt records it as deleted with classification
+ * `ambiguous` and a null `obsoleteProof`, and this record, in a sidecar beside
+ * the lease, is what makes that entry valid. It never counts as delivered or
+ * obsolete.
+ */
+export interface RemoteBranchExternalDeletion {
+  branch: string;
+  /** The branch head the opening inventory observed, its last known head. */
+  lastHeadRevision: string;
+}
+
+/** A last head this run pinned under `refs/simple-changes/external/`. */
+export interface RemoteBranchExternalDeletionPin {
+  branch: string;
+  headRevision: string;
+  pinnedAt: string;
+}
+
+export interface RemoteBranchExternalDeletionRecord {
+  deletions: RemoteBranchExternalDeletion[];
+  /** Every pin this run made, across all of its recorded receipts. */
+  pins: RemoteBranchExternalDeletionPin[];
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
+}
+
 export interface RemoteBranchReconciliationEntry {
   classification:
     | "canonical-target"

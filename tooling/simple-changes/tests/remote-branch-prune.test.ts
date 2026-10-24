@@ -10,6 +10,7 @@ import {
   recordShipmentOutcome,
   startLoop,
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { pruneExpiredExternalDeletionPins } from "../../../skills/simple-changes/scripts/lib/loop-lease-remote.ts";
 import {
   type RemoteBranchHolds,
   remoteBranchCleanupReport,
@@ -537,8 +538,16 @@ const localHolds =
  * `deleteSource` the provider deleted the source branch; otherwise it
  * survives. `docs/old` is an old branch with no MR whose head main contains.
  */
+/** An extra provider branch: its opening head, and its final head or null. */
+interface ExtraBranch {
+  finalHead: string | null;
+  name: string;
+  openingHead: string;
+}
+
 const shipMergedProposal = async (options: {
   deleteSource: boolean;
+  extraBranches?: (root: string) => ExtraBranch[];
   withContainedBranch: boolean;
 }) => {
   const fixture = repository();
@@ -557,6 +566,7 @@ const shipMergedProposal = async (options: {
   if (options.withContainedBranch) {
     git(root, ["branch", "docs/old", opening]);
   }
+  const extras = options.extraBranches?.(root) ?? [];
   const openingReceipt = buildRemoteInventory(
     pages(
       new Date().toISOString(),
@@ -564,6 +574,11 @@ const shipMergedProposal = async (options: {
         main(opening),
         { headRevision: releaseHead, name: "release/1", protected: false },
         ...docs,
+        ...extras.map((extra) => ({
+          headRevision: extra.openingHead,
+          name: extra.name,
+          protected: false,
+        })),
       ],
       [mr("96", "release/1", "open", releaseHead)],
       [{ objectId: "96", targetBranch: "main" }]
@@ -610,6 +625,17 @@ const shipMergedProposal = async (options: {
               },
             ]),
         ...docs,
+        ...extras.flatMap((extra) =>
+          extra.finalHead
+            ? [
+                {
+                  headRevision: extra.finalHead,
+                  name: extra.name,
+                  protected: false,
+                },
+              ]
+            : []
+        ),
       ],
       [mr("96", "release/1", "merged", releaseHead)],
       []
@@ -628,8 +654,192 @@ const shipMergedProposal = async (options: {
     "controller",
     "Shipped release/1 through MR !96."
   );
-  return { built, finalized, opening, releaseHead };
+  return { built, finalized, opening, releaseHead, root, runId: lease.runId };
 };
+
+/** A commit outside the target, reachable from no branch afterward. */
+const danglingCommit = (root: string, name: string): string => {
+  git(root, ["switch", "-c", name]);
+  writeFixture(root, `${name.replaceAll("/", "-")}.txt`, `${name}\n`);
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", `Work on ${name}`]);
+  const head = git(root, ["rev-parse", "HEAD"]);
+  git(root, ["switch", "main"]);
+  git(root, ["branch", "-D", name]);
+  return head;
+};
+
+const pinRefs = (root: string): string[] =>
+  git(root, [
+    "for-each-ref",
+    "--format=%(refname) %(objectname)",
+    "refs/simple-changes/external/",
+  ])
+    .split("\n")
+    .filter(Boolean);
+
+describe("branches deleted outside the run", () => {
+  test("an opening branch deleted externally lets the build and reconciliation complete, and finalize reports it pending and pinned", async () => {
+    let goneHead = "";
+    const { built, finalized, releaseHead, root, runId } =
+      await shipMergedProposal({
+        deleteSource: true,
+        extraBranches: (repo) => {
+          goneHead = danglingCommit(repo, "feature/gone");
+          return [
+            { finalHead: null, name: "feature/gone", openingHead: goneHead },
+          ];
+        },
+        withContainedBranch: false,
+      });
+    expect(built.summary.externallyDeletedBranches).toEqual([
+      { lastHeadRevision: goneHead, name: "feature/gone" },
+    ]);
+    // Control: the branch this run deleted after its merge is still proven.
+    expect(
+      built.receipt.branches.find((branch) => branch.name === "release/1")
+    ).toMatchObject({
+      disposition: "deleted-merged",
+      initialHeadRevision: releaseHead,
+      obsoleteProof: "merged-proposal-head",
+    });
+    const pinRef = `refs/simple-changes/external/${runId}/${goneHead}`;
+    expect(pinRefs(root)).toEqual([`${pinRef} ${goneHead}`]);
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.blockers).toEqual([]);
+    expect(finalized.receipt.cleanupStatus).toBe("pending");
+    expect(finalized.receipt.deliveryStatus).toBe("verified");
+    const [item, ...others] =
+      finalized.receipt.remoteBranches?.deletedExternally ?? [];
+    expect(others).toEqual([]);
+    expect(item).toMatchObject({
+      lastHeadRevision: goneHead,
+      name: "feature/gone",
+      pinRef,
+    });
+    expect(item?.note).toContain(
+      `This branch was deleted outside this run; its last head was ${goneHead}.`
+    );
+    expect(item?.note).toContain("not counted as delivered or obsolete");
+    const expires = Date.parse(item?.pinExpiresAt ?? "");
+    expect(expires - Date.now()).toBeGreaterThan(13 * 24 * 60 * 60 * 1000);
+    expect(expires - Date.now()).toBeLessThanOrEqual(14 * 24 * 60 * 60 * 1000);
+    expect(finalized.receipt.remoteBranches?.pending).toEqual([]);
+    // Its own fresh pin is not pruned when the run closes.
+    expect(finalized.expiredExternalDeletionPins).toBeUndefined();
+
+    // A later run's pruning keeps the pin within its retention and removes
+    // it once the retention has passed.
+    const common = captureInventory(root).repository.commonGitDirectory;
+    const day = 24 * 60 * 60 * 1000;
+    expect(
+      pruneExpiredExternalDeletionPins(
+        root,
+        common,
+        "run-later-00000000",
+        Date.now() + 13 * day
+      )
+    ).toEqual({ errors: [], removed: [] });
+    expect(pinRefs(root)).toHaveLength(1);
+    expect(
+      pruneExpiredExternalDeletionPins(
+        root,
+        common,
+        "run-later-00000000",
+        Date.now() + 15 * day
+      )
+    ).toEqual({ errors: [], removed: [pinRef] });
+    expect(pinRefs(root)).toEqual([]);
+  }, 180_000);
+
+  test("a branch deleted externally whose head is not local is reported, with no pin claimed", async () => {
+    const missing = "9".repeat(40);
+    const { built, finalized, root } = await shipMergedProposal({
+      deleteSource: true,
+      extraBranches: () => [
+        { finalHead: null, name: "feature/remote-only", openingHead: missing },
+      ],
+      withContainedBranch: false,
+    });
+    expect(built.summary.externallyDeletedBranches).toEqual([
+      { lastHeadRevision: missing, name: "feature/remote-only" },
+    ]);
+    expect(pinRefs(root)).toEqual([]);
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.receipt.cleanupStatus).toBe("pending");
+    const items = finalized.receipt.remoteBranches?.deletedExternally ?? [];
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      lastHeadRevision: missing,
+      name: "feature/remote-only",
+      pinRef: null,
+    });
+    expect(items[0]?.pinExpiresAt).toBeUndefined();
+    expect(items[0]?.note).toContain("not present locally, so nothing pins it");
+  }, 180_000);
+
+  test("control: a branch that moved instead of being deleted stays preserved", async () => {
+    let before = "";
+    let after = "";
+    const { built, finalized, root } = await shipMergedProposal({
+      deleteSource: true,
+      extraBranches: (repo) => {
+        before = danglingCommit(repo, "feature/moving");
+        after = danglingCommit(repo, "feature/moved");
+        return [
+          { finalHead: after, name: "feature/moving", openingHead: before },
+        ];
+      },
+      withContainedBranch: false,
+    });
+    expect(built.summary.externallyDeletedBranches).toEqual([]);
+    expect(built.summary.movedBranches).toEqual(["feature/moving"]);
+    expect(
+      built.receipt.branches.find((branch) => branch.name === "feature/moving")
+    ).toMatchObject({
+      classification: "ambiguous",
+      disposition: "preserved-ambiguous",
+      finalHeadRevision: after,
+      initialHeadRevision: before,
+    });
+    expect(pinRefs(root)).toEqual([]);
+    expect(finalized.outcome).toBe("completed");
+    expect(finalized.receipt.remoteBranches?.deletedExternally).toBeUndefined();
+    expect(finalized.receipt.cleanupStatus).toBe("complete");
+  }, 180_000);
+
+  test("a pin its run's record does not list expires by the run's start time, and malformed refs are left alone", () => {
+    const { root } = repository();
+    const head = git(root, ["rev-parse", "HEAD"]);
+    const day = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const oldRun = `run-${(now - 20 * day).toString(36)}-aaaaaaaa`;
+    const freshRun = `run-${(now - 2 * day).toString(36)}-bbbbbbbb`;
+    const oldRef = `refs/simple-changes/external/${oldRun}/${head}`;
+    const freshRef = `refs/simple-changes/external/${freshRun}/${head}`;
+    const wrongValue = `refs/simple-changes/external/${oldRun}/${"1".repeat(40)}`;
+    git(root, ["update-ref", oldRef, head]);
+    git(root, ["update-ref", freshRef, head]);
+    git(root, ["update-ref", wrongValue, head]);
+    const common = captureInventory(root).repository.commonGitDirectory;
+    expect(
+      pruneExpiredExternalDeletionPins(
+        root,
+        common,
+        "run-current-cccccccc",
+        now
+      )
+    ).toEqual({ errors: [], removed: [oldRef] });
+    expect(new Set(pinRefs(root).map((line) => line.split(" ")[0]))).toEqual(
+      new Set([freshRef, wrongValue])
+    );
+    // The current run's own pins are never pruned.
+    git(root, ["update-ref", oldRef, head]);
+    expect(
+      pruneExpiredExternalDeletionPins(root, common, oldRun, now).removed
+    ).toEqual([]);
+  });
+});
 
 describe("loop finalize never reports a surviving merged branch as clean", () => {
   test("a merged MR's surviving source branch is proposed and reported pending", async () => {

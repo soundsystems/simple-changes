@@ -53,6 +53,9 @@ import {
 } from "./loop-lease-core.ts";
 import {
   assertCurrentRemoteBranchReconciliation,
+  type ExpiredExternalDeletionPins,
+  pruneExpiredExternalDeletionPins,
+  recordedExternalDeletionPins,
   recordedOpenProposalTargets,
 } from "./loop-lease-remote.ts";
 import {
@@ -2203,6 +2206,11 @@ export interface LoopFinalizationResult {
   blockers: string[];
   cleanup: FinalizationCleanupResult;
   closedWithoutMutation?: LoopUnmutatedClose;
+  /**
+   * Pins of branches deleted outside earlier runs that this closed run
+   * removed once their retention passed. Not persisted in the receipt.
+   */
+  expiredExternalDeletionPins?: ExpiredExternalDeletionPins;
   lease: LoopLease | null;
   outcome: "completed" | "relinquished" | "closed-without-mutation";
   receipt: LoopFinalizationReceipt;
@@ -2247,8 +2255,9 @@ export interface LoopFinalizationReceipt {
   reason: string;
   /**
    * Preserved provider branches the evidence says are finished, when a
-   * remote-branch reconciliation receipt was recorded. Any pending entry or
-   * error makes `cleanupStatus` pending.
+   * remote-branch reconciliation receipt was recorded, and branches deleted
+   * outside the run. Any pending entry, branch deleted outside the run, or
+   * error makes `cleanupStatus` pending; none of them blocks closing.
    */
   remoteBranches?: RemoteBranchCleanupReport;
   /** Review attempts recorded during the run, per proposal, when a ledger exists. */
@@ -2331,9 +2340,11 @@ const remoteBranchesField = (
         claims: readCoordinationDocumentFromCommonDirectory(
           lease.commonGitDirectory
         ).claims,
+        externalDeletionPins: recordedExternalDeletionPins(lease),
         inventory,
         openTargets: recordedOpenProposalTargets(lease),
         receipt,
+        runId: lease.runId,
       }),
     };
   } catch (error) {
@@ -2670,6 +2681,7 @@ const finalizationDecision = (
       cleanup.errors
     ).length > 0 ||
     (remoteBranches.remoteBranches?.pending.length ?? 0) > 0 ||
+    (remoteBranches.remoteBranches?.deletedExternally?.length ?? 0) > 0 ||
     (remoteBranches.remoteBranches?.errors.length ?? 0) > 0;
   const now = new Date().toISOString();
   const receipt: LoopFinalizationReceipt = {
@@ -3082,14 +3094,25 @@ export const finalizeLoop = (
           if (result.outcome !== "relinquished") {
             options.onClosed?.();
           }
+          if (result.outcome === "relinquished") {
+            return result;
+          }
           // A closed run is a natural cleanup point; a relinquished one is
-          // not over, so its archives wait.
-          return result.outcome === "relinquished"
-            ? result
-            : {
-                ...result,
-                archivePruning: pruneArchivesAtFinalize(inventory),
-              };
+          // not over, so its archives and pins wait. Pins kept for branches
+          // deleted outside earlier runs clean themselves up once their
+          // retention passes.
+          const expired = pruneExpiredExternalDeletionPins(
+            repositoryPath,
+            lease.commonGitDirectory,
+            lease.runId
+          );
+          return {
+            ...result,
+            archivePruning: pruneArchivesAtFinalize(inventory),
+            ...(expired.removed.length > 0 || expired.errors.length > 0
+              ? { expiredExternalDeletionPins: expired }
+              : {}),
+          };
         }
       )
   );

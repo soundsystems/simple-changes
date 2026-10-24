@@ -5915,6 +5915,14 @@ const renderRemoteInventoryBuild = (build: RemoteInventoryBuild): string => {
         )
       );
     }
+    if (summary.externallyDeletedBranches.length > 0) {
+      lines.push(
+        "Deleted outside this run (recorded without claiming delivery or obsolescence; `loop reconcile-remote-branches` pins each last head that is present locally, and `loop finalize` reports each one as needing attention):",
+        ...summary.externallyDeletedBranches.map(
+          (branch) => `  ${branch.name}, last head ${branch.lastHeadRevision}`
+        )
+      );
+    }
     if (summary.heldBranches.length > 0) {
       lines.push(
         "Merged-proposal heads kept and not proposed:",

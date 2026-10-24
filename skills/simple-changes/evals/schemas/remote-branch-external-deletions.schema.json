@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/remote-branch-external-deletions.schema.json",
+  "title": "Simple Changes remote branches deleted outside the run",
+  "description": "Sidecar beside the loop lease for one remote-branch reconciliation receipt. Each deletion names an opening branch that is absent from the final inventory with no merged proposal or decision that proves it obsolete, so this run never proposed or approved deleting it. The receipt records it as deleted with classification ambiguous and a null obsoleteProof; it never counts as delivered or obsolete, and finalization reports it as needing attention. Each pin names a last head this run pinned at refs/simple-changes/external/<runId>/<head>, kept for a fixed retention and then removed automatically. Kept out of the lease so older clients can still read the lease.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "receiptDigest", "deletions", "pins"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "receiptDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "deletions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/deletion" }
+    },
+    "pins": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/pin" }
+    }
+  },
+  "$defs": {
+    "deletion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "lastHeadRevision"],
+      "properties": {
+        "branch": { "type": "string", "minLength": 1 },
+        "lastHeadRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40,64}$"
+        }
+      }
+    },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "headRevision", "pinnedAt"],
+      "properties": {
+        "branch": { "type": "string", "minLength": 1 },
+        "headRevision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "pinnedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

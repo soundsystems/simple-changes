@@ -6,6 +6,8 @@ import type {
   PostCleanupRecoveryReceipt,
   RemoteBranchAncestryProof,
   RemoteBranchAncestryRecord,
+  RemoteBranchExternalDeletion,
+  RemoteBranchExternalDeletionRecord,
   RemoteBranchOpenProposalTarget,
   RemoteBranchOpenTargetsRecord,
   RemoteBranchReconciliationEntry,
@@ -21,6 +23,10 @@ const ANCESTRY_PROOF_SCHEMA = {
 
 const SUPERSESSION_SCHEMA = {
   $ref: "remote-branch-supersession.schema.json#/$defs/supersession",
+};
+
+const EXTERNAL_DELETION_SCHEMA = {
+  $ref: "remote-branch-external-deletions.schema.json#/$defs/deletion",
 };
 
 const OPEN_TARGETS_SCHEMA = {
@@ -590,13 +596,58 @@ const validateSuperseded = (
   }
 };
 
+/**
+ * The receipt shape of a branch deleted outside the run: deleted, with no
+ * final ref, an ambiguous classification, and no obsolescence proof. No
+ * runtime accepts this shape without its external-deletion record, so an older
+ * runtime that cannot read the record refuses the receipt.
+ */
+export const isExternalDeletionShape = (
+  branch: RemoteBranchReconciliationEntry
+): boolean =>
+  branch.classification === "ambiguous" &&
+  branch.disposition === "deleted-proven-obsolete" &&
+  branch.obsoleteProof === null;
+
+/**
+ * An opening branch absent from the final inventory with no merged proposal
+ * or decision that proves it obsolete. The record claims no delivery, merge,
+ * or obsolescence: the classification stays ambiguous and the proof null, and
+ * it must name the exact opening head as the last known head.
+ */
+const validateExternalDeletion = (
+  branch: RemoteBranchReconciliationEntry,
+  deletion: RemoteBranchExternalDeletion
+): void => {
+  if (
+    !isExternalDeletionShape(branch) ||
+    branch.finalHeadRevision !== null ||
+    !branch.initialHeadRevision
+  ) {
+    fail(
+      branch.name,
+      "a branch deleted outside the run requires an opening head, no final ref, an ambiguous classification, deleted-proven-obsolete, and a null obsoleteProof"
+    );
+  }
+  if (deletion.lastHeadRevision !== branch.initialHeadRevision) {
+    fail(
+      branch.name,
+      "a branch deleted outside the run must name its exact opening head as its last head"
+    );
+  }
+  if (finalProposals(branch).some((proposal) => proposal.state === "open")) {
+    fail(branch.name, "an open proposal branch cannot be deleted");
+  }
+};
+
 const validateLedgerBranch = (
   branch: RemoteBranchReconciliationEntry,
   receipt: RemoteBranchReconciliationReceipt,
   proof: RemoteBranchAncestryProof | undefined,
-  supersession: RemoteBranchSupersession | undefined
+  supersession: RemoteBranchSupersession | undefined,
+  externalDeletion?: RemoteBranchExternalDeletion
 ): void => {
-  if (!(proof || supersession)) {
+  if (!(proof || supersession || externalDeletion)) {
     validateBranch(branch, receipt);
     return;
   }
@@ -607,11 +658,27 @@ const validateLedgerBranch = (
       "a branch cannot carry both merged-head ancestry proof and a supersession approval"
     );
   }
-  if (branch.name === receipt.targetBranch || branch.protected) {
+  if (externalDeletion && (proof || supersession)) {
     fail(
       branch.name,
-      `${proof ? "merged-head ancestry proof" : "supersession approval"} cannot apply to the canonical target or a protected branch`
+      "a branch deleted outside the run cannot also carry merged-head ancestry proof or a supersession approval"
     );
+  }
+  if (branch.name === receipt.targetBranch || branch.protected) {
+    let kind = "an external deletion record";
+    if (proof) {
+      kind = "merged-head ancestry proof";
+    } else if (supersession) {
+      kind = "supersession approval";
+    }
+    fail(
+      branch.name,
+      `${kind} cannot apply to the canonical target or a protected branch`
+    );
+  }
+  if (externalDeletion) {
+    validateExternalDeletion(branch, externalDeletion);
+    return;
   }
   if (proof) {
     validateAncestryMerged(branch, proof);
@@ -641,6 +708,29 @@ const ancestryProofsByBranch = (
       );
     }
     byBranch.set(proof.branch, proof);
+  }
+  return byBranch;
+};
+
+const externalDeletionsByBranch = (
+  receipt: RemoteBranchReconciliationReceipt,
+  deletions: readonly RemoteBranchExternalDeletion[]
+): Map<string, RemoteBranchExternalDeletion> => {
+  const byBranch = new Map<string, RemoteBranchExternalDeletion>();
+  const names = new Set(receipt.branches.map((branch) => branch.name));
+  for (const deletion of deletions) {
+    validateSchemaDocument<RemoteBranchExternalDeletion>(
+      "remote-branch external deletion",
+      EXTERNAL_DELETION_SCHEMA,
+      deletion
+    );
+    if (!names.has(deletion.branch) || byBranch.has(deletion.branch)) {
+      throw new SimpleChangesError(
+        `Invalid remote branch reconciliation: external deletion record for ${deletion.branch} must name exactly one ledger branch`,
+        EXIT_CODES.validation
+      );
+    }
+    byBranch.set(deletion.branch, deletion);
   }
   return byBranch;
 };
@@ -695,9 +785,61 @@ export const validateLedgerBranchEntry = (
   );
 };
 
+const SPLIT_BRANCH_KEYS = [
+  "externalDeletion",
+  "mergedHeadAncestry",
+  "supersession",
+] as const;
+
+const splitSupersession = (
+  name: string,
+  value: unknown
+): RemoteBranchSupersession => {
+  if (!isRecord(value) || "branch" in value) {
+    throw new SimpleChangesError(
+      `Invalid remote branch reconciliation: supersession for ${name} must be an object naming initialHeadRevision, replacementRevisions, approvedBy, and reason`,
+      EXIT_CODES.validation
+    );
+  }
+  const approval = validateSchemaDocument<RemoteBranchSupersession>(
+    "remote-branch-supersession approval",
+    SUPERSESSION_SCHEMA,
+    { ...value, branch: name }
+  );
+  if (!(approval.approvedBy.trim() && approval.reason.trim())) {
+    fail(
+      approval.branch,
+      "supersession requires a nonblank approver and reason"
+    );
+  }
+  return {
+    ...approval,
+    approvedBy: approval.approvedBy.trim(),
+    reason: approval.reason.trim(),
+  };
+};
+
+const splitExternalDeletion = (
+  name: string,
+  value: unknown
+): RemoteBranchExternalDeletion => {
+  if (!isRecord(value) || "branch" in value) {
+    throw new SimpleChangesError(
+      `Invalid remote branch reconciliation: externalDeletion for ${name} must be an object naming lastHeadRevision`,
+      EXIT_CODES.validation
+    );
+  }
+  return validateSchemaDocument<RemoteBranchExternalDeletion>(
+    "remote-branch external deletion",
+    EXTERNAL_DELETION_SCHEMA,
+    { ...value, branch: name }
+  );
+};
+
 /**
- * The receipt input may carry `mergedHeadAncestry` or `supersession` on a
- * branch entry, and `openProposalTargets` at its top level. All are split out
+ * The receipt input may carry `mergedHeadAncestry`, `supersession`, or
+ * `externalDeletion` on a branch entry, and `openProposalTargets` at its top
+ * level. All are split out
  * before the receipt is validated and embedded in the lease, so the lease
  * keeps the original receipt schema that older clients read. Absent
  * `openProposalTargets` means the targets are unknown, never that none exist.
@@ -706,6 +848,7 @@ export const splitRemoteBranchReconciliationInput = (
   value: unknown
 ): {
   ancestryProofs: RemoteBranchAncestryProof[];
+  externalDeletions: RemoteBranchExternalDeletion[];
   openProposalTargets: RemoteBranchOpenProposalTarget[] | null;
   receipt: unknown;
   supersessions: RemoteBranchSupersession[];
@@ -713,6 +856,7 @@ export const splitRemoteBranchReconciliationInput = (
   if (!(isRecord(value) && Array.isArray(value.branches))) {
     return {
       ancestryProofs: [],
+      externalDeletions: [],
       openProposalTargets: null,
       receipt: value,
       supersessions: [],
@@ -728,17 +872,19 @@ export const splitRemoteBranchReconciliationInput = (
         )
       : null;
   const ancestryProofs: RemoteBranchAncestryProof[] = [];
+  const externalDeletions: RemoteBranchExternalDeletion[] = [];
   const supersessions: RemoteBranchSupersession[] = [];
   const branches = value.branches.map((branch: unknown) => {
-    if (
-      !(
-        isRecord(branch) &&
-        ("mergedHeadAncestry" in branch || "supersession" in branch)
-      )
-    ) {
+    if (!(isRecord(branch) && SPLIT_BRANCH_KEYS.some((key) => key in branch))) {
       return branch;
     }
-    const { mergedHeadAncestry, supersession, ...entry } = branch;
+    const { externalDeletion, mergedHeadAncestry, supersession, ...entry } =
+      branch;
+    if ("externalDeletion" in branch) {
+      externalDeletions.push(
+        splitExternalDeletion(String(entry.name), externalDeletion)
+      );
+    }
     if ("mergedHeadAncestry" in branch) {
       if (!isRecord(mergedHeadAncestry) || "branch" in mergedHeadAncestry) {
         throw new SimpleChangesError(
@@ -755,33 +901,13 @@ export const splitRemoteBranchReconciliationInput = (
       );
     }
     if ("supersession" in branch) {
-      if (!isRecord(supersession) || "branch" in supersession) {
-        throw new SimpleChangesError(
-          `Invalid remote branch reconciliation: supersession for ${String(entry.name)} must be an object naming initialHeadRevision, replacementRevisions, approvedBy, and reason`,
-          EXIT_CODES.validation
-        );
-      }
-      const approval = validateSchemaDocument<RemoteBranchSupersession>(
-        "remote-branch-supersession approval",
-        SUPERSESSION_SCHEMA,
-        { ...supersession, branch: entry.name }
-      );
-      if (!(approval.approvedBy.trim() && approval.reason.trim())) {
-        fail(
-          approval.branch,
-          "supersession requires a nonblank approver and reason"
-        );
-      }
-      supersessions.push({
-        ...approval,
-        approvedBy: approval.approvedBy.trim(),
-        reason: approval.reason.trim(),
-      });
+      supersessions.push(splitSupersession(String(entry.name), supersession));
     }
     return entry;
   });
   return {
     ancestryProofs,
+    externalDeletions,
     openProposalTargets,
     receipt: { ...receiptValue, branches },
     supersessions,
@@ -870,10 +996,37 @@ export const validateRemoteBranchSupersessionRecord = (
   return record.supersessions;
 };
 
+/**
+ * Re-joins an external-deletion sidecar with the exact receipt it was
+ * recorded for. A sidecar for another run or another receipt fails closed
+ * instead of being ignored.
+ */
+export const validateRemoteBranchExternalDeletionRecord = (
+  value: unknown,
+  runId: string,
+  receipt: RemoteBranchReconciliationReceipt
+): RemoteBranchExternalDeletionRecord => {
+  const record = validateSchema<RemoteBranchExternalDeletionRecord>(
+    "remote-branch-external-deletions",
+    value
+  );
+  if (
+    record.runId !== runId ||
+    record.receiptDigest !== remoteBranchReconciliationDigest(receipt)
+  ) {
+    throw new SimpleChangesError(
+      "Remote-branch external deletion records do not match this run's recorded reconciliation receipt; record the final reconciliation again.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return record;
+};
+
 export const validateRemoteBranchReconciliation = (
   value: unknown,
   ancestryProofs: readonly RemoteBranchAncestryProof[] = [],
-  supersessions: readonly RemoteBranchSupersession[] = []
+  supersessions: readonly RemoteBranchSupersession[] = [],
+  externalDeletions: readonly RemoteBranchExternalDeletion[] = []
 ): RemoteBranchReconciliationReceipt => {
   const receipt = validateSchema<RemoteBranchReconciliationReceipt>(
     "remote-branch-reconciliation",
@@ -931,12 +1084,14 @@ export const validateRemoteBranchReconciliation = (
   );
   const proofs = ancestryProofsByBranch(receipt, ancestryProofs);
   const approvals = supersessionsByBranch(receipt, supersessions);
+  const external = externalDeletionsByBranch(receipt, externalDeletions);
   for (const branch of receipt.branches) {
     validateLedgerBranch(
       branch,
       receipt,
       proofs.get(branch.name),
-      approvals.get(branch.name)
+      approvals.get(branch.name),
+      external.get(branch.name)
     );
   }
   if (

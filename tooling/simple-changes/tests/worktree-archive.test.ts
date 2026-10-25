@@ -1296,6 +1296,74 @@ describe("pruning", () => {
     expectOldestAlonePruned();
   });
 
+  // The head pin is deleted first in manifest order; a stale lock on the
+  // later object pin used to stop the run after the head pin was gone,
+  // leaving a kept archive whose head Git could collect.
+  test("keeps every pin, the head's included, when a later pin cannot be deleted", () => {
+    const fixture = repository();
+    const common = commonDirectoryOf(fixture.root);
+    const replacement = git(fixture.root, ["rev-parse", "main"]);
+    const unexpired = {
+      expiresAt: ago(-30),
+      payloadBytes: 600 * 1024,
+      replacement,
+    };
+    const oldest = syntheticArchive(fixture, {
+      ...unexpired,
+      createdAt: ago(5),
+      pins: "head-and-object",
+    });
+    const newer = syntheticArchive(fixture, {
+      ...unexpired,
+      createdAt: ago(2),
+      pins: "head",
+    });
+    const pins = oldest.manifest.pinRefs.map((pin) => pin.ref);
+    const [headPin, objectPin] = pins;
+    expect(headPin).toBe(`${archivePinNamespace(oldest.archiveId)}/head`);
+    expect(objectPin).toBe(
+      `${archivePinNamespace(oldest.archiveId)}/objects/${replacement}`
+    );
+    writeFileSync(join(common, `${objectPin}.lock`), "");
+
+    const result = prune(fixture, {
+      retention: { days: 14, maxTotalBytes: 1024 * 1024 },
+    });
+
+    // The size cap moves on to the next archive, as for any kept one.
+    expect(result.pruned.map((item) => [item.archiveId, item.cause])).toEqual([
+      [newer.archiveId, "size-cap"],
+    ]);
+    expect(result.keptForAttention.map((item) => item.archiveId)).toEqual([
+      oldest.archiveId,
+    ]);
+    expect(result.keptForAttention[0]?.reason).toMatch(STAYS_WHOLE_PATTERN);
+    expect(result.keptForAttention[0]?.reason).toContain(
+      "could not be deleted: "
+    );
+    expect(
+      refsUnder(fixture.root, archivePinNamespace(oldest.archiveId))
+    ).toEqual(pins);
+    expect(git(fixture.root, ["rev-parse", headPin ?? ""])).toBe(replacement);
+    expect(existsSync(join(oldest.directory, "manifest.json"))).toBe(true);
+    expect(
+      readArchivePruneLog(common).map((record) => record.archiveId)
+    ).toEqual([newer.archiveId]);
+
+    // Control: once the lock is gone, the next prune deletes both pins.
+    rmSync(join(common, `${objectPin}.lock`));
+    const retried = prune(fixture, {
+      now: new Date(NOW.getTime() + 31 * DAY),
+    });
+    expect(retried.pruned.map((item) => item.archiveId)).toEqual([
+      oldest.archiveId,
+    ]);
+    expect(retried.pruned[0]?.pinRefsDeleted).toEqual(pins);
+    expect(refsUnder(fixture.root, "refs/simple-changes/archives/")).toEqual(
+      []
+    );
+  });
+
   test("keeps archives whose target reverted or lost a replacement, until pruned by ID", () => {
     const fixture = repository();
     const common = commonDirectoryOf(fixture.root);

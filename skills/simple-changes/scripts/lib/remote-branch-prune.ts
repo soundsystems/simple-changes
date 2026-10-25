@@ -19,6 +19,8 @@ import { commitEquivalenceAgainstTarget } from "./worktree-equivalence.ts";
  * final inventory, and `loop finalize` reports what is left as pending.
  */
 
+const HEAD_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+
 /** Dispositions that preserve a branch nobody has proven live or finished. */
 const UNCERTAIN_DISPOSITIONS: ReadonlySet<
   RemoteBranchReconciliationEntry["disposition"]
@@ -181,6 +183,44 @@ const SHALLOW_ADVICE =
   "the clone is shallow, so Git cannot prove what the target does or does not contain; run `git fetch --unshallow` and try again";
 
 /**
+ * The `%(upstream)` line of a local branch. Git prints a line, empty or not,
+ * for a branch that exists and nothing for one that does not, so nothing at
+ * all is asked once more, then settled by whether the branch exists: a
+ * branch that exists makes it a lost answer, which throws rather than read
+ * as no upstream.
+ */
+const upstreamListing = (
+  repositoryPath: string,
+  branch: string
+): { exitCode: number; stderr: string; stdout: string } => {
+  const ask = () =>
+    runGit(
+      repositoryPath,
+      ["for-each-ref", "--format=%(upstream)", `refs/heads/${branch}`],
+      true
+    );
+  const first = ask();
+  if (first.exitCode !== 0 || first.stdout !== "") {
+    return first;
+  }
+  const second = ask();
+  if (second.exitCode !== 0 || second.stdout !== "") {
+    return second;
+  }
+  const exists = runGit(
+    repositoryPath,
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
+    true
+  );
+  if (exists.exitCode === 1) {
+    return second;
+  }
+  throw new Error(
+    `cannot read the upstream of ${branch}: Git printed nothing twice for a branch that ${exists.exitCode === 0 ? "exists" : "may exist"}, so its answer was lost; retry the command`
+  );
+};
+
+/**
  * The provider branch a local branch tracks on the target remote, or null
  * when it tracks none there. It reads the canonical identity from
  * `branch.<name>.remote` and `branch.<name>.merge`, never the abbreviated
@@ -214,11 +254,7 @@ const trackedProviderBranch = (
           : ref) || null
       : null;
   }
-  const upstream = runGit(
-    repositoryPath,
-    ["for-each-ref", "--format=%(upstream)", `refs/heads/${branch}`],
-    true
-  );
+  const upstream = upstreamListing(repositoryPath, branch);
   if (upstream.exitCode !== 0) {
     throw new Error(
       `cannot read the upstream of ${branch}: ${upstream.stderr.trim() || `exit ${upstream.exitCode}`}`
@@ -255,7 +291,9 @@ export const remoteBranchNameHolds = (
 /**
  * Where a live branch forked from the target. No shared history means no fork
  * point; any other Git failure throws, because a hold that cannot be computed
- * must not read as no hold.
+ * must not read as no hold. So does an answer that is not a commit: Git asks
+ * a lost (empty) answer once more and refuses a second one, and anything
+ * else that is not an object ID is refused here.
  */
 const forkPoint = (
   repositoryPath: string,
@@ -276,7 +314,13 @@ const forkPoint = (
       `cannot find where ${branch} forked from target ${targetRevision}: ${result.stderr.trim() || `exit ${result.exitCode}`}`
     );
   }
-  return result.stdout.trim();
+  const point = result.stdout.trim();
+  if (!HEAD_PATTERN.test(point)) {
+    throw new Error(
+      `cannot find where ${branch} forked from target ${targetRevision}: Git answered ${JSON.stringify(point.slice(0, 80))}, not a commit`
+    );
+  }
+  return point;
 };
 
 /**
@@ -356,8 +400,6 @@ export interface ExternalDeletionPin {
   ref: string;
   runId: string;
 }
-
-const HEAD_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 
 const PIN_TIME_PATTERN = /^[0-9]{1,15}$/u;
 
@@ -542,6 +584,71 @@ const externallyDeletedItems = (
     ];
   });
 
+// The merge base the report hands the patch audit: a commit, null when the
+// head and the target share no history, or why Git could not settle it. The
+// runner asks a lost (empty) answer once more and refuses a second.
+const reportMergeBase = (
+  repositoryPath: string,
+  commit: string,
+  target: string
+): { mergeBase: string | null } | { failure: string } => {
+  let base: { exitCode: number; stderr: string; stdout: string };
+  try {
+    base = runGit(repositoryPath, ["merge-base", commit, target], true);
+  } catch (error) {
+    return {
+      failure: `Git could not find a merge base (${error instanceof Error ? error.message : String(error)}).`,
+    };
+  }
+  if (
+    base.exitCode === 1 &&
+    base.stdout.trim() === "" &&
+    base.stderr.trim() === ""
+  ) {
+    return { mergeBase: null };
+  }
+  if (base.exitCode !== 0) {
+    return {
+      failure: `Git could not find a merge base (${base.stderr.trim() || `exit ${base.exitCode}`}).`,
+    };
+  }
+  const mergeBase = base.stdout.trim();
+  return HEAD_PATTERN.test(mergeBase)
+    ? { mergeBase }
+    : {
+        failure: `Git's merge base answer ${JSON.stringify(mergeBase.slice(0, 80))} is not a commit.`,
+      };
+};
+
+// Whether every commit of the head outside the target has a patch-id match
+// in it, from the settled merge base. Every Git call on this path throws on
+// failure instead of reading as "not contained", every listing is checked
+// whole against Git's count, and patch evidence is used only when it is
+// whole, so a lost or cut-short answer is an error, never a settled match
+// or miss.
+const patchEquivalence = (
+  repositoryPath: string,
+  head: string,
+  targetRevision: string,
+  mergeBase: string,
+  patchIdCache: Map<string, Map<string, string>>
+): boolean | "too-many" => {
+  const audit = commitEquivalenceAgainstTarget(
+    repositoryPath,
+    head,
+    targetRevision,
+    {
+      maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS,
+      mergeBase,
+      targetPatchIdCache: patchIdCache,
+    }
+  );
+  if (audit.exceededMaxCommits) {
+    return "too-many";
+  }
+  return audit.commitCount > 0 && audit.fullyMatched;
+};
+
 /**
  * The finished-branch proof for one reportable entry, or null when Git proves
  * the target does not contain it. Reporting judges the final head alone, so a
@@ -610,39 +717,28 @@ const cleanupItem = (
       `Git could not check ancestry (${ancestry.stderr.trim() || `exit ${ancestry.exitCode}`}).`
     );
   }
-  const base = runGit(repositoryPath, ["merge-base", commit, target], true);
-  if (
-    base.exitCode === 1 &&
-    base.stdout.trim() === "" &&
-    base.stderr.trim() === ""
-  ) {
+  const base = reportMergeBase(repositoryPath, commit, target);
+  if ("failure" in base) {
+    return unsettled(base.failure);
+  }
+  if (base.mergeBase === null) {
     // No shared history: definitively not contained, given full history.
     return notContained();
   }
-  if (base.exitCode !== 0) {
-    return unsettled(
-      `Git could not find a merge base (${base.stderr.trim() || `exit ${base.exitCode}`}).`
-    );
-  }
   try {
-    // Consume the settled merge base: every Git call left on this path
-    // throws on failure instead of reading as "not contained".
-    const equivalence = commitEquivalenceAgainstTarget(
+    const proof = patchEquivalence(
       repositoryPath,
       head,
       receipt.targetRevision,
-      {
-        maxCommits: PATCH_EQUIVALENCE_MAX_COMMITS,
-        mergeBase: base.stdout.trim(),
-        targetPatchIdCache: patchIdCache,
-      }
+      base.mergeBase,
+      patchIdCache
     );
-    if (equivalence.exceededMaxCommits) {
+    if (proof === "too-many") {
       return unsettled(
         `more than ${PATCH_EQUIVALENCE_MAX_COMMITS} commits lie outside the target, too many to prove by patch equivalence; classify it yourself.`
       );
     }
-    return equivalence.commitCount > 0 && equivalence.fullyMatched
+    return proof
       ? {
           headRevision: head,
           ...moved,

@@ -22,7 +22,7 @@ import {
   type ArchiveRetentionPolicy,
   archiveRetentionPolicy,
 } from "./policy.ts";
-import { runGit } from "./process.ts";
+import { countedRevisionList, runGit } from "./process.ts";
 import { headCoverage, readReviewLedger } from "./review-ledger.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -34,6 +34,7 @@ import {
   type ArchiveBranchConfig,
   type ArchiveCopy,
   type ArchivePinRef,
+  applyRefTransaction,
   archivePinNamespace,
   assertArchiveCapacity,
   compareLiveWithManifest,
@@ -58,6 +59,13 @@ export const REPLACEMENT_LINEAGE_MAX_COMMITS = PATCH_EQUIVALENCE_MAX_COMMITS;
 
 /** How long a user's approval stays usable after it was given. */
 export const REPLACEMENT_LINEAGE_APPROVAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The most commits that only the checkout's reflogs keep, which one archive
+ * pins. A checkout whose reflogs name more is kept rather than archived with
+ * part of that history.
+ */
+export const REFLOG_PIN_LIMIT = 2000;
 
 const DAY_MS = 86_400_000;
 const DIFFERENCE_SUMMARY_LIMIT = 5;
@@ -1142,6 +1150,11 @@ export interface ReviewedSourceState {
   branchConfig: ArchiveBranchConfig[];
   /** Each object a per-worktree ref or pseudo-ref names, with that name. */
   namedObjects: Array<{ name: string; object: string }>;
+  /**
+   * The commits the checkout's reflogs name that nothing kept after the
+   * removal reaches, sorted; at most `REFLOG_PIN_LIMIT`.
+   */
+  reflogCommits: string[];
 }
 
 // The ref namespaces Git keeps per worktree, and the pseudo-refs that can
@@ -1214,6 +1227,90 @@ const namedObjectsOf = (
   return found;
 };
 
+// Simple Changes' own pins expire, so a commit only one of them reaches is
+// not kept for as long as a new archive is.
+const EXPIRING_PIN_REFS = "refs/simple-changes/*";
+
+// A `rev-list` listing asked in the checkout, checked whole against Git's
+// own count of it; a failure, or an answer lost or cut short twice, is the
+// reason it could not be read.
+const revisionListing = (
+  path: string,
+  overrides: readonly string[],
+  question: readonly string[],
+  stdin?: string
+): { commits: string[] } | { failure: string } => {
+  try {
+    return {
+      commits: countedRevisionList(path, question, {
+        gitOptions: overrides,
+        ...(stdin === undefined ? {} : { stdin }),
+      }),
+    };
+  } catch (error) {
+    return { failure: error instanceof Error ? error.message : String(error) };
+  }
+};
+
+// The commits the checkout's reflogs name (its HEAD's log, its branch's log
+// and the logs of its own refs), read through Git so the ref backend does
+// not matter, that nothing kept after the removal reaches: not the head,
+// which is pinned, and no ref other than Simple Changes' own expiring pins.
+// Removing the checkout and its branch deletes those reflogs, so without a
+// pin a later gc could drop work such as an amended-away commit while the
+// archive still claims to restore the checkout. A read Git could not
+// complete refuses.
+const reflogOnlyCommitsOf = (
+  path: string,
+  branch: string | null,
+  headSha: string,
+  namedObjects: ReviewedSourceState["namedObjects"],
+  overrides: readonly string[]
+): string[] => {
+  const logs = [
+    ...new Set([
+      "HEAD",
+      ...(branch === null ? [] : [`refs/heads/${branch}`]),
+      ...namedObjects
+        .map((entry) => entry.name)
+        .filter((name) => name.startsWith("refs/")),
+    ]),
+  ];
+  const walked = revisionListing(path, overrides, ["--walk-reflogs", ...logs]);
+  if ("failure" in walked) {
+    throw boundaryRefusal(
+      path,
+      `Git could not read the checkout's reflogs (${walked.failure}), so the commits only they keep could not be pinned.`
+    );
+  }
+  const named = [...new Set(walked.commits)]
+    .filter((commit) => commit !== headSha)
+    .sort((left, right) => left.localeCompare(right));
+  if (named.length === 0) {
+    return [];
+  }
+  const unreached = revisionListing(
+    path,
+    overrides,
+    [
+      "--ignore-missing",
+      "--stdin",
+      "--not",
+      `--exclude=${EXPIRING_PIN_REFS}`,
+      "--all",
+    ],
+    `${[...named, `^${headSha}`].join("\n")}\n`
+  );
+  if ("failure" in unreached) {
+    throw boundaryRefusal(
+      path,
+      `Git could not tell which commits in the checkout's reflogs other refs keep (${unreached.failure}), so they could not be pinned.`
+    );
+  }
+  const unkept = new Set(unreached.commits);
+  return named.filter((commit) => unkept.has(commit));
+};
+
 // The branch's configuration section in the shared local configuration,
 // which branch deletion removes and restore puts back. A key written
 // without `=` (true to Git) is kept as null. A read Git could not complete
@@ -1262,8 +1359,9 @@ const branchConfigurationOf = (
 /**
  * Confirms the callback-free boundary and re-reads the verified checkout
  * inside it before a cleanup writes or removes anything, and refuses the
- * whole run when the boundary cannot be confirmed or the checkout changed.
- * Returns what the checkout's own refs name and its branch configuration:
+ * whole run when the boundary cannot be confirmed or the checkout changed,
+ * or when its reflogs keep more commits than one archive pins. Returns what
+ * the checkout's own refs and reflogs name and its branch configuration:
  * the last Git commands that run in the source before `git worktree
  * remove`, so that nothing rewrites it between the archive copy and the
  * comparison that precedes removal.
@@ -1283,13 +1381,29 @@ export const assertReviewedReplacementUnchanged = (
       `${drift}. Review the checkout again and write a new receipt.`
     );
   }
+  const { branch, headSha, path } = verified.worktree;
+  const namedObjects = namedObjectsOf(path, overrides);
+  const reflogCommits = reflogOnlyCommitsOf(
+    path,
+    branch,
+    headSha,
+    namedObjects,
+    overrides
+  );
+  if (reflogCommits.length > REFLOG_PIN_LIMIT) {
+    throw boundaryRefusal(
+      path,
+      `its reflogs name ${reflogCommits.length} commits that no branch, tag, remote branch or other ref keeps, more than the ${REFLOG_PIN_LIMIT} one archive pins, so it was kept rather than archived with part of that history. Put the work you still need on a branch, or remove the checkout yourself if none of it is needed.`
+    );
+  }
   return {
     branchConfig: branchConfigurationOf(
       verified.primaryCheckout,
-      verified.worktree.branch,
+      branch,
       overrides
     ),
-    namedObjects: namedObjectsOf(verified.worktree.path, overrides),
+    namedObjects,
+    reflogCommits,
   };
 };
 
@@ -1321,11 +1435,12 @@ interface ArchivedSource {
 
 const zeroObject = (object: string): string => "0".repeat(object.length);
 
-// Pins the head and every object the checkout named under the archive's own
-// namespace, each created only when absent and without dereferencing, so
-// two archives never share a pin and nothing outside the namespace moves.
-// Every pin written is appended to `pinRefs` as it is made, so the caller
-// holds the exact list to undo or to record even when a later step throws.
+// Pins the head, every object the checkout named, and every commit only its
+// reflogs keep under the archive's own namespace, each created only when
+// absent and without dereferencing, so two archives never share a pin and
+// nothing outside the namespace moves. Every pin written is appended to
+// `pinRefs` once Git reports the write, so the caller holds the exact list
+// to undo or to record even when a later step throws.
 const pinArchive = (
   verified: VerifiedReplacementLineage,
   source: ReviewedSourceState,
@@ -1337,6 +1452,7 @@ const pinArchive = (
   const primary = verified.primaryCheckout;
   const { headSha, branch, path } = verified.worktree;
   const namespace = archivePinNamespace(archiveId);
+  const message = `simple-changes: archive ${archiveId} of ${branch ?? path}`;
   const write = (ref: string, object: string): string | null => {
     const written = runGit(
       primary,
@@ -1345,7 +1461,7 @@ const pinArchive = (
         "update-ref",
         "--no-deref",
         "-m",
-        `simple-changes: archive ${archiveId} of ${branch ?? path}`,
+        message,
         ref,
         object,
         zeroObject(object),
@@ -1405,6 +1521,72 @@ const pinArchive = (
     if (failure) {
       return failure;
     }
+  }
+  return pinReflogCommits(
+    primary,
+    `${namespace}/objects`,
+    source.reflogCommits.filter(
+      (commit) => commit !== headSha && !objects.has(commit)
+    ),
+    { message, overrides },
+    pinRefs
+  );
+};
+
+// The commits only the checkout's reflogs keep, under `<prefix>/<commit>`
+// like every other object the checkout named, in one transaction that
+// creates each only when absent, so a failure writes none of them and up to
+// REFLOG_PIN_LIMIT need no Git command each. They are tracked once Git
+// reports the write, then read back from one listing.
+const pinReflogCommits = (
+  primary: string,
+  prefix: string,
+  commits: readonly string[],
+  options: { message: string; overrides: readonly string[] },
+  pinRefs: ArchivePinRef[]
+): string | null => {
+  if (commits.length === 0) {
+    return null;
+  }
+  const pins = commits.map((object) => ({
+    object,
+    ref: `${prefix}/${object}`,
+  }));
+  const failure = applyRefTransaction(
+    primary,
+    options.overrides,
+    pins.map((pin) => `create ${pin.ref} ${pin.object}`),
+    options.message
+  );
+  const listed = runGit(
+    primary,
+    [
+      ...options.overrides,
+      "for-each-ref",
+      "--format=%(refname) %(objectname)",
+      `${prefix}/`,
+    ],
+    true
+  );
+  const found = new Map(
+    listed.stdout
+      .split("\n")
+      .filter(Boolean)
+      .map((line): [string, string] => {
+        const [ref = "", object = ""] = line.split(" ");
+        return [ref, object];
+      })
+  );
+  if (failure !== null) {
+    // Git writes none of them when the transaction fails before it commits;
+    // any it did write is tracked all the same, so nothing goes unrecorded.
+    pinRefs.push(...pins.filter((pin) => found.get(pin.ref) === pin.object));
+    return `Could not pin the ${pins.length} commit(s) only the checkout's reflogs keep under ${prefix}/: ${failure}`;
+  }
+  pinRefs.push(...pins);
+  const unread = pins.find((pin) => found.get(pin.ref) !== pin.object);
+  if (listed.exitCode !== 0 || unread) {
+    return `Pinned the ${pins.length} commit(s) only the checkout's reflogs keep under ${prefix}/, but ${unread?.ref ?? "they"} did not read back (${listed.stderr.trim() || "missing from Git's listing"}).`;
   }
   return null;
 };
@@ -1554,20 +1736,48 @@ const deleteTrackedPin = (
   }
 };
 
+// All the pins in one transaction, as pruning deletes an archive's pins:
+// one Git command however many there are, and all or none.
+const deletedTogether = (
+  primaryCheckout: string,
+  pins: readonly ArchivePinRef[],
+  overrides: readonly string[]
+): boolean => {
+  try {
+    for (const pin of pins) {
+      throwForTests(pin.ref);
+    }
+  } catch {
+    return false;
+  }
+  return (
+    applyRefTransaction(
+      primaryCheckout,
+      overrides,
+      pins.map((pin) => `delete ${pin.ref} ${pin.object}`)
+    ) === null
+  );
+};
+
 /**
  * Deletes pins by their exact recorded value, never following a symbolic
  * ref, and returns the refs that could not be deleted with the reason, so
- * the caller reports exactly what remains. It never throws: every pin is
- * attempted, whatever happened to the ones before it.
+ * the caller reports exactly what remains. It never throws. The pins go in
+ * one transaction first. When that fails it deleted none, and each pin is
+ * then attempted on its own, whatever happened to the ones before it: the
+ * caller is discarding an archive whose checkout was never removed, so no
+ * kept archive depends on these pins, and fewer stray refs is better.
  */
 export const deleteTrackedPins = (
   primaryCheckout: string,
   pins: readonly ArchivePinRef[],
   overrides: readonly string[] = []
 ): string[] =>
-  pins
-    .map((pin) => deleteTrackedPin(primaryCheckout, pin, overrides))
-    .filter((leftover): leftover is string => leftover !== null);
+  pins.length === 0 || deletedTogether(primaryCheckout, pins, overrides)
+    ? []
+    : pins
+        .map((pin) => deleteTrackedPin(primaryCheckout, pin, overrides))
+        .filter((leftover): leftover is string => leftover !== null);
 
 // Removes the archive folder and exactly the pins this run wrote (tracked
 // as they were made, never rediscovered), so a refusal that says no archive

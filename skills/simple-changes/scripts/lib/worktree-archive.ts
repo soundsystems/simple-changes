@@ -25,7 +25,7 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { parseWorktreeList } from "./inventory.ts";
-import { runGit } from "./process.ts";
+import { runGit, runGitWithInput } from "./process.ts";
 import { validateSchema } from "./schema.ts";
 
 // A reviewed checkout is copied here before it is removed, so the removal is
@@ -62,6 +62,7 @@ const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const DIGEST_PREFIX_PATTERN = /^[0-9a-f]{8}/u;
 const STAMP_SEPARATOR_PATTERN = /[-:]/gu;
 const EXTENDED_REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/gu;
+const TRAILING_PERIODS = /\.+$/u;
 const NUL = "\u0000";
 
 /* biome-ignore-start lint/suspicious/noBitwiseOperators: POSIX open flags and permission bits are bit masks */
@@ -699,6 +700,9 @@ export const compareTrees = (
   actual: ArchiveTree
 ): string[] => treeDifferences(expected, actual, "");
 
+// The reflogs are not scanned as text: the caller names the commits they
+// hold through Git, which also reads the branch's reflog in the common
+// directory and a ref backend that keeps no reflog files.
 const isObjectNamingFile = (item: WalkedEntry): boolean =>
   item.type === "file" &&
   item.relative !== "index" &&
@@ -734,8 +738,9 @@ const readSmallFile = (path: string): string => {
 /**
  * Distinct 40- and 64-digit hexadecimal tokens in the regular files of a Git
  * directory tree, sorted: the objects its state files may name (sequencer
- * and rebase state, autostash, pseudo-refs). The index, the reflogs and
- * files over 1 MiB are not read. The caller resolves each candidate.
+ * and rebase state, autostash, pseudo-refs). The index, the reflogs (which
+ * the caller reads through Git) and files over 1 MiB are not read. The
+ * caller resolves each candidate.
  */
 export const objectIdCandidates = (gitTreeRoot: string): string[] => {
   const found = new Set<string>();
@@ -1762,6 +1767,39 @@ const restoreCommand = (archiveId: string): string =>
 const gitDetail = (result: { stderr: string; stdout: string }): string =>
   (result.stderr.trim() || result.stdout.trim()).split("\n")[0] ?? "";
 
+/**
+ * Applies ref updates (`create <ref> <object>` or `delete <ref> <object>`)
+ * in one Git transaction that never follows a symbolic ref: `start`, the
+ * updates, `prepare`, `commit`. Git takes every lock and checks every value
+ * in `prepare`, before it changes any ref, so a stale lock or a value that
+ * no longer matches leaves every ref as it was. Returns null when Git
+ * committed the transaction, otherwise its reason; it never throws, so a
+ * spawn that fails under load is reported like any other failure.
+ */
+export const applyRefTransaction = (
+  repositoryPath: string,
+  gitOptions: readonly string[],
+  updates: readonly string[],
+  message?: string
+): string | null => {
+  try {
+    runGitWithInput(
+      repositoryPath,
+      [
+        ...gitOptions,
+        "update-ref",
+        "--no-deref",
+        ...(message === undefined ? [] : ["-m", message]),
+        "--stdin",
+      ],
+      ["start", ...updates, "prepare", "commit", ""].join("\n")
+    );
+    return null;
+  } catch (error) {
+    return errorText(error).trim().split("\n")[0] || "Git gave no reason";
+  }
+};
+
 const replacementFailure = (
   context: PruneContext,
   targetRef: string,
@@ -2127,8 +2165,9 @@ const pinPlanFor = (context: PruneContext, item: PruneItem): PinPlan =>
 
 // Exact old value and no dereference: a pin that moved, or became a
 // symbolic ref, is reported rather than forced. A plan with a blocked pin
-// deletes nothing, and a deletion that fails stops the run there, so an
-// archive that stays keeps every pin it still can.
+// deletes nothing, and the deletable pins go in one transaction, so a
+// failure (a stale lock, a pin that moved since the plan) deletes none of
+// them: an archive that stays keeps every pin, its head's included.
 const deletePins = (
   context: PruneContext,
   plan: PinPlan
@@ -2137,37 +2176,22 @@ const deletePins = (
   if (plan.blocked.length > 0) {
     return { deleted: [], notes, unresolved: [...plan.blocked] };
   }
-  const deleted: string[] = [];
-  for (const [index, pin] of plan.deletable.entries()) {
-    const result = runGit(
-      context.input.primaryCheckout,
-      [
-        ...context.gitOptions,
-        "update-ref",
-        "--no-deref",
-        "-d",
-        pin.ref,
-        pin.object,
-      ],
-      true
-    );
-    if (result.exitCode === 0) {
-      deleted.push(pin.ref);
-      continue;
-    }
-    const remaining = plan.deletable.slice(index + 1).map((item) => item.ref);
-    notes.push(`${pin.ref} could not be deleted: ${gitDetail(result)}.`);
-    if (remaining.length > 0) {
-      notes.push(`${remaining.join(", ")} left alone after that failure.`);
-    }
-    if (deleted.length > 0) {
-      notes.push(
-        `${deleted.join(", ")} already deleted; the next prune skips them.`
-      );
-    }
-    return { deleted, notes, unresolved: [pin.ref, ...remaining] };
+  const refs = plan.deletable.map((pin) => pin.ref);
+  if (refs.length === 0) {
+    return { deleted: [], notes, unresolved: [] };
   }
-  return { deleted, notes, unresolved: [] };
+  const failure = applyRefTransaction(
+    context.input.primaryCheckout,
+    context.gitOptions,
+    plan.deletable.map((pin) => `delete ${pin.ref} ${pin.object}`)
+  );
+  if (failure === null) {
+    return { deleted: refs, notes, unresolved: [] };
+  }
+  notes.push(
+    `${refs.join(", ")} could not be deleted: ${failure.replace(TRAILING_PERIODS, "")}. Git deletes an archive's pins together or not at all, so every one was kept.`
+  );
+  return { deleted: [], notes, unresolved: refs };
 };
 
 const pruneRecord = (
@@ -2414,8 +2438,9 @@ const assertPruneInput = (input: ArchivePruneInput): void => {
  * rest are pruned oldest first while the total is above the cap, then every
  * expired one. Manual by ID prunes the named archive whatever the re-check
  * or marker says, and notes it; manual by age uses the given age instead of
- * the expiry. Each pruned archive's pins are deleted by exact value, then
- * its record is appended, then its folder is removed.
+ * the expiry. Each pruned archive's pins are deleted by exact value in one
+ * transaction, all or none, then its record is appended, then its folder
+ * is removed.
  */
 export const pruneWorktreeArchives = (
   input: ArchivePruneInput

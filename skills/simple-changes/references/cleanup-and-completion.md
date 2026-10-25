@@ -291,8 +291,10 @@ when all of these hold:
 The build reads the worktrees and claims from `--repo`. A merged-MR head that
 fails only the last two checks is listed in `heldBranches` with every reason
 and is not proposed. When the pages lack open MR targets, the local state
-cannot be read, or `--repo` is a shallow clone (fork points need full
-history; run `git fetch --unshallow`), every merged-MR head is held.
+cannot be read, a fork point cannot be computed (a merge base Git returned
+empty is asked again, and a second empty answer counts as unreadable), or
+`--repo` is a shallow clone (fork points need full history; run `git fetch
+--unshallow`), every merged-MR head is held.
 
 Delete each proposal the guarded way: `loop guard`, a provider deletion of
 exactly that branch at that head, then `loop verify`. Then fetch fresh final
@@ -465,7 +467,12 @@ branch whose every unique commit patch-id-matches a target commit (the normal
 result of a squash or rebase merge) is deleted with method `patch-equivalent`
 recorded, so merged provider branches stop accumulating locally. A branch with
 any unmatched commit, or one too far ahead to audit cheaply, is preserved and
-named. It then restores or fast-forwards the primary under the controller and
+named. Patch evidence counts only when it came back whole: each listing must
+match Git's own count, each commit's diff is asked for twice in one answer
+and must come back as the same block twice, and patch-id must answer with
+one whole line, so an answer lost or cut short under load is asked again
+and then refused, never read as a match or a miss. It then restores or
+fast-forwards the primary under the controller and
 coordination locks. Without an exact verified shipment outcome, a missing or
 stale target, dirty or off-target primary, or remaining cleanup candidate keeps
 the run open. With that outcome, clean source worktrees proven contained in the
@@ -523,7 +530,9 @@ cannot be held and is reported as pending. A check that fails is listed in
 `errors` and also makes cleanup pending: a head missing locally (fetch it and
 finalize again), a head with more than 200 commits outside the target (too
 many to prove by patch equivalence, so classify it yourself), any other Git
-failure while settling containment (such as a missing ancestor object), any
+failure while settling containment (such as a missing ancestor object, or a
+merge base, commit listing, diff or patch ID Git lost or cut short twice
+under load), any
 answer short of a positive proof in a shallow clone, or holds that cannot be
 read (a shallow clone always loses its fork-point holds). Holds apply first,
 so a held branch's unsettled audit is neither pending nor an error. Unknown

@@ -104,34 +104,35 @@ describe("exact-byte target proof with a listing lost or cut short", () => {
 
   type Setup = ReturnType<typeof shippedPartFixture>;
 
-  // Each listing the proof reads: the Git call that answers it, and how to
-  // cut that answer short at a boundary that still parses.
-  const listings: [string, (setup: Setup) => string, FakeGitLoss][] = [
+  // Each listing the proof reads: the Git call that answers it, how many
+  // such calls come before it, and how to cut its answer short at a
+  // boundary that still parses. Path listings are read for A, then B, then
+  // the tip-to-target difference.
+  const listings: [string, (setup: Setup) => string, FakeGitLoss, number][] = [
     [
       "the merge base",
       (setup) => `merge-base ${setup.head} ${setup.target}`,
       "bytes:20",
-    ],
-    ["the commit listing", () => "rev-list --reverse --parents", "first-line"],
-    ["the commit count", () => "rev-list --count --reverse", "bytes:1"],
-    ["B's touched paths", (setup) => `--name-only -z ${setup.head}`, "nul:1"],
-    ["B's per-path counts", (setup) => `--numstat -z ${setup.head}`, "nul:1"],
-    [
-      "the tip-to-target difference",
-      (setup) => `--name-only -z ${setup.head} ${setup.target}`,
-      "nul:1",
+      0,
     ],
     [
-      "the tip-to-target per-path counts",
-      (setup) => `--numstat -z ${setup.head} ${setup.target}`,
-      "nul:1",
+      "the commit listing",
+      () => "rev-list --reverse --parents",
+      "first-line",
+      0,
     ],
+    ["the commit count", () => "rev-list --count --reverse", "bytes:1", 0],
+    ["B's touched paths", () => "--name-only", "nul:1", 1],
+    ["B's per-path counts", () => "--numstat", "nul:1", 1],
+    ["the tip-to-target difference", () => "--name-only", "nul:1", 2],
+    ["the tip-to-target per-path counts", () => "--numstat", "nul:1", 2],
   ];
 
   const prove = (
     flag: (setup: Setup) => string,
     lost: number,
-    mode: FakeGitLoss
+    mode: FakeGitLoss,
+    skip = 0
   ) => {
     const setup = shippedPartFixture();
     return runInChild(
@@ -144,7 +145,8 @@ console.log(JSON.stringify(proveExactByteTargetContainment(${JSON.stringify(setu
       flag(setup),
       lost,
       "",
-      mode
+      mode,
+      skip
     );
   };
 
@@ -159,8 +161,8 @@ console.log(JSON.stringify(proveExactByteTargetContainment(${JSON.stringify(setu
 
   test.each(listings)(
     "%s cut short once is asked again, so the unshipped path still refuses",
-    (_what, flag, cut) => {
-      const { remaining, reply } = prove(flag, 1, cut);
+    (_what, flag, cut, skip) => {
+      const { remaining, reply } = prove(flag, 1, cut, skip);
       expect(remaining).toBe(0);
       expect(reply).toMatchObject({
         differingPaths: ["z.txt"],
@@ -172,11 +174,12 @@ console.log(JSON.stringify(proveExactByteTargetContainment(${JSON.stringify(setu
   for (const loss of ["empty", "cut"] as const) {
     test.each(listings)(
       `%s ${loss === "empty" ? "lost" : "cut short"} twice refuses as a lost answer, never proven`,
-      (_what, flag, cut) => {
+      (_what, flag, cut, skip) => {
         const { remaining, reply } = prove(
           flag,
           2,
-          loss === "empty" ? "empty" : cut
+          loss === "empty" ? "empty" : cut,
+          skip
         );
         expect(remaining).toBe(0);
         expect(reply).toMatchObject({ differingPaths: [], status: "refused" });

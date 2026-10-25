@@ -11,7 +11,12 @@ import { spawnSync, which } from "bun";
 
 const decoder = new TextDecoder();
 
-export type FakeGitLoss = "empty" | "first-line" | `lines:${number}`;
+export type FakeGitLoss =
+  | "empty"
+  | "first-line"
+  | `bytes:${number}`
+  | `lines:${number}`
+  | `nul:${number}`;
 
 export interface FakeGitRun {
   /** A child Bun script that prints one JSON value. */
@@ -26,20 +31,24 @@ export interface FakeGitRun {
   /** How many answers to lose. */
   lost: number;
   /**
-   * `empty`: exit 0 with no output. `first-line` and `lines:<n>`: exit 0
-   * with only the first line, or the first n lines, of the real answer, an
-   * answer cut short.
+   * `empty`: exit 0 with no output. `first-line`, `lines:<n>`, `nul:<n>`
+   * and `bytes:<n>`: exit 0 with only the first line, the first n lines,
+   * the first n NUL-terminated entries, or the first n bytes of the real
+   * answer, an answer cut short.
    */
   mode?: FakeGitLoss;
   /** How many calls naming `flag` to answer truthfully before losing any. */
   skip?: number;
+  /** When given, `git version` prints this line instead of the real one. */
+  version?: string;
 }
 
 // A Git on PATH that answers truthfully, except as the environment says:
 // a call whose arguments contain FAKE_GIT_EMPTY_FLAG first uses up a skip
 // token and answers truthfully, then, while loss tokens remain, removes one
 // and loses its answer (FAKE_GIT_EMPTY_MODE); a call whose arguments
-// contain FAKE_GIT_FAIL_FLAG fails with exit 3.
+// contain FAKE_GIT_FAIL_FLAG fails with exit 3; and `git version` prints
+// FAKE_GIT_VERSION when it is set.
 const fakeGitDirectory = (register: (cleanup: () => void) => void): string => {
   const realGit = which("git");
   if (!realGit) {
@@ -51,6 +60,13 @@ const fakeGitDirectory = (register: (cleanup: () => void) => void): string => {
     join(bin, "git"),
     `#!/bin/sh
 real='${realGit}'
+if [ -n "$FAKE_GIT_VERSION" ]; then
+  for last in "$@"; do :; done
+  if [ "$last" = version ]; then
+    printf '%s\\n' "$FAKE_GIT_VERSION"
+    exit 0
+  fi
+fi
 if [ -n "$FAKE_GIT_FAIL_FLAG" ]; then
   case " $* " in
     *" $FAKE_GIT_FAIL_FLAG "*)
@@ -70,6 +86,8 @@ if [ -n "$FAKE_GIT_EMPTY_FLAG" ] && [ -d "$FAKE_GIT_EMPTY_TOKENS" ]; then
           case "$FAKE_GIT_EMPTY_MODE" in
             first-line) "$real" "$@" | head -n 1 ;;
             lines:*) "$real" "$@" | head -n "\${FAKE_GIT_EMPTY_MODE#lines:}" ;;
+            nul:*) "$real" "$@" | perl -0 -ne 'print if $. <= '"\${FAKE_GIT_EMPTY_MODE#nul:}" ;;
+            bytes:*) "$real" "$@" | head -c "\${FAKE_GIT_EMPTY_MODE#bytes:}" ;;
           esac
           exit 0
         fi
@@ -114,6 +132,7 @@ export const runWithFakeGit = (
       FAKE_GIT_EMPTY_TOKENS: tokens,
       FAKE_GIT_FAIL_FLAG: run.failFlag ?? "",
       FAKE_GIT_SKIP_TOKENS: skips,
+      FAKE_GIT_VERSION: run.version ?? "",
       PATH: `${bin}:${process.env.PATH ?? ""}`,
     },
     stderr: "pipe",

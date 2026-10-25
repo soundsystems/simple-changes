@@ -49,41 +49,92 @@ const libraryPath = (name: string): string =>
   );
 
 // Runs `body` in a child whose Git is a fake on PATH (see fake-git.ts), with
-// `lost` answers to calls naming `flag` lost first (`mode`), and calls
-// naming `failFlag` failing, and returns what the child printed.
+// `lost` answers to calls naming `flag` lost first (`mode`), calls naming
+// `failFlag` failing, and `git version` printing `version` when given, and
+// returns what the child printed.
 const runInChild = (
   body: string,
   flag: string,
   lost: number,
   failFlag = "",
   mode: FakeGitLoss = "empty",
-  skip = 0
+  skip = 0,
+  version?: string
 ): { remaining: number; reply: unknown } =>
-  runWithFakeGit({ body, failFlag, flag, lost, mode, skip }, (cleanup) =>
-    cleanups.push(cleanup)
+  runWithFakeGit(
+    {
+      body,
+      failFlag,
+      flag,
+      lost,
+      mode,
+      skip,
+      ...(version === undefined ? {} : { version }),
+    },
+    (cleanup) => cleanups.push(cleanup)
   );
 
-describe("exact-byte target proof with a lost Git answer", () => {
-  // The author's tip changes a.txt, and the target holds a different a.txt,
-  // so the true answer is a refusal naming a.txt.
-  const differingFixture = () => {
-    const fixture = repository();
-    const base = git(fixture.root, ["rev-parse", "HEAD"]);
-    git(fixture.root, ["switch", "--quiet", "-c", "author"]);
-    writeFixture(fixture.root, "a.txt", "alpha\n");
-    git(fixture.root, ["add", "a.txt"]);
-    git(fixture.root, ["commit", "--quiet", "-m", "Author a"]);
-    const head = git(fixture.root, ["rev-parse", "HEAD"]);
-    git(fixture.root, ["switch", "--quiet", "main"]);
-    writeFixture(fixture.root, "a.txt", "beta\n");
-    git(fixture.root, ["add", "a.txt"]);
-    git(fixture.root, ["commit", "--quiet", "-m", "Target a"]);
-    const target = git(fixture.root, ["rev-parse", "HEAD"]);
-    return { base, head, root: fixture.root, target };
+describe("exact-byte target proof with a listing lost or cut short", () => {
+  // The source's first commit, A, changes a.txt; its second, B, gives
+  // a.txt the content the target shipped and adds the unshipped z.txt. The
+  // target also adds main.txt, so the paths where the tip and the target
+  // differ are main.txt and then z.txt. The true answer refuses on z.txt.
+  // A commit listing cut after A, B's path listing cut after a.txt, or the
+  // difference cut after main.txt each hide z.txt, so each, read as whole,
+  // would prove the source shipped.
+  const shippedPartFixture = () => {
+    const { root } = repository();
+    git(root, ["switch", "--quiet", "-c", "author"]);
+    writeFixture(root, "a.txt", "draft\n");
+    git(root, ["add", "a.txt"]);
+    git(root, ["commit", "--quiet", "-m", "A"]);
+    writeFixture(root, "a.txt", "shipped\n");
+    writeFixture(root, "z.txt", "unshipped\n");
+    git(root, ["add", "a.txt", "z.txt"]);
+    git(root, ["commit", "--quiet", "-m", "B"]);
+    const head = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "--quiet", "main"]);
+    writeFixture(root, "a.txt", "shipped\n");
+    writeFixture(root, "main.txt", "main\n");
+    git(root, ["add", "a.txt", "main.txt"]);
+    git(root, ["commit", "--quiet", "-m", "Ship a"]);
+    const target = git(root, ["rev-parse", "HEAD"]);
+    return { head, root, target };
   };
 
-  const prove = (flag: string, lost: number) => {
-    const setup = differingFixture();
+  type Setup = ReturnType<typeof shippedPartFixture>;
+
+  // Each listing the proof reads: the Git call that answers it, how many
+  // such calls come before it, and how to cut its answer short at a
+  // boundary that still parses. Path listings are read for A, then B, then
+  // the tip-to-target difference.
+  const listings: [string, (setup: Setup) => string, FakeGitLoss, number][] = [
+    [
+      "the merge base",
+      (setup) => `merge-base ${setup.head} ${setup.target}`,
+      "bytes:20",
+      0,
+    ],
+    [
+      "the commit listing",
+      () => "rev-list --reverse --parents",
+      "first-line",
+      0,
+    ],
+    ["the commit count", () => "rev-list --count --reverse", "bytes:1", 0],
+    ["B's touched paths", () => "--name-only", "nul:1", 1],
+    ["B's per-path counts", () => "--numstat", "nul:1", 1],
+    ["the tip-to-target difference", () => "--name-only", "nul:1", 2],
+    ["the tip-to-target per-path counts", () => "--numstat", "nul:1", 2],
+  ];
+
+  const prove = (
+    flag: (setup: Setup) => string,
+    lost: number,
+    mode: FakeGitLoss,
+    skip = 0
+  ) => {
+    const setup = shippedPartFixture();
     return runInChild(
       `import { proveExactByteTargetContainment } from ${JSON.stringify(libraryPath("exact-byte-proof.ts"))};
 console.log(JSON.stringify(proveExactByteTargetContainment(${JSON.stringify(setup.root)}, {
@@ -91,36 +142,53 @@ console.log(JSON.stringify(proveExactByteTargetContainment(${JSON.stringify(setu
   targetRevision: ${JSON.stringify(setup.target)},
 })));
 `,
-      flag,
-      lost
+      flag(setup),
+      lost,
+      "",
+      mode,
+      skip
     );
   };
 
-  test("with every answer kept, the differing path refuses (control)", () => {
-    const { remaining, reply } = prove("--reverse", 0);
+  test("with every answer kept, the unshipped path refuses (control)", () => {
+    const { remaining, reply } = prove(() => "rev-list --reverse", 0, "empty");
     expect(remaining).toBe(0);
     expect(reply).toMatchObject({
-      differingPaths: ["a.txt"],
+      differingPaths: ["z.txt"],
       status: "refused",
     });
   });
 
-  test.each([
-    ["the commit listing", "--reverse", "listed no commits"],
-    [
-      "a commit's touched paths",
-      "--no-commit-id",
-      "listed no paths for commit",
-    ],
-    ["the tip-to-target difference", "--no-ext-diff", "but they differ"],
-  ])("a lost answer for %s refuses instead of proving", (_what, flag, text) => {
-    const { remaining, reply } = prove(flag, 1);
-    expect(remaining).toBe(0);
-    expect(reply).toMatchObject({ status: "refused" });
-    const { reason } = reply as { reason: string };
-    expect(reason).toContain(text);
-    expect(reason).toContain("retry the command");
-  });
+  test.each(listings)(
+    "%s cut short once is asked again, so the unshipped path still refuses",
+    (_what, flag, cut, skip) => {
+      const { remaining, reply } = prove(flag, 1, cut, skip);
+      expect(remaining).toBe(0);
+      expect(reply).toMatchObject({
+        differingPaths: ["z.txt"],
+        status: "refused",
+      });
+    }
+  );
+
+  for (const loss of ["empty", "cut"] as const) {
+    test.each(listings)(
+      `%s ${loss === "empty" ? "lost" : "cut short"} twice refuses as a lost answer, never proven`,
+      (_what, flag, cut, skip) => {
+        const { remaining, reply } = prove(
+          flag,
+          2,
+          loss === "empty" ? "empty" : cut,
+          skip
+        );
+        expect(remaining).toBe(0);
+        expect(reply).toMatchObject({ differingPaths: [], status: "refused" });
+        expect((reply as { reason: string }).reason).toContain(
+          "retry the command"
+        );
+      }
+    );
+  }
 });
 
 describe("source worktree delta with a lost Git answer", () => {
@@ -367,7 +435,8 @@ const reportInChild = (
   flag: string,
   lost: number,
   mode: FakeGitLoss = "empty",
-  skip = 0
+  skip = 0,
+  version?: string
 ) =>
   runInChild(
     `import { remoteBranchCleanupReport } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
@@ -383,7 +452,8 @@ console.log(JSON.stringify({ errors: result.errors, pending: result.pending }));
     lost,
     "",
     mode,
-    skip
+    skip,
+    version
   );
 
 // Every patch-ID calculation reads the commit's diff and then pipes it into
@@ -563,6 +633,200 @@ describe("the cleanup report with a lost diff or patch ID", () => {
   });
 });
 
+describe("an empty patch ID beside a Git version cut short", () => {
+  // A version answer cut short ("git version 2.5" for 2.54) once read as a
+  // Git that gives no patch ID to a diff without a hunk, so a lost patch ID
+  // for side's mode-only commit settled as a miss and the report dropped
+  // the branch. An empty patch ID for a non-empty diff is now always asked
+  // again and then refused, whatever the version says.
+  const CUT_VERSION = "git version 2.5";
+
+  const report = (lost: number) => {
+    const fixture = patchEquivalentFixture("mode");
+    return {
+      side: fixture.side,
+      ...reportInChild(
+        fixture,
+        SIDE_PATCH_ID.flag,
+        lost,
+        "empty",
+        SIDE_PATCH_ID.skip,
+        CUT_VERSION
+      ),
+    };
+  };
+
+  const audit = (lost: number) => {
+    const fixture = patchEquivalentFixture("mode");
+    return runInChild(
+      `import { targetContainmentAudit } from ${JSON.stringify(libraryPath("cleanup-core.ts"))};
+try {
+  console.log(JSON.stringify({ method: targetContainmentAudit(${JSON.stringify(fixture.root)}, ${JSON.stringify(fixture.head)}, ${JSON.stringify(fixture.side)}).method }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      SIDE_PATCH_ID.flag,
+      lost,
+      "",
+      "empty",
+      SIDE_PATCH_ID.skip,
+      CUT_VERSION
+    );
+  };
+
+  test("with every patch ID whole, the mode-only change is still pending as patch-equivalent (control)", () => {
+    const { remaining, reply, side } = report(0);
+    expect(remaining).toBe(0);
+    expect(reply).toEqual({
+      errors: [],
+      pending: [
+        { headRevision: side, name: "side", proof: "patch-equivalent" },
+      ],
+    });
+    expect(audit(0).reply).toEqual({ method: "patch-equivalent" });
+  });
+
+  test("a lost patch ID is asked again instead of settling as a miss, so the branch is still pending", () => {
+    const { remaining, reply, side } = report(1);
+    expect(remaining).toBe(0);
+    expect(reply).toEqual({
+      errors: [],
+      pending: [
+        { headRevision: side, name: "side", proof: "patch-equivalent" },
+      ],
+    });
+  });
+
+  test("a patch ID lost twice is an error that keeps cleanup pending, never a settled miss", () => {
+    const { remaining, reply, side } = report(2);
+    expect(remaining).toBe(0);
+    const { errors, pending } = reply as {
+      errors: string[];
+      pending: unknown[];
+    };
+    expect(pending).toEqual([]);
+    expect(errors.join(" ")).toContain(
+      `side at ${side}: its containment could not be checked`
+    );
+    expect(errors.join(" ")).toContain("was twice lost or cut short");
+  });
+
+  test("local cleanup's proof refuses after a retry instead of reading a lost patch ID as unmatched", () => {
+    const { remaining, reply } = audit(2);
+    expect(remaining).toBe(0);
+    expect((reply as { error: string }).error).toContain(
+      "was twice lost or cut short"
+    );
+    expect((reply as { error: string }).error).toContain("retry the command");
+  });
+});
+
+describe("patch equivalence with a listing lost or cut short", () => {
+  // side holds S1, which main cherry-picked, and S2, which it did not, so
+  // the true answer is "not patch-equivalent". Every answer the audit
+  // reads, lost or cut short twice, must refuse instead of settling either
+  // way.
+  const halfShippedFixture = () => {
+    const { root } = repository();
+    const base = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "--quiet", "-c", "side"]);
+    for (const name of ["s1", "s2"]) {
+      writeFixture(root, `${name}.txt`, `${name}\n`);
+      git(root, ["add", `${name}.txt`]);
+      git(root, ["commit", "--quiet", "-m", name]);
+    }
+    const side = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["switch", "--quiet", "main"]);
+    writeFixture(root, "main.txt", "main\n");
+    git(root, ["add", "main.txt"]);
+    git(root, ["commit", "--quiet", "-m", "Main"]);
+    git(root, ["cherry-pick", "side~1"]);
+    const target = git(root, ["rev-parse", "HEAD"]);
+    return { base, root, side, target };
+  };
+
+  type Setup = ReturnType<typeof halfShippedFixture>;
+
+  // The target's two commits are read first, then S1, so S2's diff and
+  // patch ID are the fourth of each.
+  const listings: [string, (setup: Setup) => string, FakeGitLoss, number][] = [
+    [
+      "the merge base",
+      (setup) => `merge-base ${setup.side} ${setup.target}`,
+      "bytes:20",
+      0,
+    ],
+    [
+      "the commit count",
+      (setup) => `rev-list --count ${setup.base}..${setup.side}`,
+      "bytes:1",
+      0,
+    ],
+    [
+      "the target's commit listing",
+      (setup) => `rev-list --reverse ${setup.base}..${setup.target}`,
+      "first-line",
+      0,
+    ],
+    [
+      "the head's commit listing",
+      (setup) => `rev-list --reverse ${setup.base}..${setup.side}`,
+      "first-line",
+      0,
+    ],
+    ["S2's diff", () => "--full-index", "lines:3", 3],
+    ["S2's patch ID", () => "patch-id --stable", "bytes:10", 3],
+  ];
+
+  const audit = (
+    flag: (setup: Setup) => string,
+    lost: number,
+    mode: FakeGitLoss,
+    skip: number
+  ) => {
+    const setup = halfShippedFixture();
+    return runInChild(
+      `import { targetContainmentAudit } from ${JSON.stringify(libraryPath("cleanup-core.ts"))};
+try {
+  console.log(JSON.stringify({ method: targetContainmentAudit(${JSON.stringify(setup.root)}, ${JSON.stringify(setup.target)}, ${JSON.stringify(setup.side)}).method }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      flag(setup),
+      lost,
+      "",
+      mode,
+      skip
+    );
+  };
+
+  test("with every answer kept, the half-shipped branch is not patch-equivalent (control)", () => {
+    expect(audit(() => "rev-list --reverse", 0, "empty", 0).reply).toEqual({
+      method: null,
+    });
+  });
+
+  for (const loss of ["empty", "cut"] as const) {
+    test.each(listings)(
+      `%s ${loss === "empty" ? "lost" : "cut short"} twice refuses, never settled`,
+      (_what, flag, cut, skip) => {
+        const { remaining, reply } = audit(
+          flag,
+          2,
+          loss === "empty" ? "empty" : cut,
+          skip
+        );
+        expect(remaining).toBe(0);
+        expect((reply as { error?: string }).error).toContain(
+          "retry the command"
+        );
+      }
+    );
+  }
+});
+
 describe("local cleanup's patch proof with a diff cut short", () => {
   // The target carries part of the source commit: the same change to a.txt
   // without b.txt, or the same mode change to f without its new binary
@@ -601,15 +865,17 @@ describe("local cleanup's patch proof with a diff cut short", () => {
     }
     git(root, ["commit", "--quiet", "-m", "Ship part of it"]);
     const target = git(root, ["rev-parse", "HEAD"]);
+    // The diff as the intercepted answer starts: the commit's ID line, then
+    // its diff.
     const diff = git(root, [
       "diff-tree",
       "--patch",
-      "--no-commit-id",
       "--full-index",
       source,
     ]).split("\n");
-    // The lines of the part the target carries: a.txt's whole diff, or f's
-    // header through its new mode.
+    expect(diff[0]).toBe(source);
+    // The lines of the part the target carries, from the ID line: through
+    // a.txt's final line, or through f's new mode.
     const kept =
       change === "text"
         ? diff.findIndex((line) => line.startsWith("diff --git a/b.txt"))
@@ -662,9 +928,9 @@ describe("a rev-list listing checked whole against its count", () => {
       git(fixture.root, ["commit", "--quiet", "-m", name]);
     }
     return runInChild(
-      `import { countedRevisionList } from ${JSON.stringify(libraryPath("process.ts"))};
+      `import { completeRevisionList } from ${JSON.stringify(libraryPath("git-complete.ts"))};
 try {
-  console.log(JSON.stringify({ commits: countedRevisionList(${JSON.stringify(fixture.root)}, ["--reverse", "HEAD~3..HEAD"]).length }));
+  console.log(JSON.stringify({ commits: completeRevisionList(${JSON.stringify(fixture.root)}, ["--reverse", "HEAD~3..HEAD"]).length }));
 } catch (error) {
   console.log(JSON.stringify({ error: error.message, exitCode: error.exitCode }));
 }

@@ -1,4 +1,5 @@
 import { PATCH_EQUIVALENCE_MAX_COMMITS } from "./cleanup-core.ts";
+import { completeMergeBase } from "./git-complete.ts";
 import { runGit } from "./process.ts";
 import { isExternalDeletionShape } from "./remote-branch-reconciliation.ts";
 import { RUN_ID_PATTERN } from "./run-id.ts";
@@ -291,9 +292,8 @@ export const remoteBranchNameHolds = (
 /**
  * Where a live branch forked from the target. No shared history means no fork
  * point; any other Git failure throws, because a hold that cannot be computed
- * must not read as no hold. So does an answer that is not a commit: Git asks
- * a lost (empty) answer once more and refuses a second one, and anything
- * else that is not an object ID is refused here.
+ * must not read as no hold. So does an answer lost or cut short, which
+ * git-complete.ts asks once more and then refuses.
  */
 const forkPoint = (
   repositoryPath: string,
@@ -301,26 +301,17 @@ const forkPoint = (
   head: string,
   targetRevision: string
 ): string | null => {
-  const result = runGit(
+  const answer = completeMergeBase(
     repositoryPath,
-    ["merge-base", `${head}^{commit}`, `${targetRevision}^{commit}`],
-    true
+    `${head}^{commit}`,
+    `${targetRevision}^{commit}`
   );
-  if (result.exitCode === 1 && result.stderr.trim() === "") {
-    return null;
-  }
-  if (result.exitCode !== 0) {
+  if ("failure" in answer) {
     throw new Error(
-      `cannot find where ${branch} forked from target ${targetRevision}: ${result.stderr.trim() || `exit ${result.exitCode}`}`
+      `cannot find where ${branch} forked from target ${targetRevision}: ${answer.failure}`
     );
   }
-  const point = result.stdout.trim();
-  if (!HEAD_PATTERN.test(point)) {
-    throw new Error(
-      `cannot find where ${branch} forked from target ${targetRevision}: Git answered ${JSON.stringify(point.slice(0, 80))}, not a commit`
-    );
-  }
-  return point;
+  return answer.mergeBase;
 };
 
 /**
@@ -585,39 +576,23 @@ const externallyDeletedItems = (
   });
 
 // The merge base the report hands the patch audit: a commit, null when the
-// head and the target share no history, or why Git could not settle it. The
-// runner asks a lost (empty) answer once more and refuses a second.
+// head and the target share no history, or why Git could not settle it,
+// including an answer git-complete.ts refused as lost or cut short.
 const reportMergeBase = (
   repositoryPath: string,
   commit: string,
   target: string
 ): { mergeBase: string | null } | { failure: string } => {
-  let base: { exitCode: number; stderr: string; stdout: string };
   try {
-    base = runGit(repositoryPath, ["merge-base", commit, target], true);
+    const answer = completeMergeBase(repositoryPath, commit, target);
+    return "failure" in answer
+      ? { failure: `Git could not find a merge base (${answer.failure}).` }
+      : answer;
   } catch (error) {
     return {
       failure: `Git could not find a merge base (${error instanceof Error ? error.message : String(error)}).`,
     };
   }
-  if (
-    base.exitCode === 1 &&
-    base.stdout.trim() === "" &&
-    base.stderr.trim() === ""
-  ) {
-    return { mergeBase: null };
-  }
-  if (base.exitCode !== 0) {
-    return {
-      failure: `Git could not find a merge base (${base.stderr.trim() || `exit ${base.exitCode}`}).`,
-    };
-  }
-  const mergeBase = base.stdout.trim();
-  return HEAD_PATTERN.test(mergeBase)
-    ? { mergeBase }
-    : {
-        failure: `Git's merge base answer ${JSON.stringify(mergeBase.slice(0, 80))} is not a commit.`,
-      };
 };
 
 // Whether every commit of the head outside the target has a patch-id match

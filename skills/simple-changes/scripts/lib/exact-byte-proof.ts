@@ -1,3 +1,9 @@
+import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import {
+  completeChangedPaths,
+  completeMergeBase,
+  completeRevisionList,
+} from "./git-complete.ts";
 import { runGit } from "./process.ts";
 
 /** The most source commits one proof reads; a longer range is refused. */
@@ -73,25 +79,11 @@ const isAncestor = (
     true
   ).exitCode === 0;
 
-const nulSeparated = (output: string): string[] =>
-  output.split("\0").filter((item) => item.length > 0);
-
-const LOST_ANSWER_STEP =
-  "Git exited 0 without printing that answer, so the proof refuses; retry the command.";
-
 const DIFF_OPTIONS = [
   "--no-renames",
   "--no-ext-diff",
   "--ignore-submodules=none",
 ] as const;
-
-// Whether a diff whose listing came back empty really has no changes. A
-// listing may be legitimately empty, so an empty one is checked again by
-// exit code alone, which a lost answer cannot fake: exit 1 means changes.
-const confirmedEmptyDiff = (
-  repositoryPath: string,
-  args: readonly string[]
-): boolean => runGit(repositoryPath, args, true).exitCode === 0;
 
 // The range's exclusive start: the given base or the merge base, which must
 // be an ancestor of both the tip and the target.
@@ -103,13 +95,12 @@ const sourceBaseFor = (
 ): string | ExactByteTargetRefusal => {
   let baseRevision: string | null;
   if (sourceBase === undefined) {
-    const mergeBase = runGit(
+    const answer = completeMergeBase(
       repositoryPath,
-      ["merge-base", headRevision, targetRevision],
-      true
+      headRevision,
+      targetRevision
     );
-    baseRevision =
-      mergeBase.exitCode === 0 ? mergeBase.stdout.trim() || null : null;
+    baseRevision = "mergeBase" in answer ? answer.mergeBase : null;
     if (!baseRevision) {
       return refused(
         `Source tip ${headRevision} shares no history with target ${targetRevision}.`
@@ -142,26 +133,14 @@ const singleParentCommits = (
   headRevision: string,
   maxCommits: number
 ): string[] | ExactByteTargetRefusal => {
-  const parentLines = runGit(repositoryPath, [
-    "rev-list",
+  const parentLines = completeRevisionList(repositoryPath, [
     "--reverse",
     "--parents",
     `${baseRevision}..${headRevision}`,
-  ])
-    .stdout.split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  ]);
   if (parentLines.length > maxCommits) {
     return refused(
       `Source range ${baseRevision}..${headRevision} has ${parentLines.length} commits, more than the ${maxCommits} one proof reads.`
-    );
-  }
-  // The base is an ancestor of a different tip, so the range holds at least
-  // one commit; an empty listing that exited 0 is a lost answer, and reading
-  // it as no commits would prove an empty range.
-  if (parentLines.length === 0 && baseRevision !== headRevision) {
-    return refused(
-      `Git listed no commits in ${baseRevision}..${headRevision}, which cannot be empty. ${LOST_ANSWER_STEP}`
     );
   }
   const commits: string[] = [];
@@ -180,24 +159,9 @@ const singleParentCommits = (
   return commits;
 };
 
-/**
- * Proves that a source range left nothing outside the target: every path
- * that any commit in `base..head` touched has exactly the same tree entry
- * (bytes and mode, or absence) at the source tip as at the target revision.
- * It reads history only and changes nothing.
- *
- * This is byte evidence, not ancestry: it holds when reviewed work reached
- * the target inside a different or broader commit, which patch-ID matching
- * cannot see. Because the base is an ancestor of the target and every path
- * the range changed already equals the target, deleting the source branch
- * would lose no content. It never says the target came from the source.
- *
- * It refuses, with a reason, when a revision does not resolve, the base is
- * not an ancestor of both the tip and the target, the range holds a merge
- * commit (whose changes depend on which parent is read) or more than
- * `maxCommits` commits, or any touched path differs from the target.
- */
-export const proveExactByteTargetContainment = (
+// The proof itself; the exported wrapper turns a lost Git answer into a
+// refusal.
+const exactByteProof = (
   repositoryPath: string,
   input: ExactByteTargetProofInput
 ): ExactByteTargetResult => {
@@ -231,64 +195,21 @@ export const proveExactByteTargetContainment = (
   }
   const touched = new Set<string>();
   for (const sha of commits) {
-    const paths = nulSeparated(
-      runGit(repositoryPath, [
-        "diff-tree",
-        "-r",
-        "-z",
-        "--no-commit-id",
-        "--name-only",
-        "--no-renames",
-        "--ignore-submodules=none",
-        sha,
-      ]).stdout
-    );
-    if (
-      paths.length === 0 &&
-      !confirmedEmptyDiff(repositoryPath, [
-        "diff-tree",
-        "--quiet",
-        "--no-commit-id",
-        "-r",
-        ...DIFF_OPTIONS,
-        sha,
-      ])
-    ) {
-      return refused(
-        `Git listed no paths for commit ${sha}, which changes some. ${LOST_ANSWER_STEP}`
-      );
-    }
-    for (const path of paths) {
+    for (const path of completeChangedPaths(
+      repositoryPath,
+      "diff-tree",
+      ["-r", "--no-commit-id", ...DIFF_OPTIONS],
+      [sha]
+    )) {
       touched.add(path);
     }
   }
   const different = new Set(
-    nulSeparated(
-      runGit(repositoryPath, [
-        "diff",
-        "--name-only",
-        "-z",
-        ...DIFF_OPTIONS,
-        headRevision,
-        targetRevision,
-      ]).stdout
-    )
-  );
-  if (
-    different.size === 0 &&
-    touched.size > 0 &&
-    !confirmedEmptyDiff(repositoryPath, [
-      "diff",
-      "--quiet",
-      ...DIFF_OPTIONS,
+    completeChangedPaths(repositoryPath, "diff", DIFF_OPTIONS, [
       headRevision,
       targetRevision,
     ])
-  ) {
-    return refused(
-      `Git listed no paths where ${headRevision} differs from ${targetRevision}, but they differ. ${LOST_ANSWER_STEP}`
-    );
-  }
+  );
   const touchedPaths = [...touched].sort();
   const differingPaths = touchedPaths.filter((path) => different.has(path));
   if (differingPaths.length > 0) {
@@ -305,4 +226,41 @@ export const proveExactByteTargetContainment = (
     targetRevision,
     touchedPaths,
   };
+};
+
+/**
+ * Proves that a source range left nothing outside the target: every path
+ * that any commit in `base..head` touched has exactly the same tree entry
+ * (bytes and mode, or absence) at the source tip as at the target revision.
+ * It reads history only and changes nothing.
+ *
+ * This is byte evidence, not ancestry: it holds when reviewed work reached
+ * the target inside a different or broader commit, which patch-ID matching
+ * cannot see. Because the base is an ancestor of the target and every path
+ * the range changed already equals the target, deleting the source branch
+ * would lose no content. It never says the target came from the source.
+ *
+ * It refuses, with a reason, when a revision does not resolve, the base is
+ * not an ancestor of both the tip and the target, the range holds a merge
+ * commit (whose changes depend on which parent is read) or more than
+ * `maxCommits` commits, any touched path differs from the target, or a
+ * listing it reads was twice lost or cut short.
+ */
+export const proveExactByteTargetContainment = (
+  repositoryPath: string,
+  input: ExactByteTargetProofInput
+): ExactByteTargetResult => {
+  // Every listing is read whole through git-complete.ts, which refuses an
+  // answer lost or cut short; that refusal is a refusal of the proof too.
+  try {
+    return exactByteProof(repositoryPath, input);
+  } catch (error) {
+    if (
+      error instanceof SimpleChangesError &&
+      error.exitCode === EXIT_CODES.inventory
+    ) {
+      return refused(error.message);
+    }
+    throw error;
+  }
 };

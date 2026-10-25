@@ -16,13 +16,14 @@ import {
 } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
+import { completeRevisionList } from "./git-complete.ts";
 import { sha256Json } from "./hash.ts";
 import { parseWorktreeList } from "./inventory.ts";
 import {
   type ArchiveRetentionPolicy,
   archiveRetentionPolicy,
 } from "./policy.ts";
-import { countedRevisionList, runGit } from "./process.ts";
+import { runGit } from "./process.ts";
 import { headCoverage, readReviewLedger } from "./review-ledger.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -423,14 +424,12 @@ const uniqueSourceCommits = (
       `head ${head} shares no history with reviewed target ${receipt.targetRevision}.`
     );
   }
-  const unique = runGit(primary, [
-    "rev-list",
+  // Checked whole against Git's count, so a listing cut short never leaves
+  // a source commit out of the mapping the receipt must cover.
+  const unique = completeRevisionList(primary, [
     "--reverse",
     `${receipt.targetRevision}..${head}`,
-  ])
-    .stdout.split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  ]);
   if (unique.length > REPLACEMENT_LINEAGE_MAX_COMMITS) {
     refuse(
       `the source has ${unique.length} commits outside the reviewed target, more than the ${REPLACEMENT_LINEAGE_MAX_COMMITS} one receipt may map.`
@@ -1242,7 +1241,7 @@ const revisionListing = (
 ): { commits: string[] } | { failure: string } => {
   try {
     return {
-      commits: countedRevisionList(path, question, {
+      commits: completeRevisionList(path, question, {
         gitOptions: overrides,
         ...(stdin === undefined ? {} : { stdin }),
       }),
@@ -1533,11 +1532,30 @@ const pinArchive = (
   );
 };
 
+// A test-only seam: the read-back of the reflog pins throws when one of
+// their refs ends with the suffix the read-back seam names, as a Git spawn
+// does when the process table is exhausted.
+const throwOnPinReadBackForTests = (pins: readonly ArchivePinRef[]): void => {
+  const suffix = process.env.SIMPLE_CHANGES_TEST_FAIL_PIN_READBACK;
+  if (
+    process.env.NODE_ENV === "test" &&
+    suffix &&
+    pins.some((pin) => pin.ref.endsWith(`/${suffix}`))
+  ) {
+    throw new SimpleChangesError(
+      `Simulated spawn failure while reading back the pins under ${suffix}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 // The commits only the checkout's reflogs keep, under `<prefix>/<commit>`
 // like every other object the checkout named, in one transaction that
 // creates each only when absent, so a failure writes none of them and up to
-// REFLOG_PIN_LIMIT need no Git command each. They are tracked once Git
-// reports the write, then read back from one listing.
+// REFLOG_PIN_LIMIT need no Git command each. They are tracked the moment Git
+// reports the write, before the read-back from one listing, so a read-back
+// that throws (a spawn failing under load) still leaves every pin known to
+// the undo.
 const pinReflogCommits = (
   primary: string,
   prefix: string,
@@ -1558,6 +1576,10 @@ const pinReflogCommits = (
     pins.map((pin) => `create ${pin.ref} ${pin.object}`),
     options.message
   );
+  if (failure === null) {
+    pinRefs.push(...pins);
+    throwOnPinReadBackForTests(pins);
+  }
   const listed = runGit(
     primary,
     [
@@ -1583,7 +1605,6 @@ const pinReflogCommits = (
     pinRefs.push(...pins.filter((pin) => found.get(pin.ref) === pin.object));
     return `Could not pin the ${pins.length} commit(s) only the checkout's reflogs keep under ${prefix}/: ${failure}`;
   }
-  pinRefs.push(...pins);
   const unread = pins.find((pin) => found.get(pin.ref) !== pin.object);
   if (listed.exitCode !== 0 || unread) {
     return `Pinned the ${pins.length} commit(s) only the checkout's reflogs keep under ${prefix}/, but ${unread?.ref ?? "they"} did not read back (${listed.stderr.trim() || "missing from Git's listing"}).`;

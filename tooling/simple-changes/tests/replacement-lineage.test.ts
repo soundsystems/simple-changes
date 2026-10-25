@@ -2616,6 +2616,40 @@ describe("commits only the checkout's reflogs keep", () => {
     );
     expect(pinRefs(root)).toBe("");
   });
+
+  test("reflog pins whose read-back throws are still undone with the archive", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const commits = reflogOnlyCommits(lineage, 3);
+    // The pins are written in one transaction; the seam makes their
+    // read-back throw, as a Git spawn does when the process table is full.
+    expectRefusal(
+      () =>
+        withEnvironment(
+          {
+            NODE_ENV: "test",
+            SIMPLE_CHANGES_TEST_FAIL_PIN_READBACK: commits[1] ?? "",
+          },
+          () => prune(lineage, receiptFor(lineage))
+        ),
+      NO_ARCHIVE_PATTERN
+    );
+    expect(worktreePaths(root)).toContain(lineage.path);
+    expect(pinRefs(root)).toBe("");
+    expect(listWorktreeArchives(commonDirectory(root))).toEqual([]);
+  });
+
+  test("with every read-back answered, the same reflog pins are kept with the archive (control)", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const commits = reflogOnlyCommits(lineage, 3);
+    const report = prune(lineage, receiptFor(lineage));
+    expect(report.errors).toEqual([]);
+    const namespace = archivePinNamespace(reportedArchive(report).archiveId);
+    for (const commit of commits) {
+      expect(pinRefs(root)).toContain(`${namespace}/objects/${commit}`);
+    }
+  });
 });
 
 describe("commits only the checkout's reflogs keep, with an answer cut short", () => {

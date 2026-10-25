@@ -11,9 +11,15 @@ import {
   type BranchAuditReport,
 } from "./branch-audit.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import {
+  completeMergeBase,
+  completePatchId,
+  completeRevisionCount,
+  completeRevisionList,
+} from "./git-complete.ts";
 import { captureInventory } from "./inventory.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
-import { countedRevisionList, gitExecutable, runGit } from "./process.ts";
+import { gitExecutable, runGit } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 import { validateSchema } from "./schema.ts";
 
@@ -101,118 +107,6 @@ const rawGit = (
   return { exitCode: result.exitCode, stdout: new Uint8Array(result.stdout) };
 };
 
-const COUNT_ANSWER = /^[0-9]+\n$/u;
-
-// How many commits `range` holds. Git always prints digits and a line
-// break for this, so an answer lost or cut short on its way here (seen
-// under heavy load) is asked once more, then refused.
-const revisionCount = (cwd: string, range: string): number => {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const counted = runGit(cwd, ["rev-list", "--count", range]).stdout;
-    if (COUNT_ANSWER.test(counted)) {
-      return Number.parseInt(counted, 10);
-    }
-  }
-  throw new SimpleChangesError(
-    `git rev-list --count ${range} twice printed no whole count, so its answer was lost on its way to this process (seen under heavy load). Refusing to act on a partial answer; retry the command.`,
-    EXIT_CODES.inventory
-  );
-};
-
-// Every listing the audit reads is checked whole against Git's own count,
-// so a lost or partial listing never reads as "every commit has a match" or
-// as a target that lacks one.
-const revisionList = (cwd: string, range: string): string[] =>
-  countedRevisionList(cwd, ["--reverse", range]);
-
-const PATCH_ID_ANSWER = /^([0-9a-f]{40}|[0-9a-f]{64}) [0-9a-f]{40,64}\n$/u;
-const HUNK_LINE = /^@@ /mu;
-const GIT_VERSION_ANSWER = /^git version ([0-9]+)\.([0-9]+)/u;
-const textEncoder = new TextEncoder();
-
-// A commit's diff, asked for twice in one answer. `diff-tree --stdin
-// --always` prints the commit's ID line and then its diff for each line it
-// reads, so a whole answer is the same block twice, and an answer lost or
-// cut short anywhere is not, since no line of a diff can be the bare ID of
-// the commit it shows. The diff is what `diff-tree --patch --no-commit-id`
-// prints: nothing for a root commit, a merge, or a commit with its
-// parent's tree. Null when the answer was not whole.
-const wholeDiff = (cwd: string, sha: string): Buffer | null => {
-  const answer = Buffer.from(
-    rawGit(
-      cwd,
-      ["diff-tree", "--stdin", "--always", "--patch", "--full-index"],
-      textEncoder.encode(`${sha}\n${sha}\n`)
-    ).stdout
-  );
-  const header = Buffer.from(`${sha}\n`);
-  const half = answer.length / 2;
-  if (!Number.isInteger(half) || half < header.length) {
-    return null;
-  }
-  const first = answer.subarray(0, half);
-  return first.subarray(0, header.length).equals(header) &&
-    first.equals(answer.subarray(half))
-    ? first.subarray(header.length)
-    : null;
-};
-
-// Whether this Git gives a patch ID to every diff: 2.39 and later also ID
-// a diff without hunks, such as a mode change or a binary file. A version
-// that cannot be read counts as yes, so an empty answer then refuses.
-const idsEveryDiff = (cwd: string): boolean => {
-  const match = GIT_VERSION_ANSWER.exec(runGit(cwd, ["version"]).stdout);
-  if (!match) {
-    return true;
-  }
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  return major > 2 || (major === 2 && minor >= 39);
-};
-
-// A commit's patch ID, null when Git rightly gives it none, or undefined
-// when an answer it rests on was not whole. The diff fed to patch-id is the
-// whole one, so a diff cut short, whose patch ID would be a valid ID of the
-// part that arrived and could match a target commit that changed only that
-// part, never reaches it; patch-id's own answer must be one whole line.
-const wholePatchId = (cwd: string, sha: string): string | null | undefined => {
-  const diff = wholeDiff(cwd, sha);
-  if (diff === null) {
-    return;
-  }
-  if (diff.length === 0) {
-    return null;
-  }
-  const output = textDecoder.decode(
-    rawGit(cwd, ["patch-id", "--stable"], diff).stdout
-  );
-  const patchId = PATCH_ID_ANSWER.exec(output)?.[1];
-  if (patchId) {
-    return patchId;
-  }
-  return output === "" &&
-    !HUNK_LINE.test(diff.toString("latin1")) &&
-    !idsEveryDiff(cwd)
-    ? null
-    : undefined;
-};
-
-// Patch evidence is accepted only when it is whole. Anything else is asked
-// once more and then refused, so lost or cut-short evidence never settles
-// as a match or as a miss.
-const patchIdFor = (cwd: string, sha: string): string | null => {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const patchId = wholePatchId(cwd, sha);
-    if (patchId !== undefined) {
-      return patchId;
-    }
-  }
-  throw new SimpleChangesError(
-    `Git's diff or patch ID for commit ${sha} was twice lost or cut short on its way to this process (seen under heavy load), so it cannot be compared. Refusing to act on a partial answer; retry the command.`,
-    EXIT_CODES.inventory
-  );
-};
-
 export interface CommitEquivalenceOptions {
   maxCommits?: number;
   /**
@@ -238,11 +132,14 @@ export const commitEquivalenceAgainstTarget = (
   targetRevision: string,
   options: CommitEquivalenceOptions = {}
 ): CommitEquivalenceResult => {
-  const mergeBaseResult =
+  // No common commit, or a merge base Git could not give, proves nothing,
+  // so the head reads as not fully matched; a merge base lost or cut short
+  // is refused instead.
+  const mergeBaseAnswer =
     options.mergeBase === undefined
-      ? runGit(repositoryPath, ["merge-base", headSha, targetRevision], true)
-      : { exitCode: 0, stderr: "", stdout: options.mergeBase };
-  if (mergeBaseResult.exitCode !== 0) {
+      ? completeMergeBase(repositoryPath, headSha, targetRevision)
+      : { mergeBase: options.mergeBase };
+  if (!("mergeBase" in mergeBaseAnswer && mergeBaseAnswer.mergeBase)) {
     return {
       commitCount: 0,
       commits: [],
@@ -251,8 +148,11 @@ export const commitEquivalenceAgainstTarget = (
       mergeBase: null,
     };
   }
-  const mergeBase = mergeBaseResult.stdout.trim();
-  const commitCount = revisionCount(repositoryPath, `${mergeBase}..${headSha}`);
+  const { mergeBase } = mergeBaseAnswer;
+  const commitCount = completeRevisionCount(
+    repositoryPath,
+    `${mergeBase}..${headSha}`
+  );
   if (
     typeof options.maxCommits === "number" &&
     commitCount > options.maxCommits
@@ -269,19 +169,22 @@ export const commitEquivalenceAgainstTarget = (
   const cachedTargetPatchIds = options.targetPatchIdCache?.get(targetRange);
   const targetPatchIds = cachedTargetPatchIds ?? new Map<string, string>();
   if (!cachedTargetPatchIds) {
-    for (const sha of revisionList(repositoryPath, targetRange)) {
-      const patchId = patchIdFor(repositoryPath, sha);
+    for (const sha of completeRevisionList(repositoryPath, [
+      "--reverse",
+      targetRange,
+    ])) {
+      const patchId = completePatchId(repositoryPath, sha);
       if (patchId && !targetPatchIds.has(patchId)) {
         targetPatchIds.set(patchId, sha);
       }
     }
     options.targetPatchIdCache?.set(targetRange, targetPatchIds);
   }
-  const commits: WorktreeEquivalenceCommit[] = revisionList(
+  const commits: WorktreeEquivalenceCommit[] = completeRevisionList(
     repositoryPath,
-    `${mergeBase}..${headSha}`
+    ["--reverse", `${mergeBase}..${headSha}`]
   ).map((sha) => {
-    const patchId = patchIdFor(repositoryPath, sha);
+    const patchId = completePatchId(repositoryPath, sha);
     const matchedTargetSha = patchId
       ? (targetPatchIds.get(patchId) ?? null)
       : null;

@@ -24,6 +24,11 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import {
+  completeListing,
+  completeObjectId,
+  completeRevisionList,
+} from "./git-complete.ts";
 import { parseWorktreeList } from "./inventory.ts";
 import { runGit, runGitWithInput } from "./process.ts";
 import { validateSchema } from "./schema.ts";
@@ -58,7 +63,6 @@ const REASON_MAXIMUM_LENGTH = 500;
 const REPLACEMENT_CHARACTER = "\uFFFD";
 const OBJECT_ID_TOKEN_PATTERN =
   /(?<![0-9a-f])(?:[0-9a-f]{64}|[0-9a-f]{40})(?![0-9a-f])/gu;
-const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const DIGEST_PREFIX_PATTERN = /^[0-9a-f]{8}/u;
 const STAMP_SEPARATOR_PATTERN = /[-:]/gu;
 const EXTENDED_REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/gu;
@@ -1818,59 +1822,60 @@ const replacementFailure = (
   if (ancestry.exitCode !== 0) {
     return `Simple Changes could not check that ${targetRef} contains replacement ${replacement}: ${gitDetail(ancestry)}.`;
   }
-  const reverts = runGit(
-    primaryCheckout,
-    [
-      ...context.gitOptions,
-      "rev-list",
-      "--fixed-strings",
-      `--grep=This reverts commit ${replacement}`,
-      `${replacement}..${target}`,
-    ],
-    true
-  );
-  if (reverts.exitCode !== 0) {
-    return `Simple Changes could not check whether ${targetRef} reverts replacement ${replacement}: ${gitDetail(reverts)}.`;
+  // No revert is an empty listing, which is also what a lost answer looks
+  // like, so the listing is checked whole against Git's own count of it.
+  let reverts: string[];
+  try {
+    reverts = completeRevisionList(
+      primaryCheckout,
+      [
+        "--fixed-strings",
+        `--grep=This reverts commit ${replacement}`,
+        `${replacement}..${target}`,
+      ],
+      { gitOptions: context.gitOptions }
+    );
+  } catch (error) {
+    return `Simple Changes could not check whether ${targetRef} reverts replacement ${replacement}: ${errorText(error)}`;
   }
-  const [revert] = reverts.stdout.trim().split("\n");
+  const [revert] = reverts;
   return revert
     ? `${targetRef} reverts replacement ${replacement} in commit ${revert} (found by Git's own revert message).`
     : null;
 };
 
 // Null when the target still contains every replacement and reverts none;
-// otherwise why the archive needs attention, naming the replacement.
+// otherwise why the archive needs attention, naming the replacement. A
+// check Git could not answer whole is a reason too, so the archive is kept
+// and reported rather than pruned on a lost answer.
 const recheckFailure = (
   context: PruneContext,
   manifest: WorktreeArchiveManifest
 ): string | null => {
-  const resolved = runGit(
-    context.input.primaryCheckout,
-    [
-      ...context.gitOptions,
-      "rev-parse",
-      "--verify",
-      "--quiet",
+  try {
+    const target = completeObjectId(
+      context.input.primaryCheckout,
       `${manifest.targetRef}^{commit}`,
-    ],
-    true
-  );
-  const target = resolved.stdout.trim();
-  if (resolved.exitCode !== 0 || !OBJECT_ID_PATTERN.test(target)) {
-    return `The target ${manifest.targetRef} no longer resolves to a commit, so Simple Changes cannot show that it still carries the replacements.`;
-  }
-  for (const replacement of manifest.replacementCommits) {
-    const failure = replacementFailure(
-      context,
-      manifest.targetRef,
-      target,
-      replacement
+      context.gitOptions
     );
-    if (failure) {
-      return failure;
+    if (!target) {
+      return `The target ${manifest.targetRef} no longer resolves to a commit, so Simple Changes cannot show that it still carries the replacements.`;
     }
+    for (const replacement of manifest.replacementCommits) {
+      const failure = replacementFailure(
+        context,
+        manifest.targetRef,
+        target,
+        replacement
+      );
+      if (failure) {
+        return failure;
+      }
+    }
+    return null;
+  } catch (error) {
+    return `Simple Changes could not re-check ${manifest.targetRef} against the replacements: ${errorText(error)}`;
   }
-  return null;
 };
 
 const markerAge = (marker: RestoringMarker, now: Date): string => {
@@ -2032,20 +2037,30 @@ interface CurrentRef {
   symref: string;
 }
 
+// The refs under an archive's namespace, or null when Git could not list
+// them whole. A line cut short could drop the `%(symref)` field and read a
+// symbolic ref as a plain one, so a listing that stops inside a line is
+// refused; one lost or cut at a line's end only leaves pins out, which
+// `planPins` confirms by exit code before it calls a pin gone.
 const namespaceRefs = (
   context: PruneContext,
   namespace: string
 ): Map<string, CurrentRef> | null => {
-  const result = runGit(
-    context.input.primaryCheckout,
-    [
-      ...context.gitOptions,
-      "for-each-ref",
-      "--format=%(refname)%00%(objectname)%00%(symref)",
-      `${namespace}/`,
-    ],
-    true
-  );
+  let result: { exitCode: number; stdout: string };
+  try {
+    result = completeListing(
+      context.input.primaryCheckout,
+      [
+        ...context.gitOptions,
+        "for-each-ref",
+        "--format=%(refname)%00%(objectname)%00%(symref)",
+        `${namespace}/`,
+      ],
+      "\n"
+    );
+  } catch {
+    return null;
+  }
   if (result.exitCode !== 0) {
     return null;
   }
@@ -2083,6 +2098,16 @@ const pinBlockReason = (
   return null;
 };
 
+// Whether Git says a pin the listing left out is really gone: `rev-parse
+// --verify` exits 1 for a ref that does not exist, which a lost listing
+// cannot fake. Anything else means the listing lost it.
+const pinIsGone = (context: PruneContext, ref: string): boolean =>
+  runGit(
+    context.input.primaryCheckout,
+    [...context.gitOptions, "rev-parse", "--verify", "--quiet", ref],
+    true
+  ).exitCode === 1;
+
 const planPins = (
   context: PruneContext,
   manifest: WorktreeArchiveManifest
@@ -2114,8 +2139,13 @@ const planPins = (
         plan.blocked.push(pin.ref);
         plan.notes.push(reason);
       }
-    } else {
+    } else if (pinIsGone(context, pin.ref)) {
       plan.gone.push(pin.ref);
+    } else {
+      plan.blocked.push(pin.ref);
+      plan.notes.push(
+        `${pin.ref} was left alone because Git's listing of the archive's pins left it out although it exists.`
+      );
     }
   }
   return plan;

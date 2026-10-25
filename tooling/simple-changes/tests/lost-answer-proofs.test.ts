@@ -1,12 +1,26 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureInventory } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
+import { startLoop } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
+import { DEFAULT_ARCHIVE_TOTAL_BYTES } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import {
   buildRemoteInventory,
   type RemoteInventoryPages,
 } from "../../../skills/simple-changes/scripts/lib/remote-inventory.ts";
+import {
+  archivePinNamespace,
+  copyWorktreeIntoArchive,
+  newArchiveId,
+  writeWorktreeArchiveManifest,
+} from "../../../skills/simple-changes/scripts/lib/worktree-archive.ts";
 import { type FakeGitLoss, runWithFakeGit } from "./fake-git.ts";
 import {
   createTestRepository,
@@ -104,11 +118,23 @@ describe("exact-byte target proof with a listing lost or cut short", () => {
 
   type Setup = ReturnType<typeof shippedPartFixture>;
 
-  // Each listing the proof reads: the Git call that answers it, how many
+  // Each answer the proof reads: the Git call that answers it, how many
   // such calls come before it, and how to cut its answer short at a
-  // boundary that still parses. Path listings are read for A, then B, then
-  // the tip-to-target difference.
+  // boundary that still parses. Path listings and file counts are read for
+  // A, then B, then the tip-to-target difference.
   const listings: [string, (setup: Setup) => string, FakeGitLoss, number][] = [
+    [
+      "the source tip",
+      (setup) => `--verify --quiet ${setup.head}^{commit}`,
+      "bytes:20",
+      0,
+    ],
+    [
+      "the target revision",
+      (setup) => `--verify --quiet ${setup.target}^{commit}`,
+      "bytes:20",
+      0,
+    ],
     [
       "the merge base",
       (setup) => `merge-base ${setup.head} ${setup.target}`,
@@ -124,8 +150,10 @@ describe("exact-byte target proof with a listing lost or cut short", () => {
     ["the commit count", () => "rev-list --count --reverse", "bytes:1", 0],
     ["B's touched paths", () => "--name-only", "nul:1", 1],
     ["B's per-path counts", () => "--numstat", "nul:1", 1],
+    ["B's file count", () => "--shortstat", "bytes:3", 1],
     ["the tip-to-target difference", () => "--name-only", "nul:1", 2],
     ["the tip-to-target per-path counts", () => "--numstat", "nul:1", 2],
+    ["the tip-to-target file count", () => "--shortstat", "bytes:3", 2],
   ];
 
   const prove = (
@@ -157,6 +185,26 @@ console.log(JSON.stringify(proveExactByteTargetContainment(${JSON.stringify(setu
       differingPaths: ["z.txt"],
       status: "refused",
     });
+  });
+
+  // Both of B's listings, names and per-path counts, cut after a.txt agree
+  // with each other, so only Git's own file count shows z.txt is missing.
+  // Read as whole, they would prove the source shipped.
+  test("both of B's listings cut after a.txt are asked again, never proven by agreeing", () => {
+    // Every `-z` call: A's two listings, then B's.
+    const { remaining, reply } = prove(() => "-z", 2, "nul:1", 2);
+    expect(remaining).toBe(0);
+    expect(reply).toMatchObject({
+      differingPaths: ["z.txt"],
+      status: "refused",
+    });
+  });
+
+  test("both of B's listings cut after a.txt twice refuse as a lost answer, never proven", () => {
+    const { remaining, reply } = prove(() => "-z", 4, "nul:1", 2);
+    expect(remaining).toBe(0);
+    expect(reply).toMatchObject({ differingPaths: [], status: "refused" });
+    expect((reply as { reason: string }).reason).toContain("retry the command");
   });
 
   test.each(listings)(
@@ -224,7 +272,14 @@ console.log(JSON.stringify("entries" in result ? { paths: [...result.entries.key
 });
 
 describe("target tree entry with a lost Git answer", () => {
-  const entry = (path: string, lost: number) => {
+  // A present path read as absent counts a deleted path as delivered, so a
+  // listing lost, cut short, or failed is asked again and then refused.
+  const entry = (
+    path: string,
+    lost: number,
+    mode: FakeGitLoss = "empty",
+    failFlag = ""
+  ) => {
     const fixture = repository();
     writeFixture(fixture.root, "a.txt", "tracked\n");
     git(fixture.root, ["add", "a.txt"]);
@@ -239,7 +294,16 @@ try {
 }
 `,
       "ls-tree",
-      lost
+      lost,
+      failFlag,
+      mode
+    );
+  };
+
+  const expectRefused = (reply: unknown): void => {
+    expect(reply).toMatchObject({ exitCode: 4 });
+    expect((reply as { error: string }).error).toContain(
+      "its answer was lost; retry the command"
     );
   };
 
@@ -250,13 +314,24 @@ try {
     expect(entry("missing.txt", 0).reply).toEqual({ entry: null });
   });
 
-  test("a lost listing for a present path refuses instead of reading it as absent", () => {
-    const { remaining, reply } = entry("a.txt", 1);
-    expect(remaining).toBe(0);
-    expect(reply).toMatchObject({ exitCode: 4 });
-    expect((reply as { error: string }).error).toContain(
-      "its answer was lost; retry the command"
-    );
+  test("a listing lost or cut short once for a present path is asked again", () => {
+    for (const mode of ["empty", "bytes:10"] as const) {
+      const { remaining, reply } = entry("a.txt", 1, mode);
+      expect(remaining).toBe(0);
+      expect((reply as { entry: string }).entry).toMatch(ENTRY_PATTERN);
+    }
+  });
+
+  test("a listing lost or cut short twice for a present path refuses instead of reading it as absent", () => {
+    for (const mode of ["empty", "bytes:10"] as const) {
+      const { remaining, reply } = entry("a.txt", 2, mode);
+      expect(remaining).toBe(0);
+      expectRefused(reply);
+    }
+  });
+
+  test("a listing that fails for a present path refuses instead of reading it as absent", () => {
+    expectRefused(entry("a.txt", 0, "empty", "ls-tree").reply);
   });
 
   test("a lost listing for an absent path is still an absence", () => {
@@ -1105,5 +1180,849 @@ try {
       "cannot read the upstream of fix/live"
     );
     expect((reply as { error: string }).error).toContain("retry the command");
+  });
+});
+
+// The decisions below delete, prune, or keep work on one Git read each.
+// Each read, lost or cut short once, is asked again; twice, it refuses or
+// keeps the work, and never deletes, prunes, or proves anything.
+
+const DAY = 86_400_000;
+
+// Whether Git's answer, as the child reported it, refused with a retryable
+// error.
+const refusedForRetry = (reply: unknown): boolean =>
+  typeof (reply as { error?: unknown }).error === "string" &&
+  (reply as { error: string }).error.includes("retry the command");
+
+describe("an archive re-check with a revert listing lost or cut short", () => {
+  // An expired archive whose replacement shipped on main. With `revert`,
+  // main then reverted it, so the archive must be kept for attention. An
+  // empty revert listing is also what a lost answer looks like, which once
+  // read as "no revert" and pruned the archive and its pins.
+  const archiveFixture = (revert: boolean) => {
+    const fixture = repository();
+    const { base, root } = fixture;
+    const common = realpathSync(
+      git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    );
+    writeFixture(root, "shipped.ts", "export const shipped = 1;\n");
+    git(root, ["add", "shipped.ts"]);
+    git(root, ["commit", "--quiet", "-m", "Ship the reviewed replacement"]);
+    const replacement = git(root, ["rev-parse", "HEAD"]);
+    const path = join(base, "archived");
+    git(root, ["worktree", "add", "--quiet", "-b", "archived", path, "main"]);
+    writeFixture(path, "work.ts", "export const work = 1;\n");
+    git(path, ["add", "work.ts"]);
+    git(path, ["commit", "--quiet", "-m", "Archived work"]);
+    const headSha = git(path, ["rev-parse", "HEAD"]);
+    const privateGitDirectory = realpathSync(
+      git(path, ["rev-parse", "--absolute-git-dir"])
+    );
+    const createdAt = new Date(Date.now() - 20 * DAY);
+    const archiveId = newArchiveId(createdAt, "a".repeat(64));
+    const copy = copyWorktreeIntoArchive({
+      archiveId,
+      checkoutPath: path,
+      commonGitDirectory: common,
+      privateGitDirectory,
+    });
+    const namespace = archivePinNamespace(archiveId);
+    const pinRefs = [
+      { object: headSha, ref: `${namespace}/head` },
+      { object: replacement, ref: `${namespace}/objects/${replacement}` },
+    ];
+    for (const pin of pinRefs) {
+      git(root, ["update-ref", "--no-deref", pin.ref, pin.object]);
+    }
+    writeWorktreeArchiveManifest(copy.directory, {
+      archiveId,
+      branchConfig: [],
+      checkout: copy.checkout,
+      commonGitDirectory: common,
+      createdAt: createdAt.toISOString(),
+      expiresAt: new Date(Date.now() - 6 * DAY).toISOString(),
+      gitDirectory: copy.gitDirectory,
+      kind: "worktree-archive",
+      pinRefs,
+      privateGitDirectory,
+      receiptDigest: "a".repeat(64),
+      removalId: "lineage-12345678-1234-4234-8234-123456789abc",
+      replacementCommits: [replacement],
+      repositoryId: "c".repeat(64),
+      retention: { days: 14, maxTotalBytes: DEFAULT_ARCHIVE_TOTAL_BYTES },
+      schemaVersion: 1,
+      source: {
+        branch: "archived",
+        changeDigest: "b".repeat(64),
+        headSha,
+        path,
+      },
+      targetRef: "main",
+    });
+    git(root, ["worktree", "remove", "--force", path]);
+    git(root, ["branch", "--quiet", "-D", "archived"]);
+    if (revert) {
+      git(root, ["revert", "--no-edit", replacement]);
+    }
+    return { common, directory: copy.directory, pinRefs, replacement, root };
+  };
+
+  type Archive = ReturnType<typeof archiveFixture>;
+
+  const prune = (
+    archive: Archive,
+    flag: string,
+    lost: number,
+    mode: FakeGitLoss = "empty"
+  ) =>
+    runInChild(
+      `import { pruneWorktreeArchives } from ${JSON.stringify(libraryPath("worktree-archive.ts"))};
+try {
+  const result = pruneWorktreeArchives({
+    command: "prune",
+    commonGitDirectory: ${JSON.stringify(archive.common)},
+    dryRun: false,
+    now: new Date(),
+    primaryCheckout: ${JSON.stringify(archive.root)},
+    retention: { days: 14, maxTotalBytes: ${DEFAULT_ARCHIVE_TOTAL_BYTES} },
+  });
+  console.log(JSON.stringify({
+    kept: result.keptForAttention.map((item) => item.reason),
+    pruned: result.pruned.map((item) => item.archiveId),
+  }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      flag,
+      lost,
+      "",
+      mode
+    );
+
+  const expectWhole = (archive: Archive): void => {
+    expect(existsSync(archive.directory)).toBe(true);
+    for (const pin of archive.pinRefs) {
+      expect(git(archive.root, ["rev-parse", pin.ref])).toBe(pin.object);
+    }
+  };
+
+  const expectKeptForAttention = (
+    archive: Archive,
+    reply: unknown,
+    reason: string
+  ): void => {
+    expect(reply).toMatchObject({ pruned: [] });
+    expect((reply as { kept: string[] }).kept.join(" ")).toContain(reason);
+    expectWhole(archive);
+  };
+
+  const REVERTS = "--fixed-strings";
+
+  test("with every answer kept, the reverted archive is kept for attention and the other is pruned (control)", () => {
+    const reverted = archiveFixture(true);
+    const { remaining, reply } = prune(reverted, REVERTS, 0);
+    expect(remaining).toBe(0);
+    expectKeptForAttention(
+      reverted,
+      reply,
+      `main reverts replacement ${reverted.replacement}`
+    );
+    const shipped = archiveFixture(false);
+    expect(prune(shipped, REVERTS, 0).reply).toMatchObject({ kept: [] });
+    expect(existsSync(shipped.directory)).toBe(false);
+  });
+
+  test("a revert listing lost or cut short once is asked again, so the reverted archive is still kept", () => {
+    for (const mode of ["empty", "bytes:10"] as const) {
+      const reverted = archiveFixture(true);
+      const { remaining, reply } = prune(reverted, REVERTS, 1, mode);
+      expect(remaining).toBe(0);
+      expectKeptForAttention(
+        reverted,
+        reply,
+        `main reverts replacement ${reverted.replacement}`
+      );
+    }
+  });
+
+  test("a revert listing and its count lost or cut short twice keep the archive for attention, never prune it", () => {
+    for (const mode of ["empty", "bytes:10"] as const) {
+      const reverted = archiveFixture(true);
+      const { remaining, reply } = prune(reverted, REVERTS, 4, mode);
+      expect(remaining).toBe(0);
+      expectKeptForAttention(
+        reverted,
+        reply,
+        `could not check whether main reverts replacement ${reverted.replacement}`
+      );
+      expect((reply as { kept: string[] }).kept.join(" ")).toContain(
+        "retry the command"
+      );
+    }
+  });
+
+  // The other reads the prune rests on, for an archive the true answers
+  // prune: the target's commit, and the listing of the archive's pins. A
+  // pin listing lost entirely is not asked again: each pin it leaves out is
+  // confirmed gone or present by exit code instead.
+  const otherReads: [string, string, FakeGitLoss][] = [
+    ["the target's commit", "main^{commit}", "bytes:20"],
+    [
+      "the archive's pins",
+      "--format=%(refname)%00%(objectname)%00%(symref)",
+      "bytes:30",
+    ],
+  ];
+
+  for (const loss of ["empty", "cut"] as const) {
+    test.each(otherReads)(
+      `%s ${loss === "empty" ? "lost" : "cut short"} twice keeps the archive whole, never prunes it`,
+      (_what, flag, cut) => {
+        const archive = archiveFixture(false);
+        const { remaining, reply } = prune(
+          archive,
+          flag,
+          2,
+          loss === "empty" ? "empty" : cut
+        );
+        expect(remaining).toBeLessThan(2);
+        expect((reply as { pruned?: string[] }).pruned ?? []).toEqual([]);
+        expectWhole(archive);
+      }
+    );
+  }
+});
+
+describe("an upstream hold read from a remote name or merge ref cut short", () => {
+  // fix/live tracks kept on the target remote, which holds kept by name. A
+  // remote name cut from `origin` to `ori`, a merge ref cut from
+  // `refs/heads/kept` to `refs/heads/ke`, or an upstream line cut the same
+  // way once read as another remote or another branch and dropped the
+  // hold, which made the merged branch a deletion proposal.
+  const holds = (
+    flag: string,
+    lost: number,
+    mode: FakeGitLoss = "empty",
+    options: { failFlag?: string; remote?: string } = {}
+  ) => {
+    const fixture = repository();
+    const { root } = fixture;
+    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, [
+      "remote",
+      "add",
+      "upstream",
+      "https://example.invalid/upstream.git",
+    ]);
+    const path = join(fixture.base, "live");
+    git(root, ["worktree", "add", "-b", "fix/live", path]);
+    git(root, ["config", "branch.fix/live.remote", options.remote ?? "origin"]);
+    git(root, ["config", "branch.fix/live.merge", "refs/heads/kept"]);
+    const inventory = JSON.parse(inventoryFor(root)) as {
+      repository: { targetRemote: string | null };
+    };
+    inventory.repository.targetRemote = "origin";
+    return runInChild(
+      `import { remoteBranchNameHolds } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
+try {
+  const { byName } = remoteBranchNameHolds({
+    claims: [],
+    inventory: ${JSON.stringify(inventory)},
+    targetBranch: "main",
+    targetRevision: ${JSON.stringify(git(root, ["rev-parse", "HEAD"]))},
+  });
+  console.log(JSON.stringify({ kept: byName.get("kept") ?? [] }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      flag,
+      lost,
+      options.failFlag ?? "",
+      mode
+    );
+  };
+
+  const held = (reply: unknown): boolean =>
+    ((reply as { kept?: string[] }).kept ?? [])
+      .join(" ")
+      .includes("upstream of fix/live");
+
+  // The read, the Git call that answers it, and the cut that once read as
+  // another remote or branch. The upstream line is read only when the
+  // branch's remote cannot be read from its configuration.
+  const reads: [string, string, FakeGitLoss, string][] = [
+    ["the remote name", "branch.fix/live.remote", "bytes:3", ""],
+    ["the merge ref", "branch.fix/live.merge", "bytes:13", ""],
+    [
+      "the upstream line",
+      "--format=%(upstream)",
+      "bytes:22",
+      "branch.fix/live.remote",
+    ],
+  ];
+
+  test.each(reads)(
+    "with every answer kept, the upstream holds when %s is read (control)",
+    (_what, flag, _cut, failFlag) => {
+      const { remaining, reply } = holds(flag, 0, "empty", { failFlag });
+      expect(remaining).toBe(0);
+      expect(held(reply)).toBe(true);
+    }
+  );
+
+  test.each(reads)(
+    "%s cut short once is asked again, so the upstream still holds",
+    (_what, flag, cut, failFlag) => {
+      const { remaining, reply } = holds(flag, 1, cut, { failFlag });
+      expect(remaining).toBe(0);
+      expect(held(reply)).toBe(true);
+    }
+  );
+
+  for (const loss of ["empty", "cut"] as const) {
+    test.each(reads)(
+      `%s ${loss === "empty" ? "lost" : "cut short"} twice refuses, never drops the hold`,
+      (_what, flag, cut, failFlag) => {
+        const { remaining, reply } = holds(
+          flag,
+          2,
+          loss === "empty" ? "empty" : cut,
+          { failFlag }
+        );
+        expect(remaining).toBe(0);
+        expect(refusedForRetry(reply)).toBe(true);
+      }
+    );
+  }
+
+  test("a branch tracking a remote that is not configured holds its branch", () => {
+    const unknown = holds("branch.fix/live.remote", 0, "empty", {
+      remote: "elsewhere",
+    });
+    expect(held(unknown.reply)).toBe(true);
+    // Control: another configured remote's branch, or this repository's,
+    // is not the target's.
+    for (const remote of ["upstream", "."]) {
+      expect(
+        holds("branch.fix/live.remote", 0, "empty", { remote }).reply
+      ).toEqual({ kept: [] });
+    }
+  });
+
+  test("the list of configured remotes lost or cut short twice refuses, never reads the remote as unknown or known", () => {
+    for (const mode of ["empty", "bytes:3"] as const) {
+      const once = holds("remote", 1, mode, { remote: "upstream" });
+      expect(once.remaining).toBe(0);
+      expect(once.reply).toEqual({ kept: [] });
+      const twice = holds("remote", 2, mode, { remote: "upstream" });
+      expect(twice.remaining).toBe(0);
+      expect(refusedForRetry(twice.reply)).toBe(true);
+    }
+  });
+});
+
+describe("the local target branch with a lost or cut remote answer", () => {
+  // origin/main stands for local main, which cleanup never removes. A lost
+  // listing of remotes once read origin/main as a local branch name, which
+  // left main unprotected.
+  const targetBranch = (lost: number, mode: FakeGitLoss) => {
+    const fixture = repository();
+    git(fixture.root, [
+      "remote",
+      "add",
+      "origin",
+      "https://example.invalid/repo.git",
+    ]);
+    return runInChild(
+      `import { localBranchForTargetRef } from ${JSON.stringify(libraryPath("cleanup-core.ts"))};
+try {
+  console.log(JSON.stringify({ branch: localBranchForTargetRef(${JSON.stringify(fixture.root)}, "origin/main") }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      "remote",
+      lost,
+      "",
+      mode
+    );
+  };
+
+  test("with every answer kept, origin/main stands for main (control)", () => {
+    expect(targetBranch(0, "empty").reply).toEqual({ branch: "main" });
+  });
+
+  test("a remote answer lost once is asked again, and lost twice refuses, never reading origin/main as a local branch", () => {
+    const once = targetBranch(1, "empty");
+    expect(once.remaining).toBe(0);
+    expect(once.reply).toEqual({ branch: "main" });
+    const twice = targetBranch(2, "empty");
+    expect(twice.remaining).toBe(0);
+    expect(refusedForRetry(twice.reply)).toBe(true);
+  });
+
+  test("a remote answer cut short still names origin as a remote, by its exit code", () => {
+    const { remaining, reply } = targetBranch(2, "bytes:3");
+    expect(remaining).toBeLessThan(2);
+    expect(reply).toEqual({ branch: "main" });
+  });
+});
+
+describe("cleanup's target revision lost or cut short", () => {
+  // `done` is a clean checkout main already contains, so prune removes it,
+  // judged against the target's commit ID.
+  const pruneDone = (lost: number, mode: FakeGitLoss) => {
+    const fixture = repository();
+    const path = join(fixture.base, "done");
+    git(fixture.root, ["worktree", "add", "--quiet", "-b", "done", path]);
+    return {
+      path,
+      ...runInChild(
+        `import { pruneRepository } from ${JSON.stringify(libraryPath("worktree-maintenance.ts"))};
+try {
+  const report = pruneRepository({
+    approvedBy: "the-user",
+    dryRun: false,
+    reason: "Clean up finished work.",
+    repositoryPath: ${JSON.stringify(fixture.root)},
+  });
+  console.log(JSON.stringify({ removed: report.removed.map((item) => item.path) }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+        "main^{commit}",
+        lost,
+        "",
+        mode
+      ),
+    };
+  };
+
+  test("with every answer kept, the contained checkout is removed (control)", () => {
+    const { path, reply } = pruneDone(0, "empty");
+    expect(reply).toEqual({ removed: [path] });
+  });
+
+  test("the target's commit lost or cut short twice refuses, never removes anything", () => {
+    for (const mode of ["empty", "bytes:20"] as const) {
+      const { path, remaining, reply } = pruneDone(2, mode);
+      expect(remaining).toBe(0);
+      expect(refusedForRetry(reply)).toBe(true);
+      expect(existsSync(path)).toBe(true);
+    }
+  });
+});
+
+describe("primary normalization with index flags lost or cut short", () => {
+  // Finalization restores a dirty primary path to HEAD when its file
+  // already has the target's bytes and its index entry is ordinary. A
+  // skip-worktree entry makes Git compare the index instead of the file,
+  // so `local edits` look like the target's bytes; the flags read from
+  // `ls-files --debug` must show that, and a flags answer lost or cut
+  // short must keep the file rather than read as ordinary.
+  const normalize = (
+    skipWorktree: boolean,
+    lost: number,
+    mode: FakeGitLoss = "empty"
+  ) => {
+    const fixture = repository();
+    const { root } = fixture;
+    writeFixture(root, "f.txt", "v1\n");
+    git(root, ["add", "f.txt"]);
+    git(root, ["commit", "--quiet", "-m", "Add f"]);
+    git(root, ["remote", "add", "origin", "https://example.invalid/repo.git"]);
+    git(root, ["checkout", "--quiet", "--detach"]);
+    writeFixture(root, "f.txt", "v2\n");
+    git(root, ["commit", "--quiet", "-am", "Ship v2"]);
+    git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(root, [
+      "symbolic-ref",
+      "refs/remotes/origin/HEAD",
+      "refs/remotes/origin/main",
+    ]);
+    git(root, ["checkout", "--quiet", "main"]);
+    const lease = startLoop(root, "controller", "integrate");
+    if (skipWorktree) {
+      const blob = git(root, ["rev-parse", "origin/main:f.txt"]);
+      git(root, ["update-index", "--cacheinfo", `100644,${blob},f.txt`]);
+      git(root, ["update-index", "--skip-worktree", "f.txt"]);
+      writeFixture(root, "f.txt", "local edits\n");
+    } else {
+      writeFixture(root, "f.txt", "v2\n");
+    }
+    const { remaining, reply } = runInChild(
+      `import { finalizeLoop } from ${JSON.stringify(libraryPath("loop-lease.ts"))};
+try {
+  const result = finalizeLoop(${JSON.stringify(root)}, ${JSON.stringify(lease.runId)}, "controller", "The work is in the target.");
+  console.log(JSON.stringify({ cleaned: result.cleanup.cleanedPrimaryPaths }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      "--debug",
+      lost,
+      "",
+      mode
+    );
+    return {
+      bytes: readFileSync(join(root, "f.txt"), "utf8"),
+      remaining,
+      reply,
+    };
+  };
+
+  test("with every answer kept, an ordinary path with the target's bytes is normalized (control)", () => {
+    const { reply } = normalize(false, 0);
+    expect(reply).toEqual({ cleaned: ["f.txt"] });
+  });
+
+  test("a skip-worktree path keeps its local edits, which Git compared as the target's bytes", () => {
+    const { bytes, reply } = normalize(true, 0);
+    expect(reply).toEqual({ cleaned: [] });
+    expect(bytes).toBe("local edits\n");
+  });
+
+  test("index flags lost or cut short twice keep the path, never read it as ordinary", () => {
+    for (const skipWorktree of [false, true]) {
+      for (const mode of ["empty", "lines:3"] as const) {
+        const { bytes, remaining, reply } = normalize(skipWorktree, 2, mode);
+        expect(remaining).toBe(0);
+        expect(reply).toEqual({ cleaned: [] });
+        expect(bytes).toBe(skipWorktree ? "local edits\n" : "v2\n");
+      }
+    }
+  });
+});
+
+describe("a reviewed replacement removal with a lineage read lost or cut short", () => {
+  // source-unit's two commits shipped on main as reviewed replacements with
+  // other patch IDs, so a lineage receipt removes it, archived. Each read
+  // below decides what the archive keeps or whether the branch may go.
+  // The sibling checkout `source` has a private Git directory whose name is
+  // a prefix of the source's, and work of its own, so cleanup keeps it.
+  const lineage = () => {
+    const fixture = repository();
+    const { base, root } = fixture;
+    const sibling = join(base, "source");
+    git(root, ["worktree", "add", "--quiet", "-b", "sibling", sibling]);
+    writeFixture(sibling, "sibling.ts", "export const sibling = 1;\n");
+    git(sibling, ["add", "."]);
+    git(sibling, ["commit", "--quiet", "-m", "Sibling work"]);
+    const path = join(base, "source-unit");
+    git(root, ["worktree", "add", "--quiet", "-b", "source-unit", path]);
+    for (const name of ["a", "b"]) {
+      writeFixture(path, `${name}.ts`, `export const ${name} = 1;\n`);
+      git(path, ["add", "."]);
+      git(path, ["commit", "--quiet", "-m", `Add ${name}`]);
+    }
+    const commits = git(path, ["rev-list", "--reverse", "main..HEAD"]).split(
+      "\n"
+    );
+    const headSha = git(path, ["rev-parse", "HEAD"]);
+    // What the archive must keep besides the head: an object a pseudo-ref
+    // and one the checkout's own refs name, and the branch's configuration.
+    git(path, ["update-ref", "ORIG_HEAD", commits[0] ?? ""]);
+    git(path, ["update-ref", "refs/worktree/kept", commits[0] ?? ""]);
+    git(root, ["config", "branch.source-unit.description", "Reviewed work"]);
+    const replacements: string[] = [];
+    for (const name of ["a", "b"]) {
+      writeFixture(root, `${name}.ts`, `export const ${name} = 2;\n`);
+      git(root, ["add", "."]);
+      git(root, ["commit", "--quiet", "-m", `Ship reviewed ${name}`]);
+      replacements.push(git(root, ["rev-parse", "HEAD"]));
+    }
+    const now = Date.now();
+    const receipt = {
+      approval: {
+        approvalReference: "chat message approving removal",
+        approvedAt: new Date(now - 5 * 60_000).toISOString(),
+        approvedBy: "the-user",
+        reason: "The source shipped through reviewed replacements.",
+      },
+      commits: commits.map((sourceCommit, index) => ({
+        replacementCommits: [replacements[index] ?? ""],
+        sourceCommit,
+      })),
+      kind: "replacement-lineage-receipt",
+      review: {
+        decision: "replaced-in-target",
+        reviewedAt: new Date(now - 10 * 60_000).toISOString(),
+        reviewerAgentId: "reviewer-agent",
+        reviewReference: "review log for the source range",
+      },
+      schemaVersion: 1,
+      source: {
+        authorAgentId: "author-agent",
+        branch: "source-unit",
+        changeDigest:
+          captureInventory(root).worktrees.find(
+            (worktree) => worktree.path === path
+          )?.changeDigest ?? "",
+        headRevision: headSha,
+        path,
+      },
+      targetRef: "main",
+      targetRevision: git(root, ["rev-parse", "HEAD"]),
+    };
+    // Cut five bytes short, the source's private Git directory names the
+    // sibling's.
+    const privateDirectory = git(path, ["rev-parse", "--absolute-git-dir"]);
+    return { path, privateDirectory, receipt, root };
+  };
+
+  type Lineage = ReturnType<typeof lineage>;
+
+  const remove = (
+    setup: Lineage,
+    flag: string,
+    lost: number,
+    mode: FakeGitLoss
+  ) =>
+    runInChild(
+      `import { pruneRepository } from ${JSON.stringify(libraryPath("worktree-maintenance.ts"))};
+try {
+  const report = pruneRepository({
+    agentId: "controller-agent",
+    approvedBy: "the-user",
+    dryRun: false,
+    lineageReceipt: ${JSON.stringify(setup.receipt)},
+    reason: "Remove the reviewed obsolete source.",
+    repositoryPath: ${JSON.stringify(setup.root)},
+  });
+  console.log(JSON.stringify({
+    branchDeleted: report.reviewedReplacement?.branchDeleted ?? false,
+    errors: report.errors,
+    removed: report.reviewedReplacement?.worktreeRemoved ?? false,
+  }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      flag,
+      lost,
+      "",
+      mode
+    );
+
+  const branchExists = (setup: Lineage): boolean =>
+    git(setup.root, ["branch", "--list", "source-unit"]) !== "";
+
+  const expectNothingRemoved = (setup: Lineage, reply: unknown): void => {
+    expect(refusedForRetry(reply)).toBe(true);
+    expect(existsSync(setup.path)).toBe(true);
+    expect(branchExists(setup)).toBe(true);
+    expect(
+      git(setup.root, [
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/simple-changes/",
+      ])
+    ).toBe("");
+  };
+
+  test("with every answer kept, the source is archived and removed with its branch (control)", () => {
+    const setup = lineage();
+    const { reply } = remove(setup, "rev-parse --absolute-git-dir", 0, "empty");
+    expect(reply).toMatchObject({ branchDeleted: true, removed: true });
+    expect(existsSync(setup.path)).toBe(false);
+  });
+
+  // The read, the Git call that answers it, and a cut that still parses
+  // into an answer that once let the removal go on.
+  const reads: [string, string, (setup: Lineage) => FakeGitLoss][] = [
+    [
+      "the checkout's private Git directory",
+      "rev-parse --absolute-git-dir",
+      (setup) => `bytes:${setup.privateDirectory.length - "-unit".length}`,
+    ],
+    ["ORIG_HEAD", "--verify --quiet ORIG_HEAD", () => "bytes:20"],
+    ["the branch's configuration", "-z --get-regexp", () => "bytes:20"],
+  ];
+
+  test.each(reads)(
+    "%s cut short once is asked again, so the removal goes on whole",
+    (_what, flag, cut) => {
+      const setup = lineage();
+      const { remaining, reply } = remove(setup, flag, 1, cut(setup));
+      expect(remaining).toBe(0);
+      expect(reply).toMatchObject({ branchDeleted: true, removed: true });
+    }
+  );
+
+  for (const loss of ["empty", "cut"] as const) {
+    test.each(reads)(
+      `%s ${loss === "empty" ? "lost" : "cut short"} twice refuses before anything is written`,
+      (_what, flag, cut) => {
+        const setup = lineage();
+        const { remaining, reply } = remove(
+          setup,
+          flag,
+          2,
+          loss === "empty" ? "empty" : cut(setup)
+        );
+        expect(remaining).toBe(0);
+        expectNothingRemoved(setup, reply);
+      }
+    );
+  }
+
+  test("the checkout's own refs cut inside a line twice refuse before anything is written", () => {
+    // Git gives no count for this listing, so only a cut inside a line,
+    // which would drop the object as unparsable, can be seen.
+    const setup = lineage();
+    const { remaining, reply } = remove(
+      setup,
+      "--format=%(refname)%00%(objectname)",
+      2,
+      "bytes:30"
+    );
+    expect(remaining).toBe(0);
+    expectNothingRemoved(setup, reply);
+  });
+
+  test("where the branch is checked out, lost twice, keeps the branch after the archived removal", () => {
+    const setup = lineage();
+    const { remaining, reply } = remove(
+      setup,
+      "--format=%(worktreepath)",
+      2,
+      "empty"
+    );
+    expect(remaining).toBe(0);
+    expect(reply).toMatchObject({ branchDeleted: false, removed: true });
+    expect((reply as { errors: string[] }).errors.join(" ")).toContain(
+      "Kept branch source-unit"
+    );
+    expect(branchExists(setup)).toBe(true);
+  });
+});
+
+describe("inventory listings cut inside an entry", () => {
+  // Every cleanup decision starts from the inventory's worktree records and
+  // branch lines. A record cut before its branch line read a checkout as
+  // detached, which dropped the hold its branch gives; a branch line cut
+  // before its worktree path read a checked-out branch as free to delete.
+  const liveHold = (lost: number, mode: FakeGitLoss) => {
+    const fixture = repository();
+    const path = join(fixture.base, "live");
+    git(fixture.root, ["worktree", "add", "--quiet", "-b", "fix/live", path]);
+    return runInChild(
+      `import { captureInventory } from ${JSON.stringify(libraryPath("inventory.ts"))};
+import { remoteBranchNameHolds } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
+try {
+  const inventory = captureInventory(${JSON.stringify(fixture.root)}, { skipWorktreeStatus: true });
+  const { byName } = remoteBranchNameHolds({
+    claims: [],
+    inventory,
+    targetBranch: "main",
+    targetRevision: ${JSON.stringify(git(fixture.root, ["rev-parse", "HEAD"]))},
+  });
+  console.log(JSON.stringify({ held: byName.get("fix/live") ?? [] }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      "list --porcelain",
+      lost,
+      "",
+      mode
+    );
+  };
+
+  // The primary's record is four lines with its blank line, so six lines
+  // stop after the live checkout's HEAD, before its branch.
+  const RECORD_CUT = "lines:6";
+
+  test("with every answer kept, the checked-out branch is held (control)", () => {
+    const { reply } = liveHold(0, "empty");
+    expect((reply as { held: string[] }).held.join(" ")).toContain(
+      "checked out in"
+    );
+  });
+
+  test("a worktree record cut short once is asked again, so the branch is still held", () => {
+    const { remaining, reply } = liveHold(1, RECORD_CUT);
+    expect(remaining).toBe(0);
+    expect((reply as { held: string[] }).held.join(" ")).toContain(
+      "checked out in"
+    );
+  });
+
+  test("worktree records lost or cut short twice refuse, never drop the hold", () => {
+    for (const mode of ["empty", RECORD_CUT] as const) {
+      const { remaining, reply } = liveHold(2, mode);
+      expect(remaining).toBe(0);
+      expect(refusedForRetry(reply)).toBe(true);
+    }
+  });
+
+  const BRANCH_FORMAT =
+    "--format=%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track)%00%(worktreepath)%00%(HEAD)";
+
+  // zz-busy is checked out in a dirty checkout, so prune keeps both; its
+  // line sorts last, and the cut stops it right after its commit ID.
+  const pruneBusy = (lost: number, cut: boolean) => {
+    const fixture = repository();
+    const { root } = fixture;
+    const path = join(fixture.base, "busy");
+    git(root, ["worktree", "add", "--quiet", "-b", "zz-busy", path]);
+    writeFixture(path, "draft.txt", "uncommitted\n");
+    const listing = git(root, ["for-each-ref", BRANCH_FORMAT, "refs/heads"]);
+    const last = listing.slice(listing.lastIndexOf("\n") + 1);
+    const [name = "", sha = ""] = last.split("\0");
+    const kept = listing.length - last.length + name.length + sha.length + 2;
+    const { remaining, reply } = runInChild(
+      `import { pruneRepository } from ${JSON.stringify(libraryPath("worktree-maintenance.ts"))};
+try {
+  const report = pruneRepository({
+    approvedBy: "the-user",
+    dryRun: false,
+    reason: "Clean up finished work.",
+    repositoryPath: ${JSON.stringify(root)},
+  });
+  console.log(JSON.stringify({ removedBranches: report.removedBranches.map((item) => item.branch) }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      BRANCH_FORMAT,
+      lost,
+      "",
+      cut ? `bytes:${kept}` : "empty"
+    );
+    return {
+      exists: git(root, ["branch", "--list", "zz-busy"]) !== "",
+      remaining,
+      reply,
+    };
+  };
+
+  test("with every answer kept, the checked-out branch is kept (control)", () => {
+    const { exists, reply } = pruneBusy(0, false);
+    expect(reply).toEqual({ removedBranches: [] });
+    expect(exists).toBe(true);
+  });
+
+  test("a branch line cut short once is asked again, so the checked-out branch is kept", () => {
+    const { exists, remaining, reply } = pruneBusy(1, true);
+    expect(remaining).toBe(0);
+    expect(reply).toEqual({ removedBranches: [] });
+    expect(exists).toBe(true);
+  });
+
+  test("branch lines lost or cut short twice never delete the checked-out branch", () => {
+    const lost = pruneBusy(2, false);
+    expect(lost.exists).toBe(true);
+    expect(
+      (lost.reply as { removedBranches?: string[] }).removedBranches ?? []
+    ).toEqual([]);
+    const cut = pruneBusy(2, true);
+    expect(cut.remaining).toBe(0);
+    expect(refusedForRetry(cut.reply)).toBe(true);
+    expect(cut.exists).toBe(true);
   });
 });

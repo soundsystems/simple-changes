@@ -481,11 +481,20 @@
   transaction (`applyRefTransaction`), all or none; `merge-base` without
   `--is-ancestor` is now a required answer, so a lost fork point withholds
   deletion proposals; those reflog reads and the patch audit's listings go
-  through the new `countedRevisionList`, checked whole against Git's own
-  count; and `patchIdFor` asks `diff-tree --stdin --always` for each
-  commit twice in one answer and uses the diff only when both copies
-  match, so a cut-short diff can no longer make a false `patch-equivalent`
-  proof.
+  through `completeRevisionList` in the new `git-complete.ts`, checked
+  whole against Git's own count; and `completePatchId` asks `diff-tree
+  --stdin --always` for each commit twice in one answer and uses the diff
+  only when both copies match, so a cut-short diff can no longer make a
+  false `patch-equivalent` proof.
+- Complete reads (`git-complete.ts`): every Git read that decides a
+  deletion, prune, release, retirement, or delivery now goes through it,
+  retries once, then throws `LostGitAnswerError` and keeps the work.
+  `completeChangedPaths` also needs the `--shortstat` file count; new
+  `completeLine`, `completeObjectId`, `completeListing`,
+  `completeRemoteNames`, and `remoteIsConfigured` cover the archive revert
+  check, upstream holds (an unknown remote holds), lineage reads,
+  `targetTreeEntry`, `localBranchForTargetRef`, and the index flags read
+  before primary normalization (now parsed as hexadecimal).
 - Lineage wiring: `policy.ts` adds `DEFAULT_ARCHIVE_RETENTION_DAYS` (14),
   `DEFAULT_ARCHIVE_TOTAL_BYTES` (2147483648), and
   `archiveRetentionPolicy(policy)` (`days` 1 to 3650, `maxTotalBytes` 1

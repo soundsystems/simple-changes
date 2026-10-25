@@ -965,21 +965,77 @@ const diffMatchesRevision = (
     true
   ).exitCode === 0;
 
+// Index flag bits under which Git's comparisons do not read a path's file,
+// or that mark an entry as not an ordinary staged file: a conflict stage
+// (two bits), assume-unchanged, intent-to-add, and skip-worktree.
+// `ls-files --debug` prints each entry's flags in hexadecimal on the last
+// of its six lines.
+const UNORDINARY_INDEX_FLAG_BITS = [
+  0x10_00, 0x20_00, 0x80_00, 0x20_00_00_00, 0x40_00_00_00,
+] as const;
+const DEBUG_LINES_PER_ENTRY = 6;
+const DEBUG_FLAGS_LINE = /^ {2}size: [0-9]+\tflags: ([0-9a-f]+)$/u;
+
+// Each listed entry's flags, or null when the listing did not arrive whole:
+// a listing ends with a line break and holds six lines per entry, the last
+// one its flags, so one cut short or cut at a line's end never parses.
+const debugEntryFlags = (output: string): number[] | null => {
+  const lines = output.split("\n");
+  if (lines.pop() !== "" || lines.length % DEBUG_LINES_PER_ENTRY !== 0) {
+    return null;
+  }
+  const flags: number[] = [];
+  for (
+    let last = DEBUG_LINES_PER_ENTRY - 1;
+    last < lines.length;
+    last += DEBUG_LINES_PER_ENTRY
+  ) {
+    const value = DEBUG_FLAGS_LINE.exec(lines[last] ?? "")?.[1];
+    if (value === undefined) {
+      return null;
+    }
+    flags.push(Number.parseInt(value, 16));
+  }
+  return flags;
+};
+
+// Whether every index entry of each path is an ordinary staged file, so
+// comparing it with a revision reads the file itself. An empty listing is
+// what an absent entry and a lost answer both look like, so it counts only
+// when `--error-unmatch` exits 1, which a lost answer cannot fake. Anything
+// Git could not answer whole twice is not ordinary, so the path is kept.
 const indexHasOnlyOrdinaryEntries = (
   repositoryPath: string,
   paths: string[]
 ): boolean =>
   paths.every((path) => {
-    const result = runGit(
-      repositoryPath,
-      [LITERAL_PATHSPECS, "ls-files", "--debug", "--", path],
-      true
-    );
-    if (result.exitCode !== 0) {
-      return false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = runGit(
+        repositoryPath,
+        [LITERAL_PATHSPECS, "ls-files", "--debug", "--", path],
+        true
+      );
+      if (result.exitCode !== 0) {
+        return false;
+      }
+      const flags = debugEntryFlags(result.stdout);
+      if (
+        flags !== null &&
+        (flags.length > 0 ||
+          runGit(
+            repositoryPath,
+            [LITERAL_PATHSPECS, "ls-files", "--error-unmatch", "--", path],
+            true
+          ).exitCode === 1)
+      ) {
+        return flags.every((value) =>
+          UNORDINARY_INDEX_FLAG_BITS.every(
+            (bit) => Math.floor(value / bit) % 2 === 0
+          )
+        );
+      }
     }
-    const flags = [...result.stdout.matchAll(/^\s+flags:\s+(\d+)\s*$/gmu)];
-    return flags.every((match) => match[1] === "0");
+    return false;
   });
 
 /**

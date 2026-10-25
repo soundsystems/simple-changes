@@ -2,14 +2,13 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
   completeChangedPaths,
   completeMergeBase,
+  completeObjectId,
   completeRevisionList,
 } from "./git-complete.ts";
 import { runGit } from "./process.ts";
 
 /** The most source commits one proof reads; a longer range is refused. */
 export const EXACT_BYTE_PROOF_MAX_COMMITS = 200;
-
-const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
 
 export interface ExactByteTargetProofInput {
   /** Commits that bound the range at most; defaults to the module limit. */
@@ -52,21 +51,14 @@ const refused = (
   differingPaths: string[] = []
 ): ExactByteTargetRefusal => ({ differingPaths, reason, status: "refused" });
 
+// The full commit ID, read whole, so a proof never binds an ID cut short.
 const resolveCommit = (
   repositoryPath: string,
   revision: string
-): string | null => {
-  if (!revision || revision.startsWith("-")) {
-    return null;
-  }
-  const result = runGit(
-    repositoryPath,
-    ["rev-parse", "--verify", "--quiet", `${revision}^{commit}`],
-    true
-  );
-  const sha = result.stdout.trim();
-  return result.exitCode === 0 && SHA_PATTERN.test(sha) ? sha : null;
-};
+): string | null =>
+  !revision || revision.startsWith("-")
+    ? null
+    : completeObjectId(repositoryPath, `${revision}^{commit}`);
 
 const isAncestor = (
   repositoryPath: string,

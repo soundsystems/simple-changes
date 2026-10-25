@@ -16,7 +16,11 @@ import {
 } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
-import { completeRevisionList } from "./git-complete.ts";
+import {
+  completeLine,
+  completeListing,
+  completeRevisionList,
+} from "./git-complete.ts";
 import { sha256Json } from "./hash.ts";
 import { parseWorktreeList } from "./inventory.ts";
 import {
@@ -632,23 +636,24 @@ const isInside = (child: string, parent: string): boolean =>
 
 // The checkout's private Git directory, which `git worktree remove` deletes
 // and the archive must hold: `<common>/worktrees/<name>` of a linked
-// checkout that lies outside the Git directory and the archives.
+// checkout that lies outside the Git directory and the archives. The path
+// is read as one whole line, so a path cut from `worktrees/fix1` to
+// `worktrees/fix` never names another checkout's directory.
 const sourcePrivateGitDirectory = (
   worktreePath: string,
   commonGitDirectory: string,
   refuse: Refuse
 ): string => {
-  const listed = runGit(
-    worktreePath,
-    ["rev-parse", "--absolute-git-dir"],
-    true
-  );
-  if (listed.exitCode !== 0) {
+  const listed = completeLine(worktreePath, [
+    "rev-parse",
+    "--absolute-git-dir",
+  ]);
+  if (listed.line === null) {
     return refuse(
       `Git could not name the checkout's private directory: ${listed.stderr.trim()}`
     );
   }
-  const directory = realpathSync(listed.stdout.trim());
+  const directory = realpathSync(listed.line);
   const common = realpathSync(commonGitDirectory);
   if (dirname(directory) !== resolve(common, "worktrees")) {
     refuse(
@@ -1014,9 +1019,16 @@ const callbackFreeOverrides = (primary: string, source: string): string[] => {
   return overrides;
 };
 
+// Each record ends with a blank line, so a record cut short, which could
+// drop another checkout's branch or lock, is asked again and refused.
 const listedWorktrees = (primary: string, overrides: readonly string[]) =>
   parseWorktreeList(
-    runGit(primary, [...overrides, "worktree", "list", "--porcelain"]).stdout
+    completeListing(
+      primary,
+      [...overrides, "worktree", "list", "--porcelain"],
+      "\n\n",
+      false
+    ).stdout
   );
 
 // Why the verified checkout no longer matches the receipt, or null when it
@@ -1091,11 +1103,9 @@ const reviewedCheckoutDrift = (
   if (current !== branch) {
     return `it is on ${current ?? "a detached HEAD"}, not the reviewed ${branch ?? "detached HEAD"}`;
   }
-  const privateDirectory = runGit(
-    path,
-    [...overrides, "rev-parse", "--absolute-git-dir"],
-    true
-  ).stdout.trim();
+  const privateDirectory =
+    completeLine(path, [...overrides, "rev-parse", "--absolute-git-dir"])
+      .line ?? "";
   if (
     !privateDirectory ||
     realpathSync(privateDirectory) !== verified.archive.privateGitDirectory
@@ -1179,13 +1189,15 @@ const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const EXTENDED_REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/gu;
 
 // A read that Git could not complete refuses: an object these refs name
-// that went unpinned could be lost to a later gc.
+// that went unpinned could be lost to a later gc. A listing or an ID cut
+// short, which would drop the object as unparsable, is asked once more and
+// then refused.
 const namedObjectsOf = (
   path: string,
   overrides: readonly string[]
 ): ReviewedSourceState["namedObjects"] => {
   const found: ReviewedSourceState["namedObjects"] = [];
-  const refs = runGit(
+  const refs = completeListing(
     path,
     [
       ...overrides,
@@ -1193,7 +1205,7 @@ const namedObjectsOf = (
       "--format=%(refname)%00%(objectname)",
       ...PER_WORKTREE_REF_NAMESPACES,
     ],
-    true
+    "\n"
   );
   if (refs.exitCode !== 0) {
     throw boundaryRefusal(
@@ -1208,14 +1220,13 @@ const namedObjectsOf = (
     }
   }
   for (const name of PSEUDO_REFS) {
-    const resolved = runGit(
+    const resolved = completeLine(
       path,
       [...overrides, "rev-parse", "--verify", "--quiet", name],
-      true
+      OBJECT_ID_PATTERN
     );
-    const object = resolved.stdout.trim();
-    if (resolved.exitCode === 0 && OBJECT_ID_PATTERN.test(object)) {
-      found.push({ name, object });
+    if (resolved.line !== null) {
+      found.push({ name, object: resolved.line });
     } else if (resolved.exitCode !== 1) {
       throw boundaryRefusal(
         path,
@@ -1314,6 +1325,7 @@ const reflogOnlyCommitsOf = (
 // which branch deletion removes and restore puts back. A key written
 // without `=` (true to Git) is kept as null. A read Git could not complete
 // refuses: the section would be deleted with nothing to restore it from.
+// So does a listing cut inside an entry, which would keep a value cut short.
 const branchConfigurationOf = (
   primary: string,
   branch: string | null,
@@ -1322,7 +1334,7 @@ const branchConfigurationOf = (
   if (branch === null) {
     return [];
   }
-  const listed = runGit(
+  const listed = completeListing(
     primary,
     [
       ...overrides,
@@ -1332,7 +1344,7 @@ const branchConfigurationOf = (
       "--get-regexp",
       `^branch\\.${branch.replace(EXTENDED_REGEX_SPECIALS, "\\$&")}\\.`,
     ],
-    true
+    "\0"
   );
   if (listed.exitCode === 1) {
     return [];
@@ -1942,6 +1954,32 @@ const deleteReviewedBranch = (
   if (tip !== headSha) {
     stepErrors.push(
       `Kept branch ${branch}: it no longer points at the reviewed head ${headSha}.`
+    );
+    return false;
+  }
+  // The registry listing above has no count, and a ref deletion does not
+  // refuse a checked-out branch the way `git branch -d` does, so the branch
+  // itself says where it is checked out, in one whole line: empty when
+  // nowhere.
+  let checkedOutAt: string | null;
+  try {
+    checkedOutAt = completeLine(primary, [
+      ...overrides,
+      "for-each-ref",
+      "--format=%(worktreepath)",
+      `refs/heads/${branch}`,
+    ]).line;
+  } catch (error) {
+    stepErrors.push(
+      `Kept branch ${branch}: Git could not say whether a checkout has it checked out (${error instanceof Error ? error.message : String(error)}).`
+    );
+    return false;
+  }
+  if (checkedOutAt !== "") {
+    stepErrors.push(
+      checkedOutAt === null
+        ? `Kept branch ${branch}: Git could not say whether a checkout has it checked out.`
+        : `Kept branch ${branch}: checkout ${checkedOutAt} has it checked out.`
     );
     return false;
   }

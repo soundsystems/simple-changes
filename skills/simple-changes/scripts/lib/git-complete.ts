@@ -3,15 +3,18 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { gitExecutable, runGit, runGitWithInput } from "./process.ts";
 import { redactSecrets } from "./redact.ts";
 
-// The one way a proof reads a Git answer that must be complete: a commit
-// listing, a changed-path listing, a commit count, a merge base or a patch
-// ID. Under heavy load an answer has been seen to arrive empty or cut short
-// with exit 0, and a partial answer that still parses would settle a proof
-// on evidence Git never gave: a cut commit listing proves a range that
-// leaves a commit out, a cut path listing hides a path, and a lost patch ID
-// reads as a miss. So every answer here is checked against an independent
-// count or a self-checking form, asked once more when it fails the check,
-// and then refused with a LostGitAnswerError. Callers treat that refusal as
+// The one way a Git answer that decides whether something is deleted,
+// pruned, released, retired or counted as delivered is read: a commit
+// listing, a changed-path listing, a commit count, a merge base, a patch
+// ID, one line such as a configuration value or an object ID, or the list
+// of configured remotes. Under heavy load an answer has been seen to arrive
+// empty or cut short with exit 0, and a partial answer that still parses
+// would settle a decision on evidence Git never gave: a cut commit listing
+// proves a range that leaves a commit out, a cut path listing hides a path,
+// a lost patch ID reads as a miss, and a cut remote name reads as another
+// remote. So every answer here is checked against an independent count or a
+// self-checking form, asked once more when it fails the check, and then
+// refused with a LostGitAnswerError. Callers treat that refusal as
 // "unknown, keep it", never as proven and never as a settled miss.
 
 /** A Git answer that was twice lost or cut short; retrying may succeed. */
@@ -35,6 +38,12 @@ const LOST_IN_TRANSIT = "on its way to this process (seen under heavy load).";
 
 const COUNT_ANSWER = /^[0-9]+\n$/u;
 const MERGE_BASE_ANSWER = /^([0-9a-f]{40}|[0-9a-f]{64})\n$/u;
+const ONE_LINE_ANSWER = /^[^\n]*\n$/u;
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+// The summary `--shortstat` prints: how many files changed, counted by Git
+// apart from any listing. Git prints nothing when nothing changed.
+const SHORTSTAT_ANSWER =
+  /^ ([0-9]+) files? changed(?:, [0-9]+ insertions?\(\+\))?(?:, [0-9]+ deletions?\(-\))?\n$/u;
 // One listed commit, followed by its parents when `--parents` asked for them.
 const LISTED_COMMIT =
   /^(?:[0-9a-f]{40}|[0-9a-f]{64})(?: (?:[0-9a-f]{40}|[0-9a-f]{64}))*$/u;
@@ -159,11 +168,23 @@ const nulEntries = (output: string): string[] | null => {
   return output.endsWith("\0") ? output.slice(0, -1).split("\0") : null;
 };
 
+// How many files `--shortstat` says changed, or null when its line was cut.
+const shortstatCount = (output: string): number | null => {
+  if (output === "") {
+    return 0;
+  }
+  const counted = SHORTSTAT_ANSWER.exec(output)?.[1];
+  return counted === undefined ? null : Number.parseInt(counted, 10);
+};
+
 /**
  * The paths a `diff` or `diff-tree` question changes, checked whole. Git is
- * asked for the names (`--name-only -z`) and, independently, for the
- * per-path counts (`--numstat -z`); both must end with a NUL and list the
- * same paths in the same order. When both are empty, the diff's exit code
+ * asked for the names (`--name-only -z`), for the per-path counts
+ * (`--numstat -z`), and for how many files changed (`--shortstat`), a
+ * number that does not depend on either listing's length. Both listings
+ * must end with a NUL, list the same paths in the same order, and hold as
+ * many paths as that number, so two listings cut at the same entry never
+ * agree into a whole answer. When everything is empty, the diff's exit code
  * alone (`--quiet`), which a lost answer cannot fake, must agree that
  * nothing changed. Anything else is asked once more and then refused, so a
  * listing cut short never hides a path. `options` must turn renames off.
@@ -181,8 +202,10 @@ export const completeChangedPaths = (
     const statPaths = nulEntries(ask(["--numstat", "-z"]))?.map(
       (entry) => NUMSTAT_ENTRY.exec(entry)?.[1] ?? null
     );
+    const counted = shortstatCount(ask(["--shortstat"]));
     if (
       !(names && statPaths) ||
+      counted !== names.length ||
       names.length !== statPaths.length ||
       names.some((name, index) => name === "" || name !== statPaths[index])
     ) {
@@ -208,6 +231,135 @@ export const completeChangedPaths = (
   }
   throw new LostGitAnswerError(
     `git ${subcommand} ${quoted(revisions.join(" "))} twice listed changed paths that its own counts did not confirm, so the answer was lost or cut short ${LOST_IN_TRANSIT}`
+  );
+};
+
+export type LineAnswer =
+  | { exitCode: 0; line: string }
+  | { exitCode: number; line: null; stderr: string };
+
+/**
+ * A question Git answers, when it succeeds, with exactly one line: a
+ * configuration value, an object ID, a path, a branch's upstream. A whole
+ * answer ends with its line break (and matches `form`, when given), so an
+ * answer lost or cut short is asked once more and then refused. A failure
+ * is returned with its exit code for the caller to read, such as 1 for an
+ * unset `config --get` key; a lost answer cannot fake an exit code.
+ */
+export const completeLine = (
+  cwd: string,
+  args: readonly string[],
+  form?: RegExp
+): LineAnswer => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = runGit(cwd, args, true);
+    if (result.exitCode !== 0) {
+      return { exitCode: result.exitCode, line: null, stderr: result.stderr };
+    }
+    if (ONE_LINE_ANSWER.test(result.stdout)) {
+      const line = result.stdout.slice(0, -1);
+      if (!form || form.test(line)) {
+        return { exitCode: 0, line };
+      }
+    }
+  }
+  throw new LostGitAnswerError(
+    `git ${quoted(args.join(" "))} twice gave an answer that is not one whole line, so it was lost or cut short ${LOST_IN_TRANSIT}`
+  );
+};
+
+/**
+ * The full object ID `revision` names (`rev-parse --verify --quiet`), or
+ * null when Git exits with a failure, which a lost answer cannot fake. An
+ * ID lost or cut short is asked once more and then refused.
+ */
+export const completeObjectId = (
+  cwd: string,
+  revision: string,
+  gitOptions: readonly string[] = []
+): string | null => {
+  const answer = completeLine(
+    cwd,
+    [...gitOptions, "rev-parse", "--verify", "--quiet", revision],
+    OBJECT_ID
+  );
+  return answer.line;
+};
+
+/**
+ * A listing whose entries each end with `terminator`, such as a
+ * `for-each-ref` line, a `config -z` entry, or a `worktree list
+ * --porcelain` record (a blank line). Git gives no count for these, so this
+ * checks only the end: an answer cut inside an entry, which could still
+ * parse as a shorter one, is asked once more and then refused. A listing
+ * lost entirely, or cut at an entry's end, still reads as whole, so a
+ * caller uses this only where a missing entry keeps something, or confirms
+ * each absence that would decide otherwise by an exit code. A failure is
+ * returned as is, or thrown without `allowFailure`.
+ */
+export const completeListing = (
+  cwd: string,
+  args: readonly string[],
+  terminator: "\0" | "\n" | "\n\n",
+  allowFailure = true
+): { exitCode: number; stderr: string; stdout: string } => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = runGit(cwd, args, allowFailure);
+    if (
+      result.exitCode !== 0 ||
+      result.stdout === "" ||
+      result.stdout.endsWith(terminator)
+    ) {
+      return result;
+    }
+  }
+  throw new LostGitAnswerError(
+    `git ${quoted(args.join(" "))} twice gave a listing that stops inside an entry, so it was cut short ${LOST_IN_TRANSIT}`
+  );
+};
+
+/**
+ * The configured remotes (`git remote`), checked whole: one name per line,
+ * ending with a line break, and naming every remote in `known`, which the
+ * caller knows is configured, so a listing lost or cut short is asked once
+ * more and then refused. A listing cut at a line's end can still leave out
+ * another remote, so a caller treats a name it does not find as unknown and
+ * keeps whatever that name would decide.
+ */
+export const completeRemoteNames = (
+  cwd: string,
+  known: readonly string[]
+): string[] => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const listed = runGit(cwd, ["remote"]).stdout;
+    const names = listed.split("\n");
+    if (
+      names.pop() === "" &&
+      names.every(Boolean) &&
+      known.every((name) => names.includes(name))
+    ) {
+      return names;
+    }
+  }
+  throw new LostGitAnswerError(
+    `git remote twice listed remotes without ${quoted(known.join(" "))} or without its final line break, so the answer was lost or cut short ${LOST_IN_TRANSIT}`
+  );
+};
+
+/**
+ * Whether `name` is a configured remote, answered by the exit code of
+ * `git remote get-url`: 0 for a configured remote, 2 for none. A lost or
+ * cut answer cannot change an exit code; any other failure throws, so an
+ * unknown answer never reads as "not a remote".
+ */
+export const remoteIsConfigured = (cwd: string, name: string): boolean => {
+  const result = runGit(cwd, ["remote", "get-url", name], true);
+  if (result.exitCode === 0 || result.exitCode === 2) {
+    return result.exitCode === 0;
+  }
+  throw new SimpleChangesError(
+    `Could not tell whether ${name} is a configured remote: ${result.stderr.trim() || `exit ${result.exitCode}`}`,
+    EXIT_CODES.inventory
   );
 };
 

@@ -13,6 +13,7 @@ import {
 } from "./cleanup-core.ts";
 import { probeCoordinationAdapter } from "./coordination-adapter.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { completeObjectId } from "./git-complete.ts";
 import { ensureStateDirectory } from "./git-location.ts";
 import { recordedHeldSourcePaths } from "./held-units.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
@@ -180,13 +181,13 @@ const resolveCleanupTarget = (
       EXIT_CODES.usage
     );
   }
-  const targetResult = runGit(
+  // Every containment proof and the cleanup record use this ID, so it is
+  // read whole.
+  const targetRevision = completeObjectId(
     inventory.repository.primaryCheckout,
-    ["rev-parse", "--verify", `${targetRef}^{commit}`],
-    true
+    `${targetRef}^{commit}`
   );
-  const targetRevision = targetResult.stdout.trim();
-  if (targetResult.exitCode !== 0 || !targetRevision) {
+  if (!targetRevision) {
     throw new SimpleChangesError(
       `Cannot resolve cleanup target ${targetRef}.`,
       EXIT_CODES.unsafe

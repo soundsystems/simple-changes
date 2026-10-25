@@ -13,6 +13,7 @@ import {
 import { resolve } from "node:path";
 import { inspectChangelogCoordination } from "./changelog-coordination.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { completeListing } from "./git-complete.ts";
 import { gitReportedPath, verifiedGitDirectories } from "./git-location.ts";
 import { sha256 } from "./hash.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
@@ -412,11 +413,14 @@ const inventoryBranches = (root: string): BranchInventory[] => {
     "%(worktreepath)",
     "%(HEAD)",
   ].join("%00");
-  const output = runGit(root, [
-    "for-each-ref",
-    `--format=${format}`,
-    "refs/heads",
-  ]).stdout;
+  // A line cut short could drop a branch's worktree path and read a
+  // checked-out branch as free to delete, so the listing must end whole.
+  const output = completeListing(
+    root,
+    ["for-each-ref", `--format=${format}`, "refs/heads"],
+    "\n",
+    false
+  ).stdout;
   return output
     .split("\n")
     .filter(Boolean)
@@ -908,8 +912,11 @@ export const captureInventory = (
     root,
     directory
   );
+  // Each record ends with a blank line, so a record cut short, which could
+  // drop a checkout's branch, lock, or path, is asked again and refused.
   const rawWorktrees = parseWorktreeList(
-    runGit(root, ["worktree", "list", "--porcelain"]).stdout
+    completeListing(root, ["worktree", "list", "--porcelain"], "\n\n", false)
+      .stdout
   );
   const primaryCheckout =
     rawWorktrees.find((worktree) => !worktree.bare)?.path ?? root;

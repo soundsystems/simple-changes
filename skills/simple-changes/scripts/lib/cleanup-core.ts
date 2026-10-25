@@ -1,3 +1,4 @@
+import { remoteIsConfigured } from "./git-complete.ts";
 import { runGit } from "./process.ts";
 import { commitEquivalenceAgainstTarget } from "./worktree-equivalence.ts";
 
@@ -110,6 +111,13 @@ export const targetContainmentAudit = (
   return { exceededMaxCommits: false, method: null };
 };
 
+/**
+ * The local branch a target such as `origin/main` stands for, which cleanup
+ * never removes. Whether the part before a slash is a remote is answered by
+ * Git's exit code for each such part, shortest first, never by a listing of
+ * remotes: a listing lost or cut short would read `origin/main` as a local
+ * branch name and leave the real target branch unprotected.
+ */
 export const localBranchForTargetRef = (
   primaryCheckout: string,
   targetRef: string
@@ -122,14 +130,16 @@ export const localBranchForTargetRef = (
     const separator = remoteRef.indexOf("/");
     return separator === -1 ? null : remoteRef.slice(separator + 1);
   }
-  const remoteNames = runGit(primaryCheckout, ["remote"], true)
-    .stdout.split("\n")
-    .map((remoteName) => remoteName.trim())
-    .filter(Boolean);
-  const matchedRemote = remoteNames.find((name) =>
-    targetRef.startsWith(`${name}/`)
-  );
-  return matchedRemote ? targetRef.slice(matchedRemote.length + 1) : targetRef;
+  for (
+    let separator = targetRef.indexOf("/");
+    separator > 0;
+    separator = targetRef.indexOf("/", separator + 1)
+  ) {
+    if (remoteIsConfigured(primaryCheckout, targetRef.slice(0, separator))) {
+      return targetRef.slice(separator + 1);
+    }
+  }
+  return targetRef;
 };
 
 export interface ContainedBranchCandidate {

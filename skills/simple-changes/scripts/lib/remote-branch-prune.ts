@@ -1,5 +1,10 @@
 import { PATCH_EQUIVALENCE_MAX_COMMITS } from "./cleanup-core.ts";
-import { completeMergeBase } from "./git-complete.ts";
+import {
+  completeLine,
+  completeMergeBase,
+  completeRemoteNames,
+  LostGitAnswerError,
+} from "./git-complete.ts";
 import { runGit } from "./process.ts";
 import { isExternalDeletionShape } from "./remote-branch-reconciliation.ts";
 import { RUN_ID_PATTERN } from "./run-id.ts";
@@ -183,12 +188,15 @@ export const mayBeShallow = (repositoryPath: string): boolean =>
 const SHALLOW_ADVICE =
   "the clone is shallow, so Git cannot prove what the target does or does not contain; run `git fetch --unshallow` and try again";
 
+const ONE_LINE = /^[^\n]*\n$/u;
+
 /**
- * The `%(upstream)` line of a local branch. Git prints a line, empty or not,
- * for a branch that exists and nothing for one that does not, so nothing at
- * all is asked once more, then settled by whether the branch exists: a
- * branch that exists makes it a lost answer, which throws rather than read
- * as no upstream.
+ * The `%(upstream)` line of a local branch. Git prints one whole line,
+ * empty or not, for a branch that exists and nothing for one that does not.
+ * An answer cut short (no line break) is asked once more and then refused,
+ * so a cut refname never names another branch. Nothing at all, twice, is
+ * settled by whether the branch exists: a branch that exists makes it a
+ * lost answer, which throws rather than read as no upstream.
  */
 const upstreamListing = (
   repositoryPath: string,
@@ -200,13 +208,20 @@ const upstreamListing = (
       ["for-each-ref", "--format=%(upstream)", `refs/heads/${branch}`],
       true
     );
+  const whole = (answer: { exitCode: number; stdout: string }): boolean =>
+    answer.exitCode !== 0 || ONE_LINE.test(answer.stdout);
   const first = ask();
-  if (first.exitCode !== 0 || first.stdout !== "") {
+  if (whole(first)) {
     return first;
   }
   const second = ask();
-  if (second.exitCode !== 0 || second.stdout !== "") {
+  if (whole(second)) {
     return second;
+  }
+  if (first.stdout !== "" || second.stdout !== "") {
+    throw new LostGitAnswerError(
+      `cannot read the upstream of ${branch}: Git twice printed an upstream line cut short, so its answer was lost.`
+    );
   }
   const exists = runGit(
     repositoryPath,
@@ -226,34 +241,43 @@ const upstreamListing = (
  * when it tracks none there. It reads the canonical identity from
  * `branch.<name>.remote` and `branch.<name>.merge`, never the abbreviated
  * display name, which Git lengthens (`remotes/origin/kept`) when a local
- * branch shares the remote-tracking name. When the config cannot be read it
- * falls back to the full `%(upstream)` refname, and throws when that fails
- * too, so an unknown upstream never reads as none.
+ * branch shares the remote-tracking name. Each value must arrive as one
+ * whole line, so a remote name cut from `origin` to `ori` never reads as
+ * another remote. A remote that is neither the target, this repository
+ * (`.`), nor one of the configured `remotes` is unknown, so the branch it
+ * names is held as if it were the target's. When the config cannot be read
+ * it falls back to the full `%(upstream)` refname, and throws when that
+ * fails too, so an unknown upstream never reads as none.
  */
 const trackedProviderBranch = (
   repositoryPath: string,
   branch: string,
-  targetRemote: string
+  targetRemote: string,
+  remotes: () => readonly string[]
 ): string | null => {
   const config = (key: "merge" | "remote") =>
-    runGit(
-      repositoryPath,
-      ["config", "--get", `branch.${branch}.${key}`],
-      true
-    );
+    completeLine(repositoryPath, [
+      "config",
+      "--get",
+      `branch.${branch}.${key}`,
+    ]);
   const remote = config("remote");
   const merge = config("merge");
   if (remote.exitCode === 1 || merge.exitCode === 1) {
     // Not set: the branch tracks nothing.
     return null;
   }
-  if (remote.exitCode === 0 && merge.exitCode === 0) {
-    const ref = merge.stdout.trim();
-    return remote.stdout.trim() === targetRemote
-      ? (ref.startsWith("refs/heads/")
-          ? ref.slice("refs/heads/".length)
-          : ref) || null
-      : null;
+  if (remote.line !== null && merge.line !== null) {
+    const ref = merge.line;
+    const tracked =
+      (ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref) ||
+      null;
+    if (remote.line === targetRemote) {
+      return tracked;
+    }
+    return remote.line === "." || remotes().includes(remote.line)
+      ? null
+      : tracked;
   }
   const upstream = upstreamListing(repositoryPath, branch);
   if (upstream.exitCode !== 0) {
@@ -278,9 +302,18 @@ export const remoteBranchNameHolds = (
   const { primaryCheckout, targetRemote } = inventory.repository;
   const byName = new Map<string, string[]>();
   const live = nameHolds(input, byName);
+  // Read once, and only when a branch tracks a remote other than the target.
+  let configured: string[] | undefined;
+  const remotes = (): readonly string[] => {
+    configured ??= completeRemoteNames(
+      primaryCheckout,
+      targetRemote ? [targetRemote] : []
+    );
+    return configured;
+  };
   for (const [branch, why] of live) {
     const upstream = targetRemote
-      ? trackedProviderBranch(primaryCheckout, branch, targetRemote)
+      ? trackedProviderBranch(primaryCheckout, branch, targetRemote, remotes)
       : null;
     if (upstream && upstream !== targetBranch) {
       addHold(byName, upstream, `upstream of ${branch}, ${why}`);

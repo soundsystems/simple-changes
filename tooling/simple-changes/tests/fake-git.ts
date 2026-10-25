@@ -33,13 +33,16 @@ export interface FakeGitRun {
   mode?: FakeGitLoss;
   /** How many calls naming `flag` to answer truthfully before losing any. */
   skip?: number;
+  /** When given, `git version` prints this line instead of the real one. */
+  version?: string;
 }
 
 // A Git on PATH that answers truthfully, except as the environment says:
 // a call whose arguments contain FAKE_GIT_EMPTY_FLAG first uses up a skip
 // token and answers truthfully, then, while loss tokens remain, removes one
 // and loses its answer (FAKE_GIT_EMPTY_MODE); a call whose arguments
-// contain FAKE_GIT_FAIL_FLAG fails with exit 3.
+// contain FAKE_GIT_FAIL_FLAG fails with exit 3; and `git version` prints
+// FAKE_GIT_VERSION when it is set.
 const fakeGitDirectory = (register: (cleanup: () => void) => void): string => {
   const realGit = which("git");
   if (!realGit) {
@@ -51,6 +54,13 @@ const fakeGitDirectory = (register: (cleanup: () => void) => void): string => {
     join(bin, "git"),
     `#!/bin/sh
 real='${realGit}'
+if [ -n "$FAKE_GIT_VERSION" ]; then
+  for last in "$@"; do :; done
+  if [ "$last" = version ]; then
+    printf '%s\\n' "$FAKE_GIT_VERSION"
+    exit 0
+  fi
+fi
 if [ -n "$FAKE_GIT_FAIL_FLAG" ]; then
   case " $* " in
     *" $FAKE_GIT_FAIL_FLAG "*)
@@ -114,6 +124,7 @@ export const runWithFakeGit = (
       FAKE_GIT_EMPTY_TOKENS: tokens,
       FAKE_GIT_FAIL_FLAG: run.failFlag ?? "",
       FAKE_GIT_SKIP_TOKENS: skips,
+      FAKE_GIT_VERSION: run.version ?? "",
       PATH: `${bin}:${process.env.PATH ?? ""}`,
     },
     stderr: "pipe",

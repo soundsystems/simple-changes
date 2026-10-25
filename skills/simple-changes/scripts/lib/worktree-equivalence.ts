@@ -126,8 +126,6 @@ const revisionList = (cwd: string, range: string): string[] =>
   countedRevisionList(cwd, ["--reverse", range]);
 
 const PATCH_ID_ANSWER = /^([0-9a-f]{40}|[0-9a-f]{64}) [0-9a-f]{40,64}\n$/u;
-const HUNK_LINE = /^@@ /mu;
-const GIT_VERSION_ANSWER = /^git version ([0-9]+)\.([0-9]+)/u;
 const textEncoder = new TextEncoder();
 
 // A commit's diff, asked for twice in one answer. `diff-tree --stdin
@@ -157,24 +155,17 @@ const wholeDiff = (cwd: string, sha: string): Buffer | null => {
     : null;
 };
 
-// Whether this Git gives a patch ID to every diff: 2.39 and later also ID
-// a diff without hunks, such as a mode change or a binary file. A version
-// that cannot be read counts as yes, so an empty answer then refuses.
-const idsEveryDiff = (cwd: string): boolean => {
-  const match = GIT_VERSION_ANSWER.exec(runGit(cwd, ["version"]).stdout);
-  if (!match) {
-    return true;
-  }
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-  return major > 2 || (major === 2 && minor >= 39);
-};
-
-// A commit's patch ID, null when Git rightly gives it none, or undefined
-// when an answer it rests on was not whole. The diff fed to patch-id is the
-// whole one, so a diff cut short, whose patch ID would be a valid ID of the
-// part that arrived and could match a target commit that changed only that
-// part, never reaches it; patch-id's own answer must be one whole line.
+// A commit's patch ID, null when its diff is empty, or undefined when an
+// answer it rests on was not whole. The diff fed to patch-id is the whole
+// one, so a diff cut short, whose patch ID would be a valid ID of the part
+// that arrived and could match a target commit that changed only that part,
+// never reaches it; patch-id's own answer must be one whole line. A
+// non-empty diff always needs that line: no answer is never read as "this
+// diff has no patch ID", whatever Git's version says, since a version
+// answer can itself arrive cut short. Git before 2.39 does give no patch ID
+// for a diff without a hunk, such as a mode-only change; that is unknown
+// evidence too, so it is refused like a lost answer and the branch is kept,
+// never settled as a miss.
 const wholePatchId = (cwd: string, sha: string): string | null | undefined => {
   const diff = wholeDiff(cwd, sha);
   if (diff === null) {
@@ -186,15 +177,7 @@ const wholePatchId = (cwd: string, sha: string): string | null | undefined => {
   const output = textDecoder.decode(
     rawGit(cwd, ["patch-id", "--stable"], diff).stdout
   );
-  const patchId = PATCH_ID_ANSWER.exec(output)?.[1];
-  if (patchId) {
-    return patchId;
-  }
-  return output === "" &&
-    !HUNK_LINE.test(diff.toString("latin1")) &&
-    !idsEveryDiff(cwd)
-    ? null
-    : undefined;
+  return PATCH_ID_ANSWER.exec(output)?.[1];
 };
 
 // Patch evidence is accepted only when it is whole. Anything else is asked
@@ -208,7 +191,7 @@ const patchIdFor = (cwd: string, sha: string): string | null => {
     }
   }
   throw new SimpleChangesError(
-    `Git's diff or patch ID for commit ${sha} was twice lost or cut short on its way to this process (seen under heavy load), so it cannot be compared. Refusing to act on a partial answer; retry the command.`,
+    `Git's diff or patch ID for commit ${sha} was twice lost or cut short on its way to this process (seen under heavy load), so it cannot be compared. Refusing to act on a partial answer; retry the command. If it fails again, this Git may give no patch ID for a change without a hunk, such as a mode change (Git before 2.39); update Git.`,
     EXIT_CODES.inventory
   );
 };

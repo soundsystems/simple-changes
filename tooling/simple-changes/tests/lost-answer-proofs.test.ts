@@ -49,18 +49,29 @@ const libraryPath = (name: string): string =>
   );
 
 // Runs `body` in a child whose Git is a fake on PATH (see fake-git.ts), with
-// `lost` answers to calls naming `flag` lost first (`mode`), and calls
-// naming `failFlag` failing, and returns what the child printed.
+// `lost` answers to calls naming `flag` lost first (`mode`), calls naming
+// `failFlag` failing, and `git version` printing `version` when given, and
+// returns what the child printed.
 const runInChild = (
   body: string,
   flag: string,
   lost: number,
   failFlag = "",
   mode: FakeGitLoss = "empty",
-  skip = 0
+  skip = 0,
+  version?: string
 ): { remaining: number; reply: unknown } =>
-  runWithFakeGit({ body, failFlag, flag, lost, mode, skip }, (cleanup) =>
-    cleanups.push(cleanup)
+  runWithFakeGit(
+    {
+      body,
+      failFlag,
+      flag,
+      lost,
+      mode,
+      skip,
+      ...(version === undefined ? {} : { version }),
+    },
+    (cleanup) => cleanups.push(cleanup)
   );
 
 describe("exact-byte target proof with a lost Git answer", () => {
@@ -367,7 +378,8 @@ const reportInChild = (
   flag: string,
   lost: number,
   mode: FakeGitLoss = "empty",
-  skip = 0
+  skip = 0,
+  version?: string
 ) =>
   runInChild(
     `import { remoteBranchCleanupReport } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
@@ -383,7 +395,8 @@ console.log(JSON.stringify({ errors: result.errors, pending: result.pending }));
     lost,
     "",
     mode,
-    skip
+    skip,
+    version
   );
 
 // Every patch-ID calculation reads the commit's diff and then pipes it into
@@ -563,6 +576,95 @@ describe("the cleanup report with a lost diff or patch ID", () => {
   });
 });
 
+describe("an empty patch ID beside a Git version cut short", () => {
+  // A version answer cut short ("git version 2.5" for 2.54) once read as a
+  // Git that gives no patch ID to a diff without a hunk, so a lost patch ID
+  // for side's mode-only commit settled as a miss and the report dropped
+  // the branch. An empty patch ID for a non-empty diff is now always asked
+  // again and then refused, whatever the version says.
+  const CUT_VERSION = "git version 2.5";
+
+  const report = (lost: number) => {
+    const fixture = patchEquivalentFixture("mode");
+    return {
+      side: fixture.side,
+      ...reportInChild(
+        fixture,
+        SIDE_PATCH_ID.flag,
+        lost,
+        "empty",
+        SIDE_PATCH_ID.skip,
+        CUT_VERSION
+      ),
+    };
+  };
+
+  const audit = (lost: number) => {
+    const fixture = patchEquivalentFixture("mode");
+    return runInChild(
+      `import { targetContainmentAudit } from ${JSON.stringify(libraryPath("cleanup-core.ts"))};
+try {
+  console.log(JSON.stringify({ method: targetContainmentAudit(${JSON.stringify(fixture.root)}, ${JSON.stringify(fixture.head)}, ${JSON.stringify(fixture.side)}).method }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+      SIDE_PATCH_ID.flag,
+      lost,
+      "",
+      "empty",
+      SIDE_PATCH_ID.skip,
+      CUT_VERSION
+    );
+  };
+
+  test("with every patch ID whole, the mode-only change is still pending as patch-equivalent (control)", () => {
+    const { remaining, reply, side } = report(0);
+    expect(remaining).toBe(0);
+    expect(reply).toEqual({
+      errors: [],
+      pending: [
+        { headRevision: side, name: "side", proof: "patch-equivalent" },
+      ],
+    });
+    expect(audit(0).reply).toEqual({ method: "patch-equivalent" });
+  });
+
+  test("a lost patch ID is asked again instead of settling as a miss, so the branch is still pending", () => {
+    const { remaining, reply, side } = report(1);
+    expect(remaining).toBe(0);
+    expect(reply).toEqual({
+      errors: [],
+      pending: [
+        { headRevision: side, name: "side", proof: "patch-equivalent" },
+      ],
+    });
+  });
+
+  test("a patch ID lost twice is an error that keeps cleanup pending, never a settled miss", () => {
+    const { remaining, reply, side } = report(2);
+    expect(remaining).toBe(0);
+    const { errors, pending } = reply as {
+      errors: string[];
+      pending: unknown[];
+    };
+    expect(pending).toEqual([]);
+    expect(errors.join(" ")).toContain(
+      `side at ${side}: its containment could not be checked`
+    );
+    expect(errors.join(" ")).toContain("was twice lost or cut short");
+  });
+
+  test("local cleanup's proof refuses after a retry instead of reading a lost patch ID as unmatched", () => {
+    const { remaining, reply } = audit(2);
+    expect(remaining).toBe(0);
+    expect((reply as { error: string }).error).toContain(
+      "was twice lost or cut short"
+    );
+    expect((reply as { error: string }).error).toContain("retry the command");
+  });
+});
+
 describe("local cleanup's patch proof with a diff cut short", () => {
   // The target carries part of the source commit: the same change to a.txt
   // without b.txt, or the same mode change to f without its new binary
@@ -601,15 +703,17 @@ describe("local cleanup's patch proof with a diff cut short", () => {
     }
     git(root, ["commit", "--quiet", "-m", "Ship part of it"]);
     const target = git(root, ["rev-parse", "HEAD"]);
+    // The diff as the intercepted answer starts: the commit's ID line, then
+    // its diff.
     const diff = git(root, [
       "diff-tree",
       "--patch",
-      "--no-commit-id",
       "--full-index",
       source,
     ]).split("\n");
-    // The lines of the part the target carries: a.txt's whole diff, or f's
-    // header through its new mode.
+    expect(diff[0]).toBe(source);
+    // The lines of the part the target carries, from the ID line: through
+    // a.txt's final line, or through f's new mode.
     const kept =
       change === "text"
         ? diff.findIndex((line) => line.startsWith("diff --git a/b.txt"))

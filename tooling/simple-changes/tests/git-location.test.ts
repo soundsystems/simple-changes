@@ -87,7 +87,11 @@ const linkedFixture = (): LinkedFixture => {
 // `--git-common-dir`, whose line it replaces as FAKE_GIT_COMMON_DIR says:
 // `empty`, `cut:N` (drop the last N characters), or a literal answer. While
 // FAKE_GIT_EMPTY_TOKENS holds token files, a call naming FAKE_GIT_EMPTY_FLAG
-// removes one and exits 0 with no output, as a lost answer looks.
+// claims one and exits 0 with no output, as a lost answer looks. A claim
+// moves the token into the `-taken` folder beside it: a rename succeeds for
+// exactly one of several Git processes racing for the same token, while
+// macOS `rm` can report success to two of them, so concurrent calls (the
+// worker's) could lose more answers than there were tokens.
 const fakeGitDirectory = (): string => {
   const realGit = which("git");
   if (!realGit) {
@@ -103,7 +107,7 @@ if [ -n "$FAKE_GIT_EMPTY_FLAG" ] && [ -d "$FAKE_GIT_EMPTY_TOKENS" ]; then
   case " $* " in
     *" $FAKE_GIT_EMPTY_FLAG "*)
       for token in "$FAKE_GIT_EMPTY_TOKENS"/*; do
-        rm "$token" 2>/dev/null && exit 0
+        mv "$token" "$FAKE_GIT_EMPTY_TOKENS-taken/" 2>/dev/null && exit 0
       done
       ;;
   esac
@@ -127,6 +131,21 @@ printf '%s\\n' "$last"
   );
   chmodSync(join(bin, "git"), 0o755);
   return bin;
+};
+
+// `count` tokens for the fake Git's lost answers, with the folder a claimed
+// token moves into.
+const lostAnswerTokens = (count: number): string => {
+  const tokens = mkdtempSync(join(tmpdir(), "simple-changes-lost-"));
+  mkdirSync(`${tokens}-taken`);
+  cleanups.push(() => {
+    rmSync(tokens, { force: true, recursive: true });
+    rmSync(`${tokens}-taken`, { force: true, recursive: true });
+  });
+  for (let index = 0; index < count; index += 1) {
+    writeFileSync(join(tokens, `token-${index}`), "");
+  }
+  return tokens;
 };
 
 const recordAuthors = (
@@ -281,11 +300,7 @@ describe("the common Git directory behind Simple Changes state", () => {
   test("record-authors refuses a lost --show-toplevel answer and writes nothing", () => {
     const setup = linkedFixture();
     const bin = fakeGitDirectory();
-    const tokens = mkdtempSync(join(tmpdir(), "simple-changes-lost-"));
-    cleanups.push(() => rmSync(tokens, { force: true, recursive: true }));
-    for (let index = 0; index < 8; index += 1) {
-      writeFileSync(join(tokens, `token-${index}`), "");
-    }
+    const tokens = lostAnswerTokens(8);
     const refused = recordAuthors(setup, bin, null, {
       FAKE_GIT_EMPTY_FLAG: "--show-toplevel",
       FAKE_GIT_EMPTY_TOKENS: tokens,
@@ -555,11 +570,7 @@ describe("lost Git answers", () => {
     mode: "several" | "single"
   ) => {
     const bin = fakeGitDirectory();
-    const tokens = mkdtempSync(join(tmpdir(), "simple-changes-lost-"));
-    cleanups.push(() => rmSync(tokens, { force: true, recursive: true }));
-    for (let index = 0; index < lost; index += 1) {
-      writeFileSync(join(tokens, `token-${index}`), "");
-    }
+    const tokens = lostAnswerTokens(lost);
     const script = join(tokens, "..", `${tokens.split("/").at(-1)}-ask.ts`);
     cleanups.push(() => rmSync(script, { force: true }));
     writeFileSync(

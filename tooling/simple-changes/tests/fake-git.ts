@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   rmSync,
@@ -45,10 +46,13 @@ export interface FakeGitRun {
 
 // A Git on PATH that answers truthfully, except as the environment says:
 // a call whose arguments contain FAKE_GIT_EMPTY_FLAG first uses up a skip
-// token and answers truthfully, then, while loss tokens remain, removes one
+// token and answers truthfully, then, while loss tokens remain, claims one
 // and loses its answer (FAKE_GIT_EMPTY_MODE); a call whose arguments
 // contain FAKE_GIT_FAIL_FLAG fails with exit 3; and `git version` prints
-// FAKE_GIT_VERSION when it is set.
+// FAKE_GIT_VERSION when it is set. A claim moves the token into the
+// `-taken` folder beside its own: a rename succeeds for exactly one of
+// several Git processes racing for the same token, while macOS `rm` can
+// report success to two of them.
 const fakeGitDirectory = (register: (cleanup: () => void) => void): string => {
   const realGit = which("git");
   if (!realGit) {
@@ -79,10 +83,10 @@ if [ -n "$FAKE_GIT_EMPTY_FLAG" ] && [ -d "$FAKE_GIT_EMPTY_TOKENS" ]; then
   case " $* " in
     *" $FAKE_GIT_EMPTY_FLAG "*)
       for token in "$FAKE_GIT_SKIP_TOKENS"/*; do
-        rm "$token" 2>/dev/null && exec "$real" "$@"
+        mv "$token" "$FAKE_GIT_SKIP_TOKENS-taken/" 2>/dev/null && exec "$real" "$@"
       done
       for token in "$FAKE_GIT_EMPTY_TOKENS"/*; do
-        if rm "$token" 2>/dev/null; then
+        if mv "$token" "$FAKE_GIT_EMPTY_TOKENS-taken/" 2>/dev/null; then
           case "$FAKE_GIT_EMPTY_MODE" in
             first-line) "$real" "$@" | head -n 1 ;;
             lines:*) "$real" "$@" | head -n "\${FAKE_GIT_EMPTY_MODE#lines:}" ;;
@@ -112,16 +116,21 @@ export const runWithFakeGit = (
   register: (cleanup: () => void) => void
 ): { remaining: number; reply: unknown } => {
   const bin = fakeGitDirectory(register);
-  const tokens = mkdtempSync(join(tmpdir(), "simple-changes-lost-"));
-  register(() => rmSync(tokens, { force: true, recursive: true }));
-  for (let index = 0; index < run.lost; index += 1) {
-    writeFileSync(join(tokens, `token-${index}`), "");
-  }
-  const skips = mkdtempSync(join(tmpdir(), "simple-changes-skip-"));
-  register(() => rmSync(skips, { force: true, recursive: true }));
-  for (let index = 0; index < (run.skip ?? 0); index += 1) {
-    writeFileSync(join(skips, `skip-${index}`), "");
-  }
+  // `count` token files, and the folder a claimed token moves into.
+  const tokenDirectory = (prefix: string, count: number): string => {
+    const directory = mkdtempSync(join(tmpdir(), prefix));
+    mkdirSync(`${directory}-taken`);
+    register(() => {
+      rmSync(directory, { force: true, recursive: true });
+      rmSync(`${directory}-taken`, { force: true, recursive: true });
+    });
+    for (let index = 0; index < count; index += 1) {
+      writeFileSync(join(directory, `token-${index}`), "");
+    }
+    return directory;
+  };
+  const tokens = tokenDirectory("simple-changes-lost-", run.lost);
+  const skips = tokenDirectory("simple-changes-skip-", run.skip ?? 0);
   const script = join(bin, "child.ts");
   writeFileSync(script, run.body);
   const result = spawnSync([process.execPath, script], {

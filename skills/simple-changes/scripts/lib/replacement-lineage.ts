@@ -1532,11 +1532,30 @@ const pinArchive = (
   );
 };
 
+// A test-only seam: the read-back of the reflog pins throws when one of
+// their refs ends with the suffix the read-back seam names, as a Git spawn
+// does when the process table is exhausted.
+const throwOnPinReadBackForTests = (pins: readonly ArchivePinRef[]): void => {
+  const suffix = process.env.SIMPLE_CHANGES_TEST_FAIL_PIN_READBACK;
+  if (
+    process.env.NODE_ENV === "test" &&
+    suffix &&
+    pins.some((pin) => pin.ref.endsWith(`/${suffix}`))
+  ) {
+    throw new SimpleChangesError(
+      `Simulated spawn failure while reading back the pins under ${suffix}.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 // The commits only the checkout's reflogs keep, under `<prefix>/<commit>`
 // like every other object the checkout named, in one transaction that
 // creates each only when absent, so a failure writes none of them and up to
-// REFLOG_PIN_LIMIT need no Git command each. They are tracked once Git
-// reports the write, then read back from one listing.
+// REFLOG_PIN_LIMIT need no Git command each. They are tracked the moment Git
+// reports the write, before the read-back from one listing, so a read-back
+// that throws (a spawn failing under load) still leaves every pin known to
+// the undo.
 const pinReflogCommits = (
   primary: string,
   prefix: string,
@@ -1557,6 +1576,10 @@ const pinReflogCommits = (
     pins.map((pin) => `create ${pin.ref} ${pin.object}`),
     options.message
   );
+  if (failure === null) {
+    pinRefs.push(...pins);
+    throwOnPinReadBackForTests(pins);
+  }
   const listed = runGit(
     primary,
     [
@@ -1582,7 +1605,6 @@ const pinReflogCommits = (
     pinRefs.push(...pins.filter((pin) => found.get(pin.ref) === pin.object));
     return `Could not pin the ${pins.length} commit(s) only the checkout's reflogs keep under ${prefix}/: ${failure}`;
   }
-  pinRefs.push(...pins);
   const unread = pins.find((pin) => found.get(pin.ref) !== pin.object);
   if (listed.exitCode !== 0 || unread) {
     return `Pinned the ${pins.length} commit(s) only the checkout's reflogs keep under ${prefix}/, but ${unread?.ref ?? "they"} did not read back (${listed.stderr.trim() || "missing from Git's listing"}).`;

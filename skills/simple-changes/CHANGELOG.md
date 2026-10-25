@@ -202,6 +202,17 @@
   which happened. A target that committed different settings is still
   adopted, and because trust covers exact bytes, the sensitive settings
   stay reduced until `setup` confirms them.
+- Finishing a run no longer overwrites local edits to files Git hides
+  from `git status`. Before 0.33.0, when `loop finalize` or
+  `loop close-equivalent` brought the primary checkout up to the target,
+  its check for special entries in Git's index never matched what Git
+  printed, so every entry looked ordinary. A file marked skip-worktree or
+  assume-unchanged, whose edits Git does not report, could then look as
+  if it already held the target's bytes and have your local edits
+  replaced. Intent-to-add and conflicted entries were not recognized
+  either. Now finishing reads those markings and leaves any such file
+  exactly as it is, and when Git's answer about a file is lost or cut
+  short, it leaves that file as it is too.
 - `loop retire-absent-worktree` can now account for a removed checkout
   that the run itself created, when its kept branch's work reached the
   target inside a larger commit. Before, such a checkout failed every

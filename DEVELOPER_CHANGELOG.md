@@ -495,6 +495,19 @@
   check, upstream holds (an unknown remote holds), lineage reads,
   `targetTreeEntry`, `localBranchForTargetRef`, and the index flags read
   before primary normalization (now parsed as hexadecimal).
+- Index flags (`indexHasOnlyOrdinaryEntries` in `loop-lease-finalize.ts`):
+  the old `^\s+flags:\s+(\d+)\s*$` never matched `ls-files --debug`,
+  which prints `size: <n>\tflags: <hex>` on one line, so every entry read
+  as ordinary and `targetEquivalentPrimaryPaths` could restore a
+  skip-worktree or assume-unchanged path whose file differed from the
+  index. New `debugEntryFlags` needs a trailing line break and six lines
+  per entry and parses each entry's flags as hexadecimal; a conflict
+  stage bit (`0x1000`, `0x2000`), assume-unchanged (`0x8000`),
+  intent-to-add (`0x20000000`), or skip-worktree (`0x40000000`) keeps the
+  path. A nonzero exit, a listing not whole twice, or an empty listing
+  that `ls-files --error-unmatch` does not confirm with exit 1 also keeps
+  it. Covered by "primary normalization with index flags lost or cut
+  short" in `lost-answer-proofs.test.ts`.
 - Lineage wiring: `policy.ts` adds `DEFAULT_ARCHIVE_RETENTION_DAYS` (14),
   `DEFAULT_ARCHIVE_TOTAL_BYTES` (2147483648), and
   `archiveRetentionPolicy(policy)` (`days` 1 to 3650, `maxTotalBytes` 1

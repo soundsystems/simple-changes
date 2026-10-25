@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/held-units.schema.json",
+  "title": "Simple Changes held units",
+  "description": "Sidecar beside the loop lease that records each frozen scoped unit `loop hold-unit` kept preserved instead of delivered. Each hold is immutable: it keeps the original unit, its paths, the exact source, claim, and target state the user approved, the readiness evidence the controller cited, and the approval. A held unit is never delivered or target-equivalent. It is the source of truth for held units; the lease of a run with holds carries only a `heldUnits` key bound to these holds, so clients before 0.33.0 refuse that lease, while a lease without holds keeps its earlier shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "holds"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "pattern": "^run-[a-z0-9-]+$" },
+    "holds": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/hold" }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "revision": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "entry": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "string",
+          "pattern": "^\\d+:(blob|commit):[0-9a-f]+$"
+        }
+      ]
+    },
+    "text": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "hold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorization",
+        "exclusions",
+        "holdDigest",
+        "observation",
+        "observationDigest",
+        "recordedAt",
+        "unit"
+      ],
+      "properties": {
+        "authorization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["approvalReference", "approvedAt", "approvedBy"],
+          "properties": {
+            "approvalReference": { "$ref": "#/$defs/text" },
+            "approvedAt": { "type": "string", "format": "date-time" },
+            "approvedBy": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "reason", "worktreePath"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "reason": { "type": "string", "minLength": 1 },
+              "worktreePath": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "holdDigest": { "$ref": "#/$defs/digest" },
+        "observation": { "$ref": "#/$defs/observation" },
+        "observationDigest": { "$ref": "#/$defs/digest" },
+        "recordedAt": { "type": "string", "format": "date-time" },
+        "unit": { "$ref": "change-plan.schema.json#/$defs/unit" }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim",
+        "controllerAgentId",
+        "originalPaths",
+        "paths",
+        "readinessEvidence",
+        "reason",
+        "runId",
+        "scopePlanDigest",
+        "source",
+        "target",
+        "unitDigest",
+        "unitId"
+      ],
+      "properties": {
+        "claim": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["branch", "claimId", "ownerAgentId", "state"],
+              "properties": {
+                "branch": {
+                  "anyOf": [
+                    { "type": "null" },
+                    { "type": "string", "minLength": 1 }
+                  ]
+                },
+                "claimId": { "type": "string", "minLength": 1 },
+                "ownerAgentId": { "type": "string", "minLength": 1 },
+                "state": { "type": "string", "minLength": 1 }
+              }
+            }
+          ]
+        },
+        "controllerAgentId": { "type": "string", "minLength": 1 },
+        "originalPaths": {
+          "description": "Each original path of the unit's own renames that is not an opening change of its own, with the source checkout's entry there, which must be absent (null), as it was when the scope froze.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sourceEntry"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "sourceEntry": { "type": "null" }
+            }
+          }
+        },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["openingEntry", "path", "sourceEntry"],
+            "properties": {
+              "openingEntry": { "$ref": "#/$defs/entry" },
+              "path": { "type": "string", "minLength": 1 },
+              "sourceEntry": { "$ref": "#/$defs/entry" }
+            }
+          }
+        },
+        "readinessEvidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/text" }
+        },
+        "reason": { "$ref": "#/$defs/text" },
+        "runId": { "type": "string", "pattern": "^run-[a-z0-9-]+$" },
+        "scopePlanDigest": { "$ref": "#/$defs/digest" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "branch",
+            "changeDigest",
+            "headSha",
+            "isPrimary",
+            "worktree"
+          ],
+          "properties": {
+            "branch": {
+              "anyOf": [
+                { "type": "null" },
+                { "type": "string", "minLength": 1 }
+              ]
+            },
+            "changeDigest": { "$ref": "#/$defs/digest" },
+            "headSha": {
+              "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/revision" }]
+            },
+            "isPrimary": { "type": "boolean" },
+            "worktree": { "type": "string", "minLength": 1 }
+          }
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ref", "revision"],
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "revision": { "$ref": "#/$defs/revision" }
+          }
+        },
+        "unitDigest": { "$ref": "#/$defs/digest" },
+        "unitId": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

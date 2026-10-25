@@ -15,11 +15,17 @@ import {
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { spawnSync } from "bun";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import {
+  ensureStateDirectory,
+  ensureStateDirectoryOf,
+} from "./git-location.ts";
 import {
   currentHarnessSession,
   forgetControllerSession,
   recordControllerSession,
+  requireHarnessSession,
 } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import {
@@ -63,9 +69,20 @@ const REMOTE_BRANCH_ANCESTRY_DIRECTORY = "remote-branch-ancestry";
 
 const REMOTE_BRANCH_SUPERSESSION_DIRECTORY = "remote-branch-supersession";
 
+const REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY = "remote-branch-open-targets";
+
+const REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY =
+  "remote-branch-external-deletions";
+
 const PRESERVED_SOURCE_OVERRIDE_DIRECTORY = "preserved-source-override";
 
+// Its own sidecar, so an older runtime's strict override reader never sees a
+// handoff and an outcome carrying one fails closed there.
+const PRESERVED_SOURCE_HANDOFF_DIRECTORY = "preserved-source-handoff";
+
 const CHANGELOG_AUTHOR_DIRECTORY = "changelog-author";
+
+const HELD_UNITS_DIRECTORY = "held-units";
 
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 
@@ -154,7 +171,7 @@ const writeImmutableRecoveryEvent = <T extends object>(
   if (existsSync(path)) {
     return readImmutableRecoveryEvent<T>(path);
   }
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  ensureStateDirectoryOf(dirname(path));
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
     encoding: "utf8",
@@ -260,7 +277,7 @@ const acquireStateLock = (
 ): StateLock => {
   const directory = stateDirectory(commonGitDirectory);
   const lockPath = loopLockPath(commonGitDirectory);
-  mkdirSync(directory, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, directory);
   try {
     mkdirSync(lockPath, { mode: 0o700 });
   } catch (error) {
@@ -399,6 +416,316 @@ export const withLoopStateLockWaiting = <T>(
   return attempt();
 };
 
+/** `--wait-lock`: how long a metadata writer may wait for the loop lock. */
+export interface LoopLockWait {
+  /** Base poll interval; each poll adds up to as much again at random. */
+  intervalMs?: number;
+  timeoutMs: number;
+}
+
+/** `--wait-lock` without `--timeout-ms` waits this long. */
+export const LOOP_LOCK_WAIT_DEFAULT_MS = 60_000;
+
+/** The longest `--timeout-ms` a metadata writer accepts. */
+export const LOOP_LOCK_WAIT_MAX_MS = 600_000;
+
+const LOOP_LOCK_WAIT_POLL_MS = 100;
+
+/**
+ * Why a bounded wait ended without the lock: the timeout passed, the owner's
+ * process is gone on this host (only `loop recover` may clear its lock), this
+ * command runs inside the owner's own process tree, so the owner cannot
+ * finish first, or this host's process list could not be read while the
+ * owner runs a child this command may be part of.
+ */
+export type LoopLockWaitOutcome =
+  | "timed-out"
+  | "owner-not-running"
+  | "caller-inside-owner"
+  | "caller-ancestry-unknown";
+
+/** The lock owner as a bounded wait reports it, without its token. */
+export type LoopLockOwnerSummary = Omit<LoopLockOwner, "token">;
+
+export interface LoopLockWaitReport {
+  /** Always false: the operation never ran, so nothing was written. */
+  executed: false;
+  /** The operation that waited, such as `author attest`. */
+  operation: string;
+  outcome: LoopLockWaitOutcome;
+  /** The holder when the wait ended; null when its metadata was unreadable. */
+  owner: LoopLockOwnerSummary | null;
+  timeoutMs: number;
+  waitedMs: number;
+}
+
+/** The existing lock-busy exit, with the structured report of the wait. */
+export class LoopLockWaitError extends SimpleChangesError {
+  readonly lockWait: LoopLockWaitReport;
+
+  constructor(message: string, report: LoopLockWaitReport, cause: unknown) {
+    super(message, EXIT_CODES.unsafe, { cause });
+    this.name = "LoopLockWaitError";
+    this.lockWait = report;
+  }
+}
+
+// A synchronous pause: the ledger and metadata writers are synchronous, and
+// nothing else runs in their process while they wait.
+const sleepSync = (milliseconds: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+};
+
+interface CallerProcessTree {
+  ancestors: Set<number>;
+  /** False when the process list could not be read. */
+  known: boolean;
+  processGroupId: number | null;
+}
+
+let callerProcessTreeCache: CallerProcessTree | undefined;
+
+const PROCESS_LIST_FIELDS = /\s+/u;
+
+// `ps -A -o pid=,ppid=,pgid=`: each process's parent, and this process's
+// group.
+const processParents = (
+  listing: string
+): { parents: Map<number, number>; processGroupId: number | null } => {
+  const parents = new Map<number, number>();
+  let processGroupId: number | null = null;
+  for (const line of listing.split("\n")) {
+    const [pid, ppid, pgid] = line
+      .trim()
+      .split(PROCESS_LIST_FIELDS)
+      .map(Number) as [number, number, number];
+    if (Number.isSafeInteger(pid) && Number.isSafeInteger(ppid)) {
+      parents.set(pid, ppid);
+      if (pid === process.pid && Number.isSafeInteger(pgid)) {
+        processGroupId = pgid;
+      }
+    }
+  }
+  return { parents, processGroupId };
+};
+
+// The process list, or null when it cannot be read. Tests make it
+// unavailable to cover a host without `ps`.
+const readProcessList = (): string | null => {
+  if (
+    process.platform === "win32" ||
+    (process.env.NODE_ENV === "test" &&
+      process.env.SIMPLE_CHANGES_TEST_PROCESS_LIST === "unavailable")
+  ) {
+    return null;
+  }
+  try {
+    const listed = spawnSync(["ps", "-A", "-o", "pid=,ppid=,pgid="], {
+      stderr: "ignore",
+      stdout: "pipe",
+      timeout: 5000,
+    });
+    return listed.exitCode === 0 ? listed.stdout.toString() : null;
+  } catch {
+    return null;
+  }
+};
+
+// This process and every ancestor, read once from `ps`. When `ps` cannot be
+// read, only this process and its parent are known, and `known` is false.
+const callerProcessTree = (): CallerProcessTree => {
+  if (callerProcessTreeCache) {
+    return callerProcessTreeCache;
+  }
+  const ancestors = new Set([process.pid, process.ppid]);
+  const listing = readProcessList();
+  const { parents, processGroupId } = processParents(listing ?? "");
+  let current = parents.get(process.ppid);
+  while (current !== undefined && current > 0 && !ancestors.has(current)) {
+    ancestors.add(current);
+    current = parents.get(current);
+  }
+  callerProcessTreeCache = {
+    ancestors,
+    known: listing !== null,
+    processGroupId,
+  };
+  return callerProcessTreeCache;
+};
+
+// Whether this command runs inside the owner: true, false, or null when the
+// process list could not be read and nothing known proves it.
+const callerRunsInsideOwner = (owner: LoopLockOwner): boolean | null => {
+  if (owner.hostname !== hostname()) {
+    return false;
+  }
+  const tree = callerProcessTree();
+  if (
+    tree.ancestors.has(owner.pid) ||
+    (owner.childProcessId !== undefined &&
+      tree.ancestors.has(owner.childProcessId)) ||
+    (owner.processGroupId !== undefined &&
+      tree.processGroupId === owner.processGroupId)
+  ) {
+    return true;
+  }
+  return tree.known ? false : null;
+};
+
+// Only an owner running a child command, as `loop exec` does, can have this
+// command inside it without being its direct parent.
+const ownerRunsChild = (owner: LoopLockOwner): boolean =>
+  owner.childStarting === true ||
+  owner.childProcessId !== undefined ||
+  owner.processGroupId !== undefined;
+
+const lockOwnerSummary = (
+  owner: LoopLockOwner | null
+): LoopLockOwnerSummary | null => {
+  if (!owner) {
+    return null;
+  }
+  const { token: _token, ...summary } = owner;
+  return summary;
+};
+
+const LOCK_WAIT_ENDINGS: Record<
+  LoopLockWaitOutcome,
+  (owner: LoopLockOwner | null, waited: string) => string
+> = {
+  "caller-ancestry-unknown": (owner, waited) =>
+    `This host's process list could not be read, so it is unknown whether this command runs inside ${owner?.operation ?? "the owner"}, which runs a child command; it does not wait on it, and ${waited}. Run it after that operation returns.`,
+  "caller-inside-owner": (owner, waited) =>
+    `This command runs inside ${owner?.operation ?? "the owner"} itself, so waiting cannot end before it does; ${waited}. Run it after that operation returns.`,
+  "owner-not-running": (owner, waited) =>
+    `Its owner PID ${owner?.pid ?? "unknown"} is not running on this host, so waiting cannot free it; ${waited}. A wait never recovers a lock: follow the stale-lock rules of loop recover.`,
+  "timed-out": (_owner, waited) => `${waited}.`,
+};
+
+const loopLockWaitError = (
+  busy: unknown,
+  outcome: LoopLockWaitOutcome,
+  owner: LoopLockOwner | null,
+  operationName: string,
+  wait: LoopLockWait,
+  waitedMs: number
+): LoopLockWaitError => {
+  const waited = `${operationName} waited ${waitedMs}ms of its ${wait.timeoutMs}ms bound, did not run, and wrote nothing`;
+  return new LoopLockWaitError(
+    `${(busy as Error).message} ${LOCK_WAIT_ENDINGS[outcome](owner, waited)}`,
+    {
+      executed: false,
+      operation: operationName,
+      outcome,
+      owner: lockOwnerSummary(owner),
+      timeoutMs: wait.timeoutMs,
+      waitedMs,
+    },
+    busy
+  );
+};
+
+// Why a bounded wait must end now, or null to keep waiting. A missing owner
+// file may be one another holder is still writing, so only a readable owner
+// ends the wait early.
+const lockWaitEnding = (
+  commonGitDirectory: string,
+  owner: LoopLockOwner | null,
+  wait: LoopLockWait,
+  waitedMs: number
+): LoopLockWaitOutcome | null => {
+  const inside = owner ? callerRunsInsideOwner(owner) : false;
+  if (inside === true) {
+    return "caller-inside-owner";
+  }
+  if (inside === null && owner && ownerRunsChild(owner)) {
+    return "caller-ancestry-unknown";
+  }
+  if (
+    owner &&
+    owner.hostname === hostname() &&
+    !processIsAlive(owner.pid) &&
+    // An owner that released its lock and exited after it was read is not
+    // stale: only a lock still holding the dead owner's token is.
+    readLockOwner(commonGitDirectory)?.token === owner.token
+  ) {
+    return "owner-not-running";
+  }
+  return waitedMs >= wait.timeoutMs ? "timed-out" : null;
+};
+
+/**
+ * `withLoopStateLock` with an optional bounded wait (`--wait-lock`). Without
+ * `wait` it is exactly `withLoopStateLock`. With it, a lock another live
+ * holder owns is polled until it frees or `timeoutMs` passes; the wait never
+ * breaks, steals, takes over, or recovers the lock. It stops at once when the
+ * owner's process is gone on this host, when this command runs inside the
+ * owner, and, without a readable process list, when the owner runs a child
+ * this command may be part of. No acquisition starts after the bound. Only
+ * a failed acquisition is retried: once the lock is held the operation runs
+ * exactly once, and an error from it is never retried.
+ */
+export const withLoopStateLockBounded = <T>(
+  commonGitDirectory: string,
+  operationName: string,
+  operation: () => T,
+  wait?: LoopLockWait
+): T => {
+  if (!wait) {
+    return withStateLock(commonGitDirectory, operationName, operation);
+  }
+  const startedAt = Date.now();
+  const intervalMs = wait.intervalMs ?? LOOP_LOCK_WAIT_POLL_MS;
+  let lock: StateLock | null = null;
+  let busy: { error: unknown; owner: LoopLockOwner | null } | null = null;
+  while (!lock) {
+    // No acquisition starts past the bound, even when a pause overslept it.
+    const elapsedMs = Date.now() - startedAt;
+    if (busy && elapsedMs > wait.timeoutMs) {
+      throw loopLockWaitError(
+        busy.error,
+        "timed-out",
+        busy.owner,
+        operationName,
+        wait,
+        elapsedMs
+      );
+    }
+    try {
+      lock = acquireStateLock(commonGitDirectory, operationName);
+    } catch (error) {
+      if (!isStateLockBusy(error)) {
+        throw error;
+      }
+      const owner = readLockOwner(commonGitDirectory);
+      busy = { error, owner };
+      const waitedMs = Date.now() - startedAt;
+      const outcome = lockWaitEnding(commonGitDirectory, owner, wait, waitedMs);
+      if (outcome) {
+        throw loopLockWaitError(
+          error,
+          outcome,
+          owner,
+          operationName,
+          wait,
+          waitedMs
+        );
+      }
+      sleepSync(
+        Math.min(
+          intervalMs + Math.floor(Math.random() * intervalMs),
+          wait.timeoutMs - waitedMs
+        )
+      );
+    }
+  }
+  try {
+    return operation();
+  } finally {
+    lock.release();
+  }
+};
+
 const withAsyncStateLock = async <T>(
   commonGitDirectory: string,
   operationName: string,
@@ -442,7 +769,7 @@ export const readLeaseFromCommonDirectory = (
 const writeLease = (lease: LoopLease): LoopLease => {
   const validated = validateSchema<LoopLease>("loop-lease", lease);
   const directory = stateDirectory(validated.commonGitDirectory);
-  mkdirSync(directory, { mode: 0o700, recursive: true });
+  ensureStateDirectory(validated.commonGitDirectory, directory);
   const temporaryPath = resolve(
     directory,
     `${STATE_FILENAME}.${process.pid}.${randomUUID()}.tmp`
@@ -567,7 +894,7 @@ const writeControllerBinding = (
   };
   try {
     const path = controllerBindingPath(lease.commonGitDirectory);
-    mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+    ensureStateDirectory(lease.commonGitDirectory, dirname(path));
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(binding, null, 2)}\n`, {
       mode: 0o600,
@@ -592,7 +919,9 @@ const removeControllerBinding = (lease: LoopLease): void => {
 /**
  * Bind the run to the harness session issuing an owner command, so a restarted
  * harness process or a resumed session keeps a current binding. Only commands
- * that already proved ownership call this.
+ * that already proved ownership call this. When the environment names
+ * sessions of two harnesses and the command did not say which is its own,
+ * the binding stays as it was.
  */
 const refreshControllerSession = (lease: LoopLease): void => {
   const session = currentHarnessSession();
@@ -686,7 +1015,11 @@ const transferController = (
   const now = new Date().toISOString();
   const previous = controllerLifecycle(lease);
   const frozenAt = effectiveShipmentScopeFrozenAt(lease);
-  const session = currentHarnessSession();
+  // The run binds to the new controller's own session, so with sessions of
+  // two harnesses in the environment the command must say which is its own.
+  const session = requireHarnessSession(
+    kind === "resume" ? "loop start --mode resume" : "loop takeover"
+  );
   const previousBinding = readControllerBinding(lease);
   const mayRebindLegacyDestinations =
     !lease.remoteBindings &&
@@ -1152,26 +1485,55 @@ const currentTargetRevision = (lease: LoopLease): string => {
 
 type ReceiptSidecarDirectory =
   | typeof CHANGELOG_AUTHOR_DIRECTORY
+  | typeof HELD_UNITS_DIRECTORY
+  | typeof PRESERVED_SOURCE_HANDOFF_DIRECTORY
   | typeof PRESERVED_SOURCE_OVERRIDE_DIRECTORY
   | typeof REMOTE_BRANCH_ANCESTRY_DIRECTORY
-  | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY;
+  | typeof REMOTE_BRANCH_SUPERSESSION_DIRECTORY
+  | typeof REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY
+  | typeof REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY;
 
+/**
+ * A receipt sidecar's path: `<directory>/<runId>.json`, or, for a sidecar
+ * kept per receipt, `<directory>/<runId>/<receipt digest>.json`.
+ */
 const receiptSidecarPath = (
   commonGitDirectory: string,
   directory: ReceiptSidecarDirectory,
-  runId: string
-): string =>
-  assertNoSymlinkAncestors(
+  runId: string,
+  receiptDigest?: string
+): string => {
+  if (receiptDigest !== undefined && !DIGEST_PATTERN.test(receiptDigest)) {
+    throw new SimpleChangesError(
+      `Invalid receipt digest for a ${directory} sidecar: ${receiptDigest}`,
+      EXIT_CODES.validation
+    );
+  }
+  return assertNoSymlinkAncestors(
     commonGitDirectory,
-    join(STATE_DIRECTORY, directory, `${requiredRunId(runId)}.json`)
+    receiptDigest === undefined
+      ? join(STATE_DIRECTORY, directory, `${requiredRunId(runId)}.json`)
+      : join(
+          STATE_DIRECTORY,
+          directory,
+          requiredRunId(runId),
+          `${receiptDigest}.json`
+        )
   );
+};
 
 const readReceiptSidecar = (
   commonGitDirectory: string,
   directory: ReceiptSidecarDirectory,
-  runId: string
+  runId: string,
+  receiptDigest?: string
 ): unknown => {
-  const path = receiptSidecarPath(commonGitDirectory, directory, runId);
+  const path = receiptSidecarPath(
+    commonGitDirectory,
+    directory,
+    runId,
+    receiptDigest
+  );
   if (!existsSync(path)) {
     return null;
   }
@@ -1185,18 +1547,20 @@ const readReceiptSidecar = (
 const writeReceiptSidecar = (
   lease: LoopLease,
   directory: ReceiptSidecarDirectory,
-  record: object | null
+  record: object | null,
+  receiptDigest?: string
 ): void => {
   const path = receiptSidecarPath(
     lease.commonGitDirectory,
     directory,
-    lease.runId
+    lease.runId,
+    receiptDigest
   );
   if (record === null) {
     rmSync(path, { force: true });
     return;
   }
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+  ensureStateDirectory(lease.commonGitDirectory, dirname(path));
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
     encoding: "utf8",
@@ -1403,17 +1767,21 @@ export {
   exactWorktreeLease,
   forgetLeaseSession,
   gitLabProjectForTargetRef,
+  HELD_UNITS_DIRECTORY,
   MISSING_OPENING_REMOTE_INVENTORY_BLOCKER,
   MISSING_REMOTE_RECONCILIATION_BLOCKER,
   matchingOverride,
   matchingRemovalDisposition,
   nothingAtPath,
   ownerProcessEvidence,
+  PRESERVED_SOURCE_HANDOFF_DIRECTORY,
   PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
   processGroupIsAlive,
   processIsAlive,
   RECOVERY_HISTORY_DIRECTORY,
   REMOTE_BRANCH_ANCESTRY_DIRECTORY,
+  REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY,
+  REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY,
   REMOTE_BRANCH_SUPERSESSION_DIRECTORY,
   REMOTE_RECONCILIATION_MODES,
   readImmutableRecoveryEvent,

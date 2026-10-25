@@ -11,8 +11,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { sha256 } from "./hash.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
@@ -39,6 +40,67 @@ export const DEFAULT_POLICY: RepoPolicy = {
   schemaVersion: 1,
   shippingMode: "standard",
   uiArtifactVersioning: "repository-convention",
+};
+
+/** Worktree archives are kept this long unless the policy says otherwise. */
+export const DEFAULT_ARCHIVE_RETENTION_DAYS = 14;
+/** Worktree archives together stay under this size unless the policy says otherwise. */
+export const DEFAULT_ARCHIVE_TOTAL_BYTES = 2 * 1024 ** 3;
+const ARCHIVE_RETENTION_MAX_DAYS = 3650;
+const ARCHIVE_TOTAL_MIN_BYTES = 1024 ** 2;
+const ARCHIVE_TOTAL_MAX_BYTES = 1024 ** 4;
+
+export interface ArchiveRetentionPolicy {
+  days: number;
+  /** Which settings were not usable and fell back to the default. */
+  fallbacks: string[];
+  maxTotalBytes: number;
+}
+
+const retentionValue = (
+  value: unknown,
+  minimum: number,
+  maximum: number
+): number | null =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= minimum &&
+  value <= maximum
+    ? value
+    : null;
+
+/**
+ * The archive retention a policy asks for, with safe fallback: a value that
+ * is not a whole number in range (0, a negative number, a fraction, a
+ * string) falls back to the default and is named in `fallbacks`, so a
+ * mistake in the policy file never shortens retention to nothing.
+ */
+export const archiveRetentionPolicy = (
+  policy: Pick<RepoPolicy, "archiveRetention">
+): ArchiveRetentionPolicy => {
+  const setting = policy.archiveRetention ?? {};
+  const fallbacks: string[] = [];
+  const days = retentionValue(setting.days, 1, ARCHIVE_RETENTION_MAX_DAYS);
+  if (days === null && setting.days !== undefined) {
+    fallbacks.push(
+      `archiveRetention.days ${JSON.stringify(setting.days)} is not a whole number from 1 to ${ARCHIVE_RETENTION_MAX_DAYS}; using ${DEFAULT_ARCHIVE_RETENTION_DAYS}`
+    );
+  }
+  const maxTotalBytes = retentionValue(
+    setting.maxTotalBytes,
+    ARCHIVE_TOTAL_MIN_BYTES,
+    ARCHIVE_TOTAL_MAX_BYTES
+  );
+  if (maxTotalBytes === null && setting.maxTotalBytes !== undefined) {
+    fallbacks.push(
+      `archiveRetention.maxTotalBytes ${JSON.stringify(setting.maxTotalBytes)} is not a whole number from ${ARCHIVE_TOTAL_MIN_BYTES} to ${ARCHIVE_TOTAL_MAX_BYTES}; using ${DEFAULT_ARCHIVE_TOTAL_BYTES}`
+    );
+  }
+  return {
+    days: days ?? DEFAULT_ARCHIVE_RETENTION_DAYS,
+    fallbacks,
+    maxTotalBytes: maxTotalBytes ?? DEFAULT_ARCHIVE_TOTAL_BYTES,
+  };
 };
 
 type StoredRepoPolicy = Omit<
@@ -102,6 +164,40 @@ const repositoryPolicyTrustPath = (commonGitDirectory: string): string =>
     commonGitDirectory,
     "simple-changes/policy-trust.json"
   );
+
+/**
+ * Primary-relative paths whose exact bytes carry repository policy: the
+ * policy file itself, and any path inside the checkout that the private
+ * trust receipt binds by digest. Rewriting one of these undoes approved
+ * policy or invalidates its trust receipt, so cleanup that would rewrite
+ * primary paths treats them as consequential. A receipt that cannot be
+ * read adds nothing; the policy file is always included.
+ */
+export const trustBoundPolicyPaths = (
+  primaryCheckout: string,
+  commonGitDirectory: string
+): string[] => {
+  const paths = new Set([".simple-changes.json"]);
+  try {
+    const receipt = JSON.parse(
+      readFileSync(repositoryPolicyTrustPath(commonGitDirectory), "utf8")
+    ) as { policyPath?: unknown };
+    if (typeof receipt.policyPath === "string") {
+      const bound = relative(realpathSync(primaryCheckout), receipt.policyPath);
+      if (
+        bound &&
+        bound !== ".." &&
+        !bound.startsWith(`..${sep}`) &&
+        !isAbsolute(bound)
+      ) {
+        paths.add(bound.split(sep).join("/"));
+      }
+    }
+  } catch {
+    // The policy file alone stays consequential.
+  }
+  return [...paths].sort();
+};
 
 const requiresRepositoryTrust = (policy: RepoPolicy): boolean =>
   policy.gitPushAuthorization === "configure-harness" ||
@@ -589,7 +685,7 @@ export const writeRepositoryPolicyTrustReceipt = (
     schemaVersion: 1,
   };
   const receiptPath = repositoryPolicyTrustPath(commonGitDirectory);
-  mkdirSync(dirname(receiptPath), { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, dirname(receiptPath));
   if (existsSync(receiptPath)) {
     const status = lstatSync(receiptPath);
     if (status.isSymbolicLink() || !status.isFile()) {
@@ -767,4 +863,112 @@ export const loadPolicy = (
   const personalPolicyPath =
     options.personalPolicyPath ?? resolvePersonalPolicyPath();
   return loadPersonalPolicy(personalPolicyPath);
+};
+
+/** What became of this invocation's `--policy-request`. */
+export interface PolicyRequestReport {
+  reason: string;
+  /** `applied` only when no repository or personal policy is saved. */
+  status: "applied" | "ignored";
+}
+
+const POLICY_REQUEST_KEYS = Object.keys(DEFAULT_POLICY);
+
+const policyRequestError = (detail: string): SimpleChangesError =>
+  new SimpleChangesError(
+    `--policy-request is invalid: ${detail}. Pass the \`policy\` object that run-only \`setup\` printed, unchanged.`,
+    EXIT_CODES.usage
+  );
+
+/**
+ * Parses and validates `--policy-request`: the complete `policy` object a
+ * run-only `setup` printed, as JSON or @path. It is checked against the
+ * repository policy schema and the current guidance version before any other
+ * input is read, so an invalid or stale request is a usage error that changes
+ * nothing. A valid one is the policy layer for one invocation and is never
+ * written.
+ */
+export const parsePolicyRequest = (text: string): RepoPolicy => {
+  let parsed: unknown;
+  try {
+    const source = text.startsWith("@")
+      ? new TextDecoder("utf-8", { fatal: true }).decode(
+          readFileSync(resolve(text.slice(1)))
+        )
+      : text;
+    parsed = JSON.parse(source) as unknown;
+  } catch (error) {
+    throw SimpleChangesError.withCause(
+      `--policy-request must be JSON or @path to a JSON file: ${(error as Error).message}`,
+      EXIT_CODES.usage,
+      error
+    );
+  }
+  let validated: StoredRepoPolicy & Pick<RepoPolicy, "execGuard">;
+  try {
+    validated = validateSchema<StoredRepoPolicy>("repo-policy", parsed);
+  } catch (error) {
+    throw policyRequestError((error as Error).message);
+  }
+  // Only a complete object is setup's own output; a partial one would be
+  // filled from defaults the user never confirmed.
+  const missing = POLICY_REQUEST_KEYS.filter((key) => !(key in validated));
+  if (missing.length > 0 || validated.guidance.disposition === undefined) {
+    throw policyRequestError(
+      `it lacks ${[...missing, ...(validated.guidance.disposition === undefined ? ["guidance.disposition"] : [])].join(", ")}`
+    );
+  }
+  // The command guard belongs to a saved repository policy only.
+  if (validated.execGuard !== undefined) {
+    throw policyRequestError("execGuard can only be saved repository policy");
+  }
+  if (validated.guidance.version !== CURRENT_GUIDANCE_VERSION) {
+    throw policyRequestError(
+      `it records guidance ${validated.guidance.version}, not the current ${CURRENT_GUIDANCE_VERSION}; run setup again`
+    );
+  }
+  return validated as RepoPolicy;
+};
+
+/**
+ * Layers a validated `--policy-request` under the saved policies. A saved
+ * repository or personal policy always wins and the request is reported as
+ * ignored. Otherwise the request applies with source `request`, and like an
+ * unconfirmed repository policy it is never trusted with consequential
+ * authority: push configuration, production deploy, shipping mode, and
+ * automatic migration apply fall back to their safe values.
+ */
+export const applyPolicyRequest = (
+  loaded: LoadedPolicy,
+  request: RepoPolicy | null
+): { policy: LoadedPolicy; report: PolicyRequestReport | null } => {
+  if (request === null) {
+    return { policy: loaded, report: null };
+  }
+  if (loaded.source !== "default") {
+    return {
+      policy: loaded,
+      report: {
+        reason: `The saved ${loaded.source === "repository" ? "repository" : "personal"} policy at ${loaded.path} applies; the run-only request was ignored and cannot override or loosen it.`,
+        status: "ignored",
+      },
+    };
+  }
+  const consequential = requiresRepositoryTrust(request);
+  return {
+    policy: {
+      path: null,
+      source: "request",
+      trust: consequential ? "untrusted" : "not-required",
+      value: consequential
+        ? withoutUntrustedConsequentialAuthority(request)
+        : request,
+    },
+    report: {
+      reason: consequential
+        ? "This run's setup answers apply for this invocation only and nothing was saved. A run-only request is never trusted with consequential authority, so automatic push configuration, production deploy, non-standard shipping, and automatic migration apply use their safe values."
+        : "This run's setup answers apply for this invocation only and nothing was saved.",
+      status: "applied",
+    },
+  };
 };

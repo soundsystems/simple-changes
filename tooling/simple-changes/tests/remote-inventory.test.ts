@@ -304,7 +304,7 @@ describe("remote-inventory build", () => {
     });
   });
 
-  test("refuses an unproven deletion until a decision names its proof", () => {
+  test("records an unproven deletion as deleted outside the run until a decision names its proof", () => {
     const opening = buildRemoteInventory(openingPages()).receipt;
     const final = finalPages();
     const [page] = final.branchPages;
@@ -315,9 +315,49 @@ describe("remote-inventory build", () => {
       (branch) => branch.name !== "old/closed"
     );
 
-    expect(() => buildRemoteInventory(final, { opening })).toThrow(
-      "old/closed (opening head"
+    // Nothing proves it obsolete and the run never approved deleting it, so
+    // the build records it as deleted outside the run, claiming nothing.
+    const external = buildRemoteInventory(final, { opening });
+    expect(
+      external.receipt.branches.find((branch) => branch.name === "old/closed")
+    ).toMatchObject({
+      classification: "ambiguous",
+      disposition: "deleted-proven-obsolete",
+      externalDeletion: { lastHeadRevision: SHA.closed },
+      finalHeadRevision: null,
+      initialHeadRevision: SHA.closed,
+      obsoleteProof: null,
+    });
+    expect(external.summary.deletedBranches).toEqual([
+      "fix/merged",
+      "old/closed",
+    ]);
+    expect(external.summary.externallyDeletedBranches).toEqual([
+      { lastHeadRevision: SHA.closed, name: "old/closed" },
+    ]);
+    const externalSplit = splitRemoteBranchReconciliationInput(
+      external.receipt
     );
+    expect(externalSplit.externalDeletions).toEqual([
+      { branch: "old/closed", lastHeadRevision: SHA.closed },
+    ]);
+    // Without its record, the same entry is refused, as an older runtime
+    // that cannot read the record refuses it.
+    expect(() =>
+      validateRemoteBranchReconciliation(
+        externalSplit.receipt,
+        externalSplit.ancestryProofs,
+        externalSplit.supersessions
+      )
+    ).toThrow("expected disposition preserved-ambiguous");
+    expect(
+      validateRemoteBranchReconciliation(
+        externalSplit.receipt,
+        externalSplit.ancestryProofs,
+        externalSplit.supersessions,
+        externalSplit.externalDeletions
+      ).targetBranch
+    ).toBe("main");
     const decided = buildRemoteInventory(final, {
       decisions: {
         deletedBranches: [
@@ -385,7 +425,29 @@ describe("remote-inventory build", () => {
         },
         opening,
       })
-    ).toThrow("not deleted during the run: feat/open");
+    ).toThrow("the decision for feat/open cannot approve deleting it");
+    expect(() =>
+      buildRemoteInventory(final, {
+        decisions: {
+          deletedBranches: [
+            {
+              evidence: ["Never existed."],
+              name: "never/listed",
+              obsoleteProof: "target-contains-head",
+            },
+            {
+              evidence: ["Contained."],
+              name: "old/closed",
+              obsoleteProof: "target-contains-head",
+            },
+          ],
+          schemaVersion: 1,
+        },
+        opening,
+      })
+    ).toThrow(
+      "neither deleted during the run nor present in both inventories: never/listed"
+    );
     const twice = {
       evidence: ["Contained."],
       name: "old/closed",
@@ -580,6 +642,7 @@ describe("GitLab fetcher listing stability", () => {
                 source_branch: "main",
                 source_project_id: 1,
                 state: "opened",
+                target_branch: "next",
                 target_project_id: 1,
               },
             ],
@@ -818,6 +881,7 @@ describe("remote inventory through the CLI and a loop", () => {
           source_branch: "branch-001",
           source_project_id: 7,
           state: "locked",
+          target_branch: "main",
           target_project_id: 7,
         },
         {
@@ -841,6 +905,7 @@ describe("remote inventory through the CLI and a loop", () => {
           source_branch: "main",
           source_project_id: 99,
           state: "opened",
+          target_branch: "branch-004",
           target_project_id: 7,
         },
       ])
@@ -889,6 +954,11 @@ describe("remote inventory through the CLI and a loop", () => {
         sourceBranch: "branch-003",
         state: "merged",
       },
+    ]);
+    // Every open merge request names its target, a fork's included.
+    expect(pages.proposalPages[0]?.openProposalTargets).toEqual([
+      { objectId: "5", targetBranch: "main" },
+      { objectId: "6", targetBranch: "branch-004" },
     ]);
     expect(buildRemoteInventory(pages).summary).toMatchObject({
       branches: 101,

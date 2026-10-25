@@ -5498,6 +5498,11 @@ describe("active integration-loop lease", () => {
       "author",
       "run-created"
     );
+    // A run-created author retires only on exact-byte target proof, which
+    // unique work the target lacks fails.
+    writeFixture(prepared.path, "unique.txt", "not in the target\n");
+    git(prepared.path, ["add", "unique.txt"]);
+    git(prepared.path, ["commit", "-m", "Unique author work"]);
     git(fixture.root, ["worktree", "remove", "--force", prepared.path]);
     expect(() =>
       retireAbsentWorktree(
@@ -5508,7 +5513,7 @@ describe("active integration-loop lease", () => {
         "user",
         "Run-created"
       )
-    ).toThrow("must name a preserved registration");
+    ).toThrow("exact-byte target proof failed");
     expect(() =>
       retireAbsentWorktree(
         controller,
@@ -7111,11 +7116,18 @@ describe("active integration-loop lease", () => {
         "show",
         `5ce7345:skills/simple-changes/evals/schemas/${filename}`,
       ]);
-      const current = readFileSync(
-        join(repositoryRoot, "skills/simple-changes/evals/schemas", filename),
-        "utf8"
-      );
-      expect({ filename, schema: JSON.parse(current) }).toEqual({
+      const current = JSON.parse(
+        readFileSync(
+          join(repositoryRoot, "skills/simple-changes/evals/schemas", filename),
+          "utf8"
+        )
+      ) as { properties?: Record<string, unknown> };
+      // The one approved lease change: `heldUnits`, present only on a run
+      // that held a unit, so older clients refuse exactly those leases.
+      if (filename === "loop-lease.schema.json") {
+        Reflect.deleteProperty(current.properties ?? {}, "heldUnits");
+      }
+      expect({ filename, schema: current }).toEqual({
         filename,
         schema: JSON.parse(released),
       });

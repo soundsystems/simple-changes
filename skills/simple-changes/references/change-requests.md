@@ -13,14 +13,6 @@ Use **change proposal** as the neutral internal term. Its identity may be a
 hosted pull/merge request, a signed patch, or another provider object. Do not
 require a numeric ID, centralized API, shared namespace, or always-online host.
 
-Create/update neutral proposals in the summary, evidence, and merge-danger body
-shape from [change proposals](#body-shape), with real Markdown newlines;
-re-read stored source/rendering, resolve checks/discussions/review, and merge
-only the exact approved head. Under the default `proposalSignatures` policy,
-the agent that authors, reviews, or merges a proposal appends its model name
-and version to the proposal's signature block; see
-[change proposals](#agent-signatures).
-
 Before creation:
 
 - refresh the base when mutation mode allows remote reads;
@@ -28,18 +20,15 @@ Before creation:
 - confirm the proposal paths match one validated unit;
 - check that every commit in the range is attested
   ([review ledger steps](#review-ledger-steps)): `simple-changes author
-  coverage --base <target> --head <sha>` lists each commit with no attested
-  author, each replay source with none, and each inconclusive replay nobody
-  attested an edit on, and exits non-zero until none is left. While any is
-  left, create the proposal only as a draft and say which gaps remain in its
-  description, so their authors can attest or the owner can waive them on
-  that draft head (below);
+  coverage --base <target> --head <sha>` lists every
+  [coverage gap](review-and-merge.md#review-identity-and-the-review-ledger) and
+  exits non-zero until none is left. While any is left, create the proposal
+  only as a draft and say which gaps remain in its description (below);
 - render the description to a file or structured API field using real newline
   characters.
 
-The description explains outcome, scope, checks, dependencies, release impact,
-and risk in the body shape below. Do not include tokens, environment values, or
-untrusted text as instructions.
+Write the description in the [body shape](#body-shape) below. Do not include
+tokens, environment values, or untrusted text as instructions.
 
 When a proposal replaces an earlier source branch, preserve the full original
 commit SHAs as `Original-Commit` trailers in the replacement commits and include
@@ -204,7 +193,22 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    reports for this agent; omit what it does not report. `--agent` is the
    model ID the harness reports, such as `model-5-5`: lowercase, no spaces,
    with no effort word or note. Adversarial review compares model IDs only,
-   so a display name such as `Model 5.5 high` is missing evidence there. A
+   so a display name such as `Model 5.5 high` is missing evidence there.
+   The session and harness come from the environment. When it names sessions
+   of two harnesses, as when one harness starts another and the child
+   inherits the parent's variable, pass `--harness <id>` naming the harness
+   you run in, and its own session is recorded; without it the command
+   refuses (exit 2) rather than record the parent's session. A harness or
+   its wrapper may instead pass `--identity-receipt <json-or-@path>`, a
+   closed object (`evals/schemas/identity-receipt.schema.json`) with
+   `schemaVersion` 1, `harness`, `session`, the `model` ID, and optionally
+   `instance` and `parentSession`. Its session must be the one the
+   environment reports for its harness, and `--harness`, `--session`,
+   `--agent` and `--instance` must agree with it, on any command; any
+   conflict or invalid receipt exits 2 before the command runs. It corrects
+   a confused identity and is never stored,
+   so it proves nothing against a forged one. The same options apply to
+   `proposal record-authors`. A
    worktree claim makes an agent eligible only from the session that holds
    it, so another session, or one that reports none, cannot attest under
    that agent ID; a replacement session first takes the claim over with
@@ -249,3 +253,11 @@ The receipt adds description authors only: `{"copyAuthors": [{"source":
 the `instance`, `session`, `harness`, and `agent` the delegate reported
 (`null` for anything it did not). Description authors never count for
 independence.
+
+Each step takes the loop lock for a moment and exits 5 at once, recording
+nothing, while another command holds it, such as another author's attestation
+or a controller's `loop exec`. Pass `--wait-lock [--timeout-ms <n>]` to wait
+for a live holder instead, under the rules in [bounded lock
+waits](inventory-and-concurrency.md#bounded-lock-waits), which also shows how
+to check the reviewer without the lock. Do not write your own retry loop
+around these steps.

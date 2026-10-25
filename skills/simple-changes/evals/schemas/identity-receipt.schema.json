@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/identity-receipt.schema.json",
+  "title": "Simple Changes harness identity receipt",
+  "description": "What the harness running a command reports about itself, passed with --identity-receipt by the harness or its wrapper. It says which harness session the command runs in and which model and agent instance run it. It must agree with the session the environment reports, so it corrects a confused identity, such as a session variable inherited from a parent harness, and is never proof against a forged one. It is read for one invocation and never stored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "harness", "session", "model"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "harness": {
+      "description": "The harness id, as agents/harnesses.json names it.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+    },
+    "session": {
+      "description": "The harness's own session or thread ID.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+    },
+    "model": {
+      "description": "The model ID the harness runs this agent with, such as model-5-5: not a display name or an effort label.",
+      "type": "string",
+      "maxLength": 120,
+      "pattern": "^(?:[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "instance": {
+      "description": "The agent instance ID, when the harness runs more than one agent in a session; null or absent when it reports none.",
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,127}$"
+        }
+      ]
+    },
+    "parentSession": {
+      "description": "The session that started this one, when the harness reports it; never the receipt's own session.",
+      "anyOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$" }
+      ]
+    }
+  }
+}

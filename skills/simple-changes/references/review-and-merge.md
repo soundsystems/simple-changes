@@ -45,16 +45,14 @@ standard and still build the wrong thing. A requirement deliberately left
 out belongs in the proposal's Summary as out of scope; otherwise a Spec
 finding is actionable like any other.
 
-Emergency Ship does not weaken merge policy. `expedited` completes independent
-review before merge and initial deployment. Current-request or saved-policy
-authorized `break-glass`
-may deploy one exact candidate before focused checks and independent review,
-but it does not merge through protected branches early or represent the
-deployment as approval. Request review of the exact deployed revision
-immediately after its health verification and focused checks. If review
-requests changes, move to `rollback-required` and either restore the recorded
-production revision or produce a separately checked corrective revision.
-Never merge or release-reconcile a rejected live candidate as though it passed.
+Emergency Ship does not weaken merge policy
+([deployments](deployments.md#emergency-ship-exception)): `break-glass` never
+merges through protected branches early or represents the deployment as
+approval. Request review of the exact deployed revision immediately after its
+health verification and focused checks. If review requests changes, move to
+`rollback-required` and either restore the recorded production revision or
+produce a separately checked corrective revision. Never merge or
+release-reconcile a rejected live candidate as though it passed.
 
 Address actionable findings inside the intended unit, rerun relevant checks,
 push the new revision, and request/re-run review against that revision. Keep
@@ -83,7 +81,14 @@ already exists.
 ## Review identity and the review ledger
 
 Two requirements apply. **Executor independence** is the rule above: the
-reviewer is a separate agent or session from every author of the change.
+reviewer is a different agent instance from every author of the change. A
+model may review its own model's work in a separate session, or as a
+different agent in one session; the same model and harness are no
+objection. The same instance never counts, even when a record names a
+different harness or model for it: an equal instance ID is the same agent
+under any session, and one session is the same agent unless both records
+name different instances in it. Records that show neither are refused
+(`independence-unproven`), never guessed.
 When the review role sets `adversarial: true`, review also needs
 **diversity**: a different harness, or the same harness with a different
 model ID, from every author. Model IDs are what harnesses report, such as
@@ -122,13 +127,10 @@ runtime. Runtimes before 0.32.0 reject `extensions` too.
 - **Attestation.** Authors attest every commit, and replays link rewritten
   commits to their sources ([ledger steps](change-requests.md#review-ledger-steps)).
   Effective authors follow those links at read time, so a later attestation
-  anywhere in a commit's ancestry counts at once. An author may complete its
-  own earlier attestation that lacked an instance or model ID, a display
-  name included (`--complete-identity`); the earlier record stays in the
-  ledger and still rules out any reviewer it ruled out as the same executor,
-  but its missing instance or model ID no longer leaves independence or
-  diversity unknown. No
-  other commit or replay source changes. A completion an earlier runtime
+  anywhere in a commit's ancestry counts at once. An author's
+  `--complete-identity` completion of its own earlier attestation (step 1
+  there) means the missing instance or model ID no longer leaves independence
+  or diversity unknown; no other commit or replay source changes. A completion an earlier runtime
   wrote under its rule, which compared reported names, stays valid; a
   display name it added is still not a model ID.
   A runtime before 0.31.0 reads a ledger holding a completion that adds a
@@ -146,6 +148,35 @@ runtime. Runtimes before 0.32.0 reject `extensions` too.
   incomplete coverage is `unresolved` under either setting. Under `adversarial: true`, a `blocked` or `unresolved`
   reviewer stops the review step: ask the owner, and never review your own
   proposal to fill the gap.
+- **Before dispatching an author.** Under `adversarial: true`, run
+  `reviewer room --would-author <harness id>/<model ID>` before starting any
+  author, a fix author after findings and one whose release notes will be
+  copied into implementation commits included. Pass `--base <target> --head
+  <sha>` for the commits so far and `--proposal <id>` once one exists, plus
+  the run's `--authoring-request`. It writes nothing. It counts every attested
+  author of the range and of the proposal's latest recorded head, adds each
+  would-be author, and checks the review model at the effort the escalation
+  floor requires now (`required.effort`) and after escalating findings
+  (`required.escalationEffort`). Each route, the configured one, other
+  detected harnesses, and any harness a reported run names, shows its
+  `eligibility`, the conflicting authors with the commits that introduced
+  them, and `ruledOutByWouldAuthor`. `status` is `open` (exit 0) only when the
+  configured reviewer stays eligible and a reported real run proves it at
+  every effort the floor can require; `unverified` means it stays eligible
+  but no such run was reported; `alternative-only` means only another
+  harness running the same model would, which the owner must choose;
+  `closed` means this author would leave no eligible reviewer; `unknown`
+  means evidence is missing, such as an author or review model named by a
+  display name, effort label, or `most-capable` instead of a model ID, an
+  attested author with neither instance nor session, an unattributed commit,
+  or an unreadable ledger, and counts as closed. An effort label, even inside an ID such as `model-5-5-xhigh`, is
+  never a different model, and a coverage waiver does not count here. For
+  anything but `open`, pick another author model or harness, or ask the
+  owner, before dispatching.
+  A route counts as available only after a real run of that model at that
+  effort, never from credential, sign-in, or status text; report each such
+  run with `--verified-route <harness id>/<model ID>@<effort>`, and otherwise
+  availability stays `unknown` and the room `unverified`.
 - **Coverage waivers.** Only the owner waives, before dispatch:
   `proposal waive-coverage --proposal <id> --head <sha> --authors-digest
   <digest> --receipt <waiver.json>` with `{"approvedBy", "reason",
@@ -162,8 +193,8 @@ runtime. Runtimes before 0.32.0 reject `extensions` too.
   the reviewer graded its findings. Pass the same
   `--authoring-request` as `initialize`: a request can make the gate
   adversarial for this run and never loosens a saved setting. It is accepted
-  only when the head is covered or waived, the reviewer's instance or
-  session differs from every author's, and, when adversarial, its harness or
+  only when the head is covered or waived, the reviewer is a different agent
+  instance from every author (above), and, when adversarial, its harness or
   model differs too. Missing evidence rejects; a `clean` verdict never proves
   independence; a rejected attempt stays rejected. Disclose a reported
   identity that differs from the target.

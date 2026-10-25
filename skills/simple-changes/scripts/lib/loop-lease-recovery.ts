@@ -7,7 +7,6 @@ import {
   fsyncSync,
   linkSync,
   lstatSync,
-  mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
@@ -21,8 +20,16 @@ import { fileURLToPath } from "node:url";
 import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import { sha256, sha256Json } from "./hash.ts";
-import { captureInventory, locateRepository } from "./inventory.ts";
+import { assertNoHeldUnits, readHeldUnits } from "./held-units.ts";
+import {
+  captureInventory,
+  inventoryDigestInput,
+  isLossyName,
+  locateRepository,
+} from "./inventory.ts";
 import {
   assertControllerActive,
   assertMatchingRun,
@@ -78,6 +85,21 @@ import { targetTreeEntry } from "./loop-lease-shipment.ts";
 import { verificationAgainst } from "./loop-lease-verify.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import { validatePostCleanupRecovery } from "./remote-branch-reconciliation.ts";
+import {
+  describeReplanDelta,
+  type ReplanAcceptedRelease,
+  type ReplanApprovalDelta,
+  type ReplanObservation,
+  replanApprovalDelta,
+  replanDeltaAccepted,
+} from "./replan-approval-delta.ts";
+import {
+  currentRunCreatedRetirement,
+  type RunCreatedRetirement,
+  type RunCreatedRetirementRecord,
+  retiredRunCreatedPaths,
+  runCreatedRetirementPath,
+} from "./run-created-retirement.ts";
 import { validateSchema, validateSchemaDocument } from "./schema.ts";
 import type {
   LoopCloseEquivalentWorktreeProof,
@@ -312,12 +334,134 @@ const registrationKind = (
   return registered.claimId ? "adopted" : "opening";
 };
 
+// Run-created registrations retirement may account for. A controller is
+// never run-created, and retained or concurrent registrations never are.
+const RETIRABLE_RUN_CREATED_ROLES: ReadonlySet<LoopWorktreeLease["role"]> =
+  new Set(["author", "preserved"]);
+
+/**
+ * Retires a run-created authoring registration whose checkout is gone, on
+ * exact-byte target proof alone: its branch is retained under its exact
+ * registered name, unique to this registration and checked out nowhere, and
+ * every path its unique commits touched equals the current target's bytes.
+ * The proof is written to its own immutable recovery file, never the lease.
+ * Nothing is deleted or moved, and no ancestry or delivery is claimed.
+ */
+const retireRunCreatedWorktree = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  registered: LoopWorktreeLease,
+  actorAgentId: string,
+  approvedBy: string,
+  reason: string
+): LoopLease => {
+  const { path } = registered;
+  const refuse = (detail: string): never => {
+    throw new SimpleChangesError(
+      `Cannot retire run-created worktree ${path}: ${detail} Nothing was recorded.`,
+      EXIT_CODES.unsafe
+    );
+  };
+  const { branch } = registered;
+  if (branch === null || isLossyName(branch)) {
+    return refuse(
+      "its registration names no exact branch, so no retained branch can carry its work."
+    );
+  }
+  const targetBranch = targetBranchForRef(
+    inventory.repository.primaryCheckout,
+    lease.targetRef
+  );
+  if (branch === targetBranch) {
+    return refuse(`its branch ${branch} is the target branch.`);
+  }
+  const retained = inventory.branches.find((item) => item.name === branch);
+  if (!retained) {
+    return refuse(
+      `its branch ${branch} no longer exists. Retirement needs the branch retained so its commits stay recoverable.`
+    );
+  }
+  if (retained.worktreePath !== null) {
+    return refuse(
+      `its branch ${branch} is checked out at ${retained.worktreePath}.`
+    );
+  }
+  if (
+    lease.worktrees.some(
+      (other) => other.path !== path && other.branch === branch
+    )
+  ) {
+    return refuse(
+      `its branch ${branch} is also registered for another worktree, so it is not unique to this one.`
+    );
+  }
+  if (currentRunCreatedRetirement(lease, inventory, registered)) {
+    return lease;
+  }
+  const targetRevision = currentTargetRevision(lease);
+  const proof = proveExactByteTargetContainment(lease.primaryCheckout, {
+    sourceHead: retained.sha,
+    targetRevision,
+  });
+  if (proof.status === "refused") {
+    return refuse(
+      `exact-byte target proof failed for branch ${branch}. ${proof.reason}`
+    );
+  }
+  const now = new Date().toISOString();
+  const retirement: RunCreatedRetirement = {
+    absenceCheckedAt: now,
+    actorAgentId,
+    approvedBy,
+    baselineChangeDigest: registered.baselineChangeDigest,
+    baselineHeadSha: registered.baselineHeadSha,
+    branch,
+    branchHeadSha: proof.headRevision,
+    createdAt: now,
+    path,
+    proof: {
+      baseRevision: proof.baseRevision,
+      commits: proof.commits,
+      method: "exact-byte-target",
+      touchedPaths: proof.touchedPaths,
+    },
+    reason,
+    role: registered.role,
+    targetRef: lease.targetRef,
+    targetRevision: proof.targetRevision,
+  };
+  writeImmutableRecoveryEvent(runCreatedRetirementPath(lease, retirement), {
+    kind: "run-created-retirement",
+    retirement,
+    runId: lease.runId,
+    schemaVersion: 1,
+  } satisfies RunCreatedRetirementRecord);
+  return writeLease({
+    ...withMutationEvidence(lease, now),
+    updatedAt: now,
+  });
+};
+
 /**
  * Accounts for a preserved registration whose checkout another task removed.
  * The path must be absent from disk and from Git's live worktree list; the
  * record is bound to the exact registered baseline and to named approval.
  * Nothing is deleted, no delivery is proven, and no branch cleanup follows.
  */
+// A held unit's checkout keeps its claim and pinned head; recording it as
+// retired would account for held work as absent instead of held.
+const assertNotHeldSource = (lease: LoopLease, path: string): void => {
+  const heldHere = readHeldUnits(lease).filter(
+    (hold) => hold.unit.sourceWorktree === path
+  );
+  if (heldHere.length > 0) {
+    throw new SimpleChangesError(
+      `Worktree ${path} is the source of held unit(s) ${heldHere.map((hold) => hold.unit.id).join(", ")}, and a held checkout is never retired. Its claim and pinned head keep the held work; finish the run with loop finalize, which reports held units apart from delivered work, or replan it.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 export const retireAbsentWorktree = (
   repositoryPath: string,
   runId: string,
@@ -353,12 +497,22 @@ export const retireAbsentWorktree = (
       const registered = lease.worktrees.find(
         (worktree) => worktree.path === path
       );
-      if (registered?.role !== "preserved" || registered.createdByRun) {
+      const runCreated =
+        registered?.createdByRun === true &&
+        RETIRABLE_RUN_CREATED_ROLES.has(registered.role);
+      if (
+        !(
+          registered &&
+          (runCreated ||
+            (registered.role === "preserved" && !registered.createdByRun))
+        )
+      ) {
         throw new SimpleChangesError(
-          `Retirement path must name a preserved registration that this run did not create (an opening, rebaselined, or adopted worktree): ${path}`,
+          `Retirement path must name a preserved registration that this run did not create (an opening, rebaselined, or adopted worktree), or an authoring worktree this run created: ${path}`,
           EXIT_CODES.unsafe
         );
       }
+      assertNotHeldSource(lease, path);
       if (!nothingAtPath(path)) {
         throw new SimpleChangesError(
           `Worktree ${path} still exists on disk. Retirement records an absence; use loop allow, loop retain-worktree, or loop dispose-worktree for a checkout that is present.`,
@@ -372,6 +526,16 @@ export const retireAbsentWorktree = (
         throw new SimpleChangesError(
           `Git still lists ${path} as a live worktree. Retirement requires the checkout to be absent from both the filesystem and the worktree list.`,
           EXIT_CODES.unsafe
+        );
+      }
+      if (runCreated) {
+        return retireRunCreatedWorktree(
+          lease,
+          inventory,
+          registered,
+          ownerAgentId,
+          approvedBy,
+          reason
         );
       }
       const existing = retirementForRegistration(lease, registered);
@@ -864,20 +1028,22 @@ const postCleanupAbsentPaths = (
     );
   }
   const verification = verificationAgainst(lease, inventory);
+  const retiredRunCreated = retiredRunCreatedPaths(lease, inventory);
   const recoverableMissingCreatedWorktrees = new Set(
     lease.worktrees
       .filter(
         (worktree) =>
           worktree.createdByRun &&
           worktree.role === "preserved" &&
-          !inventory.worktrees.some(
-            (current) => current.path === worktree.path
-          ) &&
-          targetContainsRevision(
-            inventory.repository.primaryCheckout,
-            targetRevision,
-            worktree.baselineHeadSha
-          )
+          (retiredRunCreated.has(worktree.path) ||
+            (!inventory.worktrees.some(
+              (current) => current.path === worktree.path
+            ) &&
+              targetContainsRevision(
+                inventory.repository.primaryCheckout,
+                targetRevision,
+                worktree.baselineHeadSha
+              )))
       )
       .map((worktree) => worktree.path)
   );
@@ -1092,6 +1258,7 @@ export const recoverPostCleanupLoop = (
         const inventory = captureInventory(repositoryPath);
         const lease = requireLease(inventory);
         assertMatchingRun(lease, runId);
+        assertNoHeldUnits(lease, "loop recover-post-cleanup");
         const { absentPaths, intent } = preparePostCleanupRecoveryIntent(
           commonGitDirectory,
           inventory,
@@ -1400,6 +1567,15 @@ const equivalenceReceiptsByPath = (
     ])
   );
 
+const missingObligatedWorktree = (lease: LoopLease, path: string): string =>
+  `${path}: the obligated worktree is missing and no exact absence/branch-containment recovery evidence exists${
+    lease.worktrees.some(
+      (registered) => registered.path === path && registered.createdByRun
+    )
+      ? " (for a run-created authoring checkout whose branch is retained, `simple-changes loop retire-absent-worktree` can record exact-byte target proof)"
+      : ""
+  }`;
+
 const proveNothingLeftToShip = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -1413,7 +1589,13 @@ const proveNothingLeftToShip = (
   );
   const proofs: LoopCloseEquivalentWorktreeProof[] = [];
   const unproven: string[] = [];
+  // A run-created checkout retired on exact-byte target proof owes nothing
+  // more; its proof is in its own retirement record, not in this one.
+  const retired = retiredRunCreatedPaths(lease, inventory);
   for (const path of closeEquivalentObligatedPaths(lease)) {
+    if (retired.has(path)) {
+      continue;
+    }
     const current = currentByPath.get(path);
     if (!current) {
       const removalProof = completedRemovalProofForPath(
@@ -1425,9 +1607,7 @@ const proveNothingLeftToShip = (
         proofs.push(removalProof);
         continue;
       }
-      unproven.push(
-        `${path}: the obligated worktree is missing and no exact absence/branch-containment recovery evidence exists`
-      );
+      unproven.push(missingObligatedWorktree(lease, path));
       continue;
     }
     if (
@@ -1622,6 +1802,7 @@ export const closeLoopTargetEquivalent = (
         const inventory = captureInventory(repositoryPath);
         let lease = requireLease(inventory);
         assertMatchingRun(lease, runId);
+        assertNoHeldUnits(lease, "loop close-equivalent");
         const lifecycle = controllerLifecycle(lease);
         if (lifecycle.status === "active" && lease.ownerAgentId !== agentId) {
           throw new SimpleChangesError(
@@ -1871,16 +2052,58 @@ interface LoopReplanRecord {
   fullLeaseDigest: string;
   kind: "loop-replan" | "loop-archive-recorded";
   lease: LoopLease;
-  observation: ReturnType<typeof replanObservation>;
+  /** Always the observation the approval bound: its digest is the request's. */
+  observation: ReplanObservation;
   outcome: "replanned" | "archived-unfinished";
   request: LoopReplanRequest;
   schemaVersion: 1;
 }
 
+/**
+ * The audit record of a replan whose approved coordination changed only
+ * through verified owner releases, beside the intent as
+ * `replan-approval-delta.json`. The intent keeps its strict format, which
+ * older runtimes validate, so this state lives in its own file.
+ */
+export interface LoopReplanDeltaRecord {
+  acceptedReleases: ReplanAcceptedRelease[];
+  approvedCoordinationDigest: string;
+  approvedStatusDigest: string;
+  currentCoordinationDigest: string;
+  currentObservation: ReplanObservation;
+  currentStatusDigest: string;
+  fullLeaseDigest: string;
+  /**
+   * The exact text whose SHA-256 is the approved (and unchanged) inventory
+   * digest, so every read re-proves the released checkouts against it.
+   */
+  inventoryDigestInput: string;
+  kind: "loop-replan-approval-delta";
+  recordedAt: string;
+  requestDigest: string;
+  runId: string;
+  schemaVersion: 1;
+}
+
+export type LoopReplanResult = LoopReplanRecord & {
+  approvalDelta?: LoopReplanDeltaRecord;
+};
+
+const REPLAN_DIGEST_CHANGED =
+  "Replan manifest or current inventory/coordination/target digest changed.";
+const REPLAN_INTENT_STALE =
+  "Replan intent no longer matches the active lease or exact inventory.";
+const REPLAN_DELTA_FILENAME = "replan-approval-delta.json";
+// `loop replan-status` keeps each observation it showed, named by its status
+// digest, so a later replan can compute the exact delta from what was approved.
+const REPLAN_STATUS_OBSERVATIONS_DIRECTORY = "status-observations";
+const FRESH_APPROVAL_STEP =
+  "Review this with the user, then observe again with `simple-changes loop replan-status --json` for a fresh approval.";
+
 const replanObservation = (
   lease: LoopLease,
   inventory: RepositoryInventory
-) => ({
+): ReplanObservation => ({
   coordination: readCoordinationDocumentFromCommonDirectory(
     lease.commonGitDirectory
   ),
@@ -1905,6 +2128,7 @@ export const loopReplanStatus = (repositoryPath: string) => {
           const observation = replanObservation(lease, inventory);
           const manifestDigest = loopManifestDigest(lease);
           const statusDigest = sha256Json(observation);
+          recordStatusObservation(lease, statusDigest, observation);
           // Only the next command differs: a recorded outcome refuses
           // `loop replan`, leaving the approved `loop archive-recorded`.
           return {
@@ -1931,14 +2155,21 @@ const syncReplanPath = (path: string): void => {
   }
 };
 
-// Publish without replacing an existing audit record. A partial temporary write
-// is never considered an intent; retries validate every field of a published one.
-const publishReplanIntent = (path: string, record: LoopReplanRecord): void => {
-  mkdirSync(dirname(path), { mode: 0o700, recursive: true });
+// Publish without replacing an existing audit record (or, with `replace`, a
+// content-addressed file whose name its content no longer matches). A partial
+// temporary write is never considered a record; retries validate every field
+// of a published one.
+const publishReplanFile = (
+  path: string,
+  commonGitDirectory: string,
+  value: unknown,
+  replace = false
+): void => {
+  ensureStateDirectory(commonGitDirectory, dirname(path));
   // Persist each new history ancestor before an intent can authorize removal
   // of the active directory entry, including on filesystems with delayed metadata.
   let ancestor = dirname(path);
-  while (ancestor !== record.lease.commonGitDirectory) {
+  while (ancestor !== commonGitDirectory) {
     syncReplanPath(ancestor);
     ancestor = dirname(ancestor);
   }
@@ -1946,10 +2177,15 @@ const publishReplanIntent = (path: string, record: LoopReplanRecord): void => {
   const temporary = `${path}.${randomUUID()}.tmp`;
   const descriptor = openSync(temporary, "wx", 0o600);
   try {
-    writeFileSync(descriptor, `${JSON.stringify(record, null, 2)}\n`);
+    writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`);
     fsyncSync(descriptor);
   } finally {
     closeSync(descriptor);
+  }
+  if (replace) {
+    renameSync(temporary, path);
+    syncReplanPath(dirname(path));
+    return;
   }
   try {
     linkSync(temporary, path);
@@ -1958,6 +2194,9 @@ const publishReplanIntent = (path: string, record: LoopReplanRecord): void => {
     rmSync(temporary);
   }
 };
+
+const publishReplanIntent = (path: string, record: LoopReplanRecord): void =>
+  publishReplanFile(path, record.lease.commonGitDirectory, record);
 
 const replanPathExists = (path: string): boolean => {
   try {
@@ -1993,6 +2232,280 @@ const readReplanLeaseBytes = (path: string): string => {
   } finally {
     closeSync(descriptor);
   }
+};
+
+const statusObservationPath = (
+  commonGitDirectory: string,
+  runId: string,
+  statusDigest: string
+): string =>
+  join(
+    assertNoSymlinkAncestors(
+      commonGitDirectory,
+      join(
+        STATE_DIRECTORY,
+        RECOVERY_HISTORY_DIRECTORY,
+        requiredRunId(runId),
+        REPLAN_STATUS_OBSERVATIONS_DIRECTORY
+      )
+    ),
+    `${statusDigest}.json`
+  );
+
+// The observation stored under `statusDigest`, or null when it is missing,
+// not a regular file, malformed, or does not hash to its name. Its digest is
+// what the user approved, so an intact file is exactly what they saw.
+const storedStatusObservation = (
+  commonGitDirectory: string,
+  runId: string,
+  statusDigest: string
+): ReplanObservation | null => {
+  if (!DIGEST_PATTERN.test(statusDigest)) {
+    return null;
+  }
+  const path = statusObservationPath(commonGitDirectory, runId, statusDigest);
+  try {
+    if (!replanPathExists(path)) {
+      return null;
+    }
+    const value = validateSchemaDocument<ReplanObservation>(
+      "loop-replan-status-observation",
+      {
+        additionalProperties: false,
+        properties: {
+          coordination: { type: "object" },
+          inventoryDigest: { pattern: "^[0-9a-f]{64}$", type: "string" },
+          targetRevision: { minLength: 1, type: "string" },
+        },
+        required: ["coordination", "inventoryDigest", "targetRevision"],
+        type: "object",
+      },
+      JSON.parse(readReplanLeaseBytes(path))
+    );
+    validateSchema("worktree-coordination", value.coordination);
+    return sha256Json(value) === statusDigest ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+// Keep what `loop replan-status` showed, so a replan whose coordination
+// changed meanwhile can name the exact delta from the approved observation.
+const recordStatusObservation = (
+  lease: LoopLease,
+  statusDigest: string,
+  observation: ReplanObservation
+): void => {
+  const common = lease.commonGitDirectory;
+  if (storedStatusObservation(common, lease.runId, statusDigest)) {
+    return;
+  }
+  publishReplanFile(
+    statusObservationPath(common, lease.runId, statusDigest),
+    common,
+    observation,
+    true
+  );
+};
+
+/**
+ * The observation an approval bound, when the current one differs from it
+ * only through verified owner releases; otherwise a refusal that shows the
+ * user the exact delta (or says the approved observation is not on record).
+ */
+const approvedReplanObservation = (
+  lease: LoopLease,
+  request: LoopReplanRequest,
+  observation: ReplanObservation,
+  inventory: RepositoryInventory
+): ReplanObservation => {
+  if (sha256Json(observation) === request.statusDigest) {
+    return observation;
+  }
+  const approved = storedStatusObservation(
+    lease.commonGitDirectory,
+    request.runId,
+    request.statusDigest
+  );
+  if (!approved) {
+    throw new SimpleChangesError(
+      `${REPLAN_DIGEST_CHANGED} The approved observation is not on record, so its exact delta is unknown. ${FRESH_APPROVAL_STEP}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  const delta = replanApprovalDelta(approved, observation, inventory.worktrees);
+  if (!replanDeltaAccepted(delta)) {
+    throw new SimpleChangesError(
+      `${REPLAN_DIGEST_CHANGED} The exact delta from the approved observation:\n${describeReplanDelta(delta)}\n${FRESH_APPROVAL_STEP}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return approved;
+};
+
+const replanDeltaRecord = (
+  record: LoopReplanRecord,
+  current: ReplanObservation,
+  delta: ReplanApprovalDelta,
+  inventory: RepositoryInventory
+): LoopReplanDeltaRecord => ({
+  acceptedReleases: delta.acceptedReleases,
+  approvedCoordinationDigest: delta.approvedCoordinationDigest,
+  approvedStatusDigest: record.request.statusDigest,
+  currentCoordinationDigest: delta.currentCoordinationDigest,
+  currentObservation: current,
+  currentStatusDigest: sha256Json(current),
+  fullLeaseDigest: record.fullLeaseDigest,
+  inventoryDigestInput: inventoryDigestInput(inventory),
+  kind: "loop-replan-approval-delta",
+  recordedAt: new Date().toISOString(),
+  requestDigest: sha256Json(record.request),
+  runId: record.request.runId,
+  schemaVersion: 1,
+});
+
+const NULLABLE_TEXT = { anyOf: [{ type: "string" }, { type: "null" }] };
+const RELEASE_SCHEMA = {
+  additionalProperties: false,
+  properties: {
+    branch: NULLABLE_TEXT,
+    changeDigest: { type: "string" },
+    claimId: { minLength: 1, type: "string" },
+    eventId: { minLength: 1, type: "string" },
+    headSha: NULLABLE_TEXT,
+    ownerAgentId: { minLength: 1, type: "string" },
+    path: { minLength: 1, type: "string" },
+    releaseReason: { enum: ["owner-release", "handoff"] },
+  },
+  required: [
+    "branch",
+    "changeDigest",
+    "claimId",
+    "eventId",
+    "headSha",
+    "ownerAgentId",
+    "path",
+    "releaseReason",
+  ],
+  type: "object",
+};
+
+// A stored delta record, bound to this exact intent and internally consistent.
+const readReplanDeltaRecord = (
+  path: string,
+  record: LoopReplanRecord
+): LoopReplanDeltaRecord => {
+  const digest = { pattern: "^[0-9a-f]{64}$", type: "string" };
+  const stored = validateSchemaDocument<LoopReplanDeltaRecord>(
+    "loop-replan-approval-delta",
+    {
+      additionalProperties: false,
+      properties: {
+        acceptedReleases: { items: RELEASE_SCHEMA, minItems: 1, type: "array" },
+        approvedCoordinationDigest: digest,
+        approvedStatusDigest: digest,
+        currentCoordinationDigest: digest,
+        currentObservation: { type: "object" },
+        currentStatusDigest: digest,
+        fullLeaseDigest: digest,
+        inventoryDigestInput: { minLength: 1, type: "string" },
+        kind: { const: "loop-replan-approval-delta" },
+        recordedAt: { format: "date-time", type: "string" },
+        requestDigest: digest,
+        runId: { const: record.request.runId },
+        schemaVersion: { const: 1 },
+      },
+      required: [
+        "acceptedReleases",
+        "approvedCoordinationDigest",
+        "approvedStatusDigest",
+        "currentCoordinationDigest",
+        "currentObservation",
+        "currentStatusDigest",
+        "fullLeaseDigest",
+        "inventoryDigestInput",
+        "kind",
+        "recordedAt",
+        "requestDigest",
+        "runId",
+        "schemaVersion",
+      ],
+      type: "object",
+    },
+    JSON.parse(readReplanLeaseBytes(path))
+  );
+  if (
+    stored.requestDigest !== sha256Json(record.request) ||
+    stored.fullLeaseDigest !== record.fullLeaseDigest ||
+    stored.approvedStatusDigest !== record.request.statusDigest ||
+    stored.approvedCoordinationDigest !==
+      sha256Json(record.observation.coordination) ||
+    stored.currentStatusDigest !== sha256Json(stored.currentObservation) ||
+    stored.currentCoordinationDigest !==
+      sha256Json(stored.currentObservation.coordination) ||
+    !recordedReleasesProven(record.observation, stored)
+  ) {
+    throw new SimpleChangesError(
+      "Replan approval delta does not match its exact intent.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return stored;
+};
+
+// The recorded releases are exactly the verified releases between the
+// intent's approved observation and the recorded current one, against the
+// checkouts of the recorded inventory, whose digest is the approved one.
+const recordedReleasesProven = (
+  approved: ReplanObservation,
+  stored: LoopReplanDeltaRecord
+): boolean => {
+  if (sha256(stored.inventoryDigestInput) !== approved.inventoryDigest) {
+    return false;
+  }
+  try {
+    validateSchema(
+      "worktree-coordination",
+      stored.currentObservation.coordination
+    );
+    const { worktrees } = JSON.parse(stored.inventoryDigestInput) as {
+      worktrees: WorktreeInventory[];
+    };
+    const delta = replanApprovalDelta(
+      approved,
+      stored.currentObservation,
+      Array.isArray(worktrees) ? worktrees : []
+    );
+    return (
+      replanDeltaAccepted(delta) &&
+      sha256Json(delta.acceptedReleases) === sha256Json(stored.acceptedReleases)
+    );
+  } catch {
+    return false;
+  }
+};
+
+// Record the accepted delta before the transition. A record already published
+// by an interrupted attempt must describe exactly this delta.
+const publishReplanDelta = (
+  path: string,
+  record: LoopReplanRecord,
+  delta: LoopReplanDeltaRecord
+): LoopReplanDeltaRecord => {
+  if (!replanPathExists(path)) {
+    publishReplanFile(path, record.lease.commonGitDirectory, delta);
+    return delta;
+  }
+  const stored = readReplanDeltaRecord(path, record);
+  const { recordedAt: _stored, ...storedFacts } = stored;
+  const { recordedAt: _fresh, ...freshFacts } = delta;
+  if (sha256Json(storedFacts) !== sha256Json(freshFacts)) {
+    throw new SimpleChangesError(
+      "Replan approval delta recorded a different observation than the current one.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return stored;
 };
 
 /**
@@ -2180,16 +2693,17 @@ const createReplanIntent = (
   if (request.archiveRecordedOutcome) {
     assertArchivableRecordedOutcome(lease);
   }
-  const observation = replanObservation(lease, inventory);
-  if (
-    loopManifestDigest(lease) !== request.manifestDigest ||
-    sha256Json(observation) !== request.statusDigest
-  ) {
-    throw new SimpleChangesError(
-      "Replan manifest or current inventory/coordination/target digest changed.",
-      EXIT_CODES.unsafe
-    );
+  if (loopManifestDigest(lease) !== request.manifestDigest) {
+    throw new SimpleChangesError(REPLAN_DIGEST_CHANGED, EXIT_CODES.unsafe);
   }
+  // The intent always records the approved observation, so its digest stays
+  // the request's; a verified owner-release delta is recorded beside it.
+  const observation = approvedReplanObservation(
+    lease,
+    request,
+    replanObservation(lease, inventory),
+    inventory
+  );
   const bytes = readReplanLeaseBytes(activePath);
   if (JSON.stringify(JSON.parse(bytes)) !== JSON.stringify(lease)) {
     throw new SimpleChangesError(
@@ -2222,28 +2736,55 @@ const replanLeaseMatches = (bytes: string, record: LoopReplanRecord): boolean =>
 // The transition of a pending replan or archival: the active lease must still
 // be the recorded bytes and inventory, and an archival re-proves its recorded
 // outcome, first attempt or retry after a crash, so a sidecar edited or lost
-// after the intent refuses.
+// after the intent refuses. Coordination may differ from the approved
+// observation only through verified owner releases, recorded before the move.
 const archivePendingReplan = (
   repositoryPath: string,
   request: LoopReplanRequest,
   record: LoopReplanRecord,
   activePath: string,
   archivePath: string
-): void => {
+): LoopReplanDeltaRecord | undefined => {
   const bytes = readReplanLeaseBytes(activePath);
   const inventory = captureInventory(repositoryPath);
-  if (
-    !replanLeaseMatches(bytes, record) ||
-    sha256Json(replanObservation(record.lease, inventory)) !==
-      request.statusDigest
-  ) {
-    throw new SimpleChangesError(
-      "Replan intent no longer matches the active lease or exact inventory.",
-      EXIT_CODES.unsafe
+  if (!replanLeaseMatches(bytes, record)) {
+    throw new SimpleChangesError(REPLAN_INTENT_STALE, EXIT_CODES.unsafe);
+  }
+  const current = replanObservation(record.lease, inventory);
+  const deltaPath = join(dirname(archivePath), REPLAN_DELTA_FILENAME);
+  let approvalDelta: LoopReplanDeltaRecord | undefined;
+  if (sha256Json(current) === request.statusDigest) {
+    if (replanPathExists(deltaPath)) {
+      throw new SimpleChangesError(
+        "Replan approval delta does not match the exact approved observation.",
+        EXIT_CODES.unsafe
+      );
+    }
+  } else {
+    const delta = replanApprovalDelta(
+      record.observation,
+      current,
+      inventory.worktrees
     );
+    if (!replanDeltaAccepted(delta)) {
+      throw new SimpleChangesError(
+        `${REPLAN_INTENT_STALE} The exact delta from the approved observation:\n${describeReplanDelta(delta)}\n${FRESH_APPROVAL_STEP}`,
+        EXIT_CODES.unsafe
+      );
+    }
+    if (sha256(inventoryDigestInput(inventory)) !== inventory.baselineDigest) {
+      throw new SimpleChangesError(
+        "Replan cannot record the inventory its approval delta was proven against.",
+        EXIT_CODES.unsafe
+      );
+    }
+    approvalDelta = replanDeltaRecord(record, current, delta, inventory);
   }
   if (request.archiveRecordedOutcome) {
     assertArchivableRecordedOutcome(record.lease);
+  }
+  if (approvalDelta) {
+    approvalDelta = publishReplanDelta(deltaPath, record, approvalDelta);
   }
   // Both directories are within the same common Git directory. This atomic
   // rename is the transition: every original byte is preserved, and a crash
@@ -2252,12 +2793,57 @@ const archivePendingReplan = (
   syncReplanPath(archivePath);
   syncReplanPath(dirname(archivePath));
   syncReplanPath(dirname(activePath));
+  return approvalDelta;
+};
+
+const withApprovalDelta = (
+  record: LoopReplanRecord,
+  approvalDelta: LoopReplanDeltaRecord | undefined
+): LoopReplanResult => (approvalDelta ? { ...record, approvalDelta } : record);
+
+// The attempt's published intent, validated against the exact request, or a
+// new intent when the attempt has none.
+const replanAttemptRecord = (
+  repositoryPath: string,
+  request: LoopReplanRequest,
+  common: string,
+  directory: string
+): LoopReplanRecord => {
+  const intentPath = join(directory, "replan.json");
+  if (replanPathExists(intentPath)) {
+    const record = JSON.parse(
+      readReplanLeaseBytes(intentPath)
+    ) as LoopReplanRecord;
+    assertReplanRecord(record, request);
+    if (record.lease.commonGitDirectory !== common) {
+      throw new SimpleChangesError(
+        "Replan archive belongs to another repository.",
+        EXIT_CODES.unsafe
+      );
+    }
+    return record;
+  }
+  if (
+    replanPathExists(join(directory, "replan-lease.json")) ||
+    replanPathExists(join(directory, REPLAN_DELTA_FILENAME))
+  ) {
+    throw new SimpleChangesError(
+      "Replan lease archive or approval delta has no matching intent.",
+      EXIT_CODES.unsafe
+    );
+  }
+  return createReplanIntent(
+    repositoryPath,
+    request,
+    loopLeasePath(common),
+    intentPath
+  );
 };
 
 export const replanLoop = (
   repositoryPath: string,
   input: LoopReplanRequest
-): LoopReplanRecord => {
+): LoopReplanResult => {
   // Key order is part of the stored record: retries compare the request by its
   // serialized bytes, so archive-recorded records written by earlier forks
   // must keep `archiveRecordedOutcome` first.
@@ -2297,35 +2883,15 @@ export const replanLoop = (
           attempt
         )
       );
-      const intentPath = join(directory, "replan.json");
       const archivePath = join(directory, "replan-lease.json");
+      const deltaPath = join(directory, REPLAN_DELTA_FILENAME);
       const activePath = loopLeasePath(common);
-      let record: LoopReplanRecord;
-      if (replanPathExists(intentPath)) {
-        record = JSON.parse(
-          readReplanLeaseBytes(intentPath)
-        ) as LoopReplanRecord;
-        assertReplanRecord(record, request);
-        if (record.lease.commonGitDirectory !== common) {
-          throw new SimpleChangesError(
-            "Replan archive belongs to another repository.",
-            EXIT_CODES.unsafe
-          );
-        }
-      } else {
-        if (replanPathExists(archivePath)) {
-          throw new SimpleChangesError(
-            "Replan lease archive has no matching intent.",
-            EXIT_CODES.unsafe
-          );
-        }
-        record = createReplanIntent(
-          repositoryPath,
-          request,
-          activePath,
-          intentPath
-        );
-      }
+      const record = replanAttemptRecord(
+        repositoryPath,
+        request,
+        common,
+        directory
+      );
       if (replanPathExists(archivePath)) {
         const bytes = readReplanLeaseBytes(archivePath);
         if (!replanLeaseMatches(bytes, record)) {
@@ -2335,16 +2901,23 @@ export const replanLoop = (
           );
         }
         // A completed retry must never remove a successor, even with the same actor.
-        return record;
+        return withApprovalDelta(
+          record,
+          replanPathExists(deltaPath)
+            ? readReplanDeltaRecord(deltaPath, record)
+            : undefined
+        );
       }
-      archivePendingReplan(
-        repositoryPath,
-        request,
+      return withApprovalDelta(
         record,
-        activePath,
-        archivePath
+        archivePendingReplan(
+          repositoryPath,
+          request,
+          record,
+          activePath,
+          archivePath
+        )
       );
-      return record;
     })
   );
 };

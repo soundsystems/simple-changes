@@ -52,7 +52,17 @@ import {
   type GuidanceUpdateAction,
   type GuidanceUpdateContext,
 } from "./lib/guidance-updates.ts";
-import { currentHarnessSession } from "./lib/harness-session.ts";
+import {
+  currentHarnessSession,
+  requireHarnessSession,
+  resolveHarnessSession,
+  selectInvocationHarness,
+} from "./lib/harness-session.ts";
+import {
+  type IdentityReceipt,
+  parseIdentityReceipt,
+  receiptSession,
+} from "./lib/identity-receipt.ts";
 import {
   type InitializationStatus,
   inspectInitialization,
@@ -73,7 +83,13 @@ import {
   finalizeLoop,
   grantLoopOverride,
   guardLoopMutation,
+  holdScopedUnit,
+  LOOP_LOCK_WAIT_DEFAULT_MS,
+  LOOP_LOCK_WAIT_MAX_MS,
   type LoopEquivalenceEvidence,
+  type LoopFinalizationHeldUnit,
+  type LoopLockWait,
+  LoopLockWaitError,
   loopLeasePath,
   loopManifestDigest,
   loopReplanStatus,
@@ -104,6 +120,7 @@ import {
   withLoopStateLock,
   withLoopStateLockWaiting,
 } from "./lib/loop-lease.ts";
+import type { LoopFinalizationResult } from "./lib/loop-lease-finalize.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
   applyMigrationAuthorization,
@@ -131,7 +148,10 @@ import {
 } from "./lib/permission-bundle.ts";
 import { buildPreviewPlan } from "./lib/planner.ts";
 import {
+  applyPolicyRequest,
   loadPersonalPolicy,
+  type PolicyRequestReport,
+  parsePolicyRequest,
   resolvePersonalPolicyPath,
   withSavedExecGuard,
   writeGuidanceAcknowledgement,
@@ -175,9 +195,15 @@ import type { ReleaseNotes } from "./lib/release-notes.ts";
 import { extractReleaseNotes } from "./lib/release-notes.ts";
 import { runReleaseTag } from "./lib/release-tag.ts";
 import {
+  type RemoteBranchCleanupItem,
+  type RemoteBranchCleanupReport,
+  remoteBranchHolds,
+} from "./lib/remote-branch-prune.ts";
+import {
   buildRemoteInventory,
   type RemoteInventoryBuild,
 } from "./lib/remote-inventory.ts";
+import type { ReplacementLineageOutcome } from "./lib/replacement-lineage.ts";
 import { renderInventory, renderPlan } from "./lib/report.ts";
 import {
   discoverGlobalInstructionTargets,
@@ -195,6 +221,7 @@ import {
   attestCommits,
   type CommitGaps,
   identityReasonHint,
+  primaryCheckoutOf,
   type RecordAuthorsResult,
   type RecordReviewResult,
   type ReviewLedgerResumeState,
@@ -204,6 +231,12 @@ import {
   type WaiveCoverageResult,
   waiveProposalCoverage,
 } from "./lib/review-ledger.ts";
+import {
+  parseVerifiedRoute,
+  parseWouldAuthor,
+  renderReviewerRoom,
+  reviewerRoom,
+} from "./lib/reviewer-room.ts";
 import {
   type RuntimeFreshness,
   runtimeFreshness,
@@ -256,6 +289,7 @@ import type {
   LoopLease,
   ReleaseTagReceipt,
   RepoPolicy,
+  RepositoryInventory,
   RequestMode,
   SchemaName,
   ShipHoldAction,
@@ -276,6 +310,7 @@ import {
   type WorkDirectoryRepository,
   workDirectoryContaining,
 } from "./lib/work-directory.ts";
+import type { ArchivePruneResult } from "./lib/worktree-archive.ts";
 import {
   attachClaimedWorktree,
   claimWorktree,
@@ -290,13 +325,16 @@ import {
 } from "./lib/worktree-coordination.ts";
 import { auditWorktreeEquivalence } from "./lib/worktree-equivalence.ts";
 import {
+  listArchivedWorktrees,
   type PruneReport,
+  pruneArchivedWorktrees,
   pruneRepository,
   refreshWorktreeIndex,
+  restoreArchivedWorktree,
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.32.0";
+const VERSION = "0.33.0";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -336,6 +374,7 @@ Usage:
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--acknowledge-push-scope]
     [--proposal ID --head SHA] [--authoring-request JSON|@FILE]
+    [--policy-request JSON|@FILE]
     [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup [--finish review|integrate|ship]
     [--changelog delegate-if-available|preserve-and-report|ask]
@@ -371,7 +410,7 @@ Usage:
     [--json]
   simple-changes loop start --mode MODE --agent-id ID [--changelog-required]
     [--opening-remote-inventory FILE] [--authoring-request JSON|@FILE]
-    [--json] [--repo PATH]
+    [--policy-request JSON|@FILE] [--json] [--repo PATH]
   simple-changes loop status [--json] [--repo PATH]
   simple-changes loop replan-status [--json] [--repo PATH]
   simple-changes loop archive-recorded --run-id ID --agent-id ID
@@ -384,15 +423,21 @@ Usage:
     [--remote NAME | --local-only] [--json] [--repo PATH]
   simple-changes loop guard --run-id ID --agent-id ID [--json] [--repo PATH]
   simple-changes loop record-scope --run-id ID --agent-id ID
-    --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
+    --receipt CHANGE_PLAN_FILE [--wait-lock [--timeout-ms N]]
+    [--json] [--repo PATH]
   simple-changes loop refresh-scope --run-id ID --agent-id ID
-    --receipt CHANGE_PLAN_FILE [--json] [--repo PATH]
+    --receipt CHANGE_PLAN_FILE [--wait-lock [--timeout-ms N]]
+    [--json] [--repo PATH]
   simple-changes loop draft-outcome --run-id ID [--changelog-receipt FILE]
     [--output FILE] [--json] [--repo PATH]
   simple-changes loop record-outcome --run-id ID --agent-id ID
     --receipt SHIPMENT_OUTCOME_FILE
     [--approved-by USER --approval-reference REFERENCE]
-    [--json] [--repo PATH]
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
+  simple-changes loop hold-unit --run-id ID --agent-id ID --unit UNIT_ID
+    --reason TEXT --readiness-evidence "UNIT_ID: TEXT" [...]
+    [--approved-by USER --approval-reference REFERENCE
+     --observation-digest SHA256] [--json] [--repo PATH]
   simple-changes loop exec --run-id ID --agent-id ID [--json] [--repo PATH]
     -- COMMAND [ARG ...]
   simple-changes loop recover --agent-id ID [--json] [--repo PATH]
@@ -427,7 +472,7 @@ Usage:
     [--json] [--repo PATH]
   simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
     [--awaiting-user TEXT ...] [--json] [--repo PATH]
-  simple-changes loop turn-check [--hook] [--json]
+  simple-changes loop turn-check [--hook] [--harness ID] [--json]
   simple-changes harness stop-hook [--harness claude-code|codex] [--write]
     [--json]
   simple-changes worktree status [--json] [--repo PATH]
@@ -446,7 +491,8 @@ Usage:
   simple-changes worktree resume-ready --run-id ID --agent-id ID --claim-id ID
     [--json] [--repo PATH]
   simple-changes worktree release --agent-id ID --claim-id ID
-    [--ready-receipt FILE [--leave-uncovered SHA[,SHA ...]]]
+    [--ready-receipt FILE [--leave-uncovered SHA[,SHA ...]]
+      [--wait-lock [--timeout-ms N]]]
     [--json] [--repo PATH]
   simple-changes worktree takeover --claim-id ID --agent-id NEW_OWNER
     --head SHA|none (--branch NAME | --detached) --status-digest SHA256
@@ -456,7 +502,13 @@ Usage:
     [--json] [--repo PATH]
   simple-changes worktree refresh-index [--json] [--repo PATH]
   simple-changes worktree cleanup --agent-id ID --approved-by ID --reason TEXT
-    [--target REF] [--json] [--repo PATH]
+    [--target REF] [--lineage-receipt FILE [--max-archive-bytes N]]
+    [--json] [--repo PATH]
+  simple-changes worktree archives [--json] [--repo PATH]
+  simple-changes worktree restore-archive --archive ID [--extract-to DIR]
+    [--json] [--repo PATH]
+  simple-changes worktree prune-archives (--archive ID | --older-than DAYS)
+    --approved-by ID --reason TEXT [--dry-run] [--json] [--repo PATH]
   simple-changes hold add --agent-id ID --adapter ID
     --hold-scope ship|deploy|migrations --severity delay|halt --reason TEXT
     [--until-merged BRANCH] [--owner-ref REF] [--json] [--repo PATH]
@@ -472,6 +524,7 @@ Usage:
   simple-changes hold publish --agent-id ID --hold-id ID [--remote NAME]
     [--json] [--repo PATH]
   simple-changes prune --approved-by ID --reason TEXT [--target REF]
+    [--agent-id ID --lineage-receipt FILE [--max-archive-bytes N]]
     [--dry-run] [--json] [--repo PATH]
   simple-changes prepare-agent --run-id ID --agent-id ID --purpose SLUG
     [--unit ID] [--json] [--repo PATH]
@@ -499,17 +552,24 @@ Usage:
   simple-changes proposal audit --file FILE [--template FILE] [--json]
   simple-changes proposal record-authors --proposal ID --base SHA --head SHA
     [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent MODEL_ID]
-    [--json] [--repo PATH]
+    [--harness ID | --identity-receipt JSON|@FILE]
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes proposal record-review --proposal ID --head SHA
     --attempt-id UUID --receipt ATTEMPT_FILE [--authoring-request JSON|@FILE]
-    [--json] [--repo PATH]
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes proposal waive-coverage --proposal ID --head SHA
-    --authors-digest SHA256 --receipt WAIVER_FILE [--json] [--repo PATH]
+    --authors-digest SHA256 --receipt WAIVER_FILE
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes author attest --commit SHA [--commit SHA ...] [--agent-id ID]
     [--contribution implementation] [--replays SHA[,SHA ...]]
     [--worktree PATH] [--instance ID] [--agent MODEL_ID] [--complete-identity]
-    [--json] [--repo PATH]
+    [--harness ID | --identity-receipt JSON|@FILE]
+    [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
   simple-changes author coverage --base REF --head REF [--json] [--repo PATH]
+  simple-changes reviewer room --would-author HARNESS/MODEL_ID
+    [--would-author HARNESS/MODEL_ID ...] [--base REF --head REF]
+    [--proposal ID] [--verified-route HARNESS/MODEL_ID@EFFORT ...]
+    [--authoring-request JSON|@FILE] [--json] [--repo PATH]
   simple-changes skill check [--skill-dir PATH] [--json]
   simple-changes validate KIND FILE [--json]
   simple-changes verify-markdown FILE [--json]
@@ -521,7 +581,63 @@ ${schemaKindLines}
 Exit codes:
   0 success, 2 usage, 3 invalid contract, 4 inventory failure, 5 unsafe state,
   6 release notes older than the packaged window (printed a link instead)
+
+--wait-lock waits up to --timeout-ms (default ${LOOP_LOCK_WAIT_DEFAULT_MS}, at most ${LOOP_LOCK_WAIT_MAX_MS}) for a
+loop lock a live holder owns, then runs once; it never recovers a lock.
+
+--harness ID or --identity-receipt JSON|@FILE names the harness this command
+runs in. When the environment names sessions of two harnesses, as when one
+harness starts another, a command that records or checks the executing
+session (author attest, proposal record-authors, worktree claim commands,
+every loop start, resume and takeover, workdir inside a run, a direct loop
+turn-check) refuses without one. A receipt must agree with the session the
+environment reports and with --harness, --session, --agent and --instance.
 `;
+
+const WHOLE_NUMBER_PATTERN = /^[0-9]+$/u;
+
+// A whole number at or above `minimum`, as --max-archive-bytes and
+// --older-than take.
+const wholeNumberOption = (
+  option: string,
+  value: string,
+  minimum: number
+): number => {
+  const parsed = WHOLE_NUMBER_PATTERN.test(value) ? Number(value) : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+    throw new SimpleChangesError(
+      `${option} must be a whole number${minimum > 0 ? ` of at least ${minimum}` : ""}.`,
+      EXIT_CODES.usage
+    );
+  }
+  return parsed;
+};
+
+// The worktree archive options: an archive ID, an extraction folder, and
+// the two whole-number limits.
+const archiveOption = (
+  option: string,
+  value: string,
+  options: CliOptions
+): boolean => {
+  if (option === "--archive") {
+    options.archiveId = value;
+    return true;
+  }
+  if (option === "--extract-to") {
+    options.extractTo = resolve(value);
+    return true;
+  }
+  if (option === "--max-archive-bytes") {
+    options.maxArchiveBytes = wholeNumberOption(option, value, 1);
+    return true;
+  }
+  if (option === "--older-than") {
+    options.olderThanDays = wholeNumberOption(option, value, 0);
+    return true;
+  }
+  return false;
+};
 
 interface CliOptions {
   acknowledgePushScope: boolean;
@@ -533,6 +649,7 @@ interface CliOptions {
   applyPlanPath?: string;
   approvalReference?: string;
   approvedBy?: string;
+  archiveId?: string;
   attemptId?: string;
   // setup --authoring: the authoring answer as JSON or @path.
   authoring?: string;
@@ -560,6 +677,7 @@ interface CliOptions {
   disposition?: "preserve-in-place" | "detach-clean-checkout";
   dryRun: boolean;
   evidencePaths: string[];
+  extractTo?: string;
   filePath?: string;
   forkDeltas?: string;
   forkDestination?: string;
@@ -576,16 +694,24 @@ interface CliOptions {
   holdScope?: ShipHoldScope;
   holdSeverity?: ShipHoldSeverity;
   hook: boolean;
+  // --identity-receipt: what the harness running this command reports about
+  // itself, checked against the environment before the command runs.
+  identityReceipt?: IdentityReceipt;
   instanceId?: string;
   instructionFile?: string;
   instructionPointer?: "add" | "leave";
   json: boolean;
   leaveUncovered: string[];
+  lineageReceiptPath?: string;
   localOnly: boolean;
   manifestDigest?: string;
+  maxArchiveBytes?: number;
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
+  // loop hold-unit --observation-digest: the observation the user approved.
+  observationDigest?: string;
+  olderThanDays?: number;
   openingRemoteInventoryPath?: string;
   outputPath?: string;
   overrideHalt: boolean;
@@ -593,6 +719,9 @@ interface CliOptions {
   pagesPath?: string;
   pauseReceiptId?: string;
   pendingPath?: string;
+  // initialize and loop start --policy-request: the `policy` object a
+  // run-only setup printed, as JSON or @path, applied and never written.
+  policyRequest?: string;
   positional: string[];
   priorReceiptPath?: string;
   productionAuthorized: boolean;
@@ -603,6 +732,8 @@ interface CliOptions {
   providerReceiptPath?: string;
   purpose?: string;
   questions?: RepoPolicy["questions"];
+  // loop hold-unit --readiness-evidence: each failed-readiness citation.
+  readinessEvidence: string[];
   ready: boolean;
   readyReceiptPath?: string;
   reason?: string;
@@ -636,8 +767,16 @@ interface CliOptions {
   // prepare-agent --unit: the registered unit a changelog author joins.
   unitId?: string;
   untilMerged?: string;
+  // reviewer room --verified-route: routes the controller really ran.
+  verifiedRoutes: string[];
   versionAuthorized: boolean;
+  // --wait-lock and --timeout-ms: a metadata writer's bounded wait for a
+  // busy loop lock.
+  waitLock: boolean;
+  waitLockTimeoutMs?: number;
   worktreePath?: string;
+  // reviewer room --would-author: the authors about to be dispatched.
+  wouldAuthors: string[];
   write: boolean;
   yes: boolean;
 }
@@ -685,11 +824,13 @@ const VALUED_OPTIONS = new Set([
   "--migration-handling",
   "--migration-target",
   "--mode",
+  "--observation-digest",
   "--owner-ref",
   "--opening-remote-inventory",
   "--output",
   "--pages",
   "--pending",
+  "--policy-request",
   "--pause-receipt",
   "--prior-receipt",
   "--production",
@@ -698,6 +839,7 @@ const VALUED_OPTIONS = new Set([
   "--proposal-signatures",
   "--purpose",
   "--questions",
+  "--readiness-evidence",
   "--ready-receipt",
   "--reason",
   "--receipt",
@@ -726,11 +868,22 @@ const VALUED_OPTIONS = new Set([
   "--authors-digest",
   "--commit",
   "--contribution",
+  "--identity-receipt",
   "--instance",
   "--leave-uncovered",
+  "--lineage-receipt",
+  "--max-archive-bytes",
+  "--older-than",
+  "--archive",
+  "--extract-to",
   "--proposal",
   "--replays",
   "--session",
+  // Metadata writers: the bound of --wait-lock.
+  "--timeout-ms",
+  // reviewer room.
+  "--verified-route",
+  "--would-author",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -753,6 +906,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--stale-lease",
   "--tag-automation-authorized",
   "--ui-artifacts",
+  "--wait-lock",
   "--write",
   "--yes",
   // setup --authoring confirms with --confirm (the same as --yes).
@@ -1135,12 +1289,14 @@ const applyLoopValuedOption = (
     "--hold-id": "holdId",
     "--manifest-digest": "manifestDigest",
     "--name": "forkName",
+    "--observation-digest": "observationDigest",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
     "--output": "outputPath",
     "--owner-ref": "ownerRef",
     "--pages": "pagesPath",
     "--pause-receipt": "pauseReceiptId",
     "--pending": "pendingPath",
+    "--policy-request": "policyRequest",
     "--prior-receipt": "priorReceiptPath",
     "--provider-receipt": "providerReceiptPath",
     "--purpose": "purpose",
@@ -1178,6 +1334,10 @@ const applyLoopValuedOption = (
     options.awaitingUser.push(value);
     return true;
   }
+  if (option === "--readiness-evidence") {
+    options.readinessEvidence.push(value);
+    return true;
+  }
   if (option === "--root") {
     options.roots.push(resolve(value));
     return true;
@@ -1194,6 +1354,13 @@ const applyLoopValuedOption = (
   }
   if (option === "--ready-receipt") {
     options.readyReceiptPath = resolve(value);
+    return true;
+  }
+  if (option === "--lineage-receipt") {
+    options.lineageReceiptPath = resolve(value);
+    return true;
+  }
+  if (archiveOption(option, value, options)) {
     return true;
   }
   if (option === "--disposition") {
@@ -1277,6 +1444,18 @@ const applyLedgerValuedOption = (
     options.commits.push(value);
     return true;
   }
+  if (option === "--would-author") {
+    options.wouldAuthors.push(value);
+    return true;
+  }
+  if (option === "--verified-route") {
+    options.verifiedRoutes.push(value);
+    return true;
+  }
+  if (option === "--identity-receipt") {
+    options.identityReceipt = parseIdentityReceipt(value);
+    return true;
+  }
   if (option === "--replays") {
     options.replays = [
       ...(options.replays ?? []),
@@ -1306,6 +1485,31 @@ const applyLedgerValuedOption = (
   return false;
 };
 
+const applyLockWaitValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--timeout-ms") {
+    return false;
+  }
+  const timeoutMs = Number(value);
+  if (
+    !(
+      Number.isInteger(timeoutMs) &&
+      timeoutMs >= 0 &&
+      timeoutMs <= LOOP_LOCK_WAIT_MAX_MS
+    )
+  ) {
+    throw new SimpleChangesError(
+      `--timeout-ms must be an integer from 0 to ${LOOP_LOCK_WAIT_MAX_MS}`,
+      EXIT_CODES.usage
+    );
+  }
+  options.waitLockTimeoutMs = timeoutMs;
+  return true;
+};
+
 const applyValuedOption = (
   options: CliOptions,
   option: string,
@@ -1317,7 +1521,8 @@ const applyValuedOption = (
     applyAuthoringValuedOption(options, option, value) ||
     applyLoopValuedOption(options, option, value) ||
     applyHoldValuedOption(options, option, value) ||
-    applyLedgerValuedOption(options, option, value)
+    applyLedgerValuedOption(options, option, value) ||
+    applyLockWaitValuedOption(options, option, value)
   ) {
     return;
   }
@@ -1445,6 +1650,8 @@ const applyBooleanOption = (options: CliOptions, option: string): void => {
     options.releaseClaim = true;
   } else if (option === "--ui-artifacts") {
     options.uiArtifacts = true;
+  } else if (option === "--wait-lock") {
+    options.waitLock = true;
   } else {
     options.yes = true;
   }
@@ -1472,6 +1679,7 @@ const parseOptions = (args: string[]): CliOptions => {
     overrideHalt: false,
     positional: [],
     productionAuthorized: false,
+    readinessEvidence: [],
     ready: false,
     releaseClaim: false,
     repo: process.cwd(),
@@ -1481,7 +1689,10 @@ const parseOptions = (args: string[]): CliOptions => {
     staleLease: false,
     tagAutomationAuthorized: false,
     uiArtifacts: false,
+    verifiedRoutes: [],
     versionAuthorized: false,
+    waitLock: false,
+    wouldAuthors: [],
     write: false,
     yes: false,
   };
@@ -2037,11 +2248,58 @@ const interactiveAuthoringContext = (
   }
 };
 
+// What a run-only setup hands to the rest of its run: the exact values to pass
+// as `--policy-request` and `--authoring-request` to every later `initialize`
+// and `loop start`. Null unless a run-only setup was confirmed.
+interface RunOnlyRequest {
+  authoringRequest: string | null;
+  policyRequest: string;
+}
+
+const runOnlyRequestFor = (
+  confirmed: boolean,
+  scope: string,
+  policy: RepoPolicy,
+  authoringAnswer: unknown
+): RunOnlyRequest | null =>
+  confirmed && scope === "run"
+    ? {
+        authoringRequest:
+          authoringAnswer === null || authoringAnswer === undefined
+            ? null
+            : JSON.stringify(authoringAnswer),
+        policyRequest: JSON.stringify(policy),
+      }
+    : null;
+
+const shellQuoted = (value: string): string =>
+  `'${value.replaceAll("'", "'\\''")}'`;
+
+const renderRunOnlyRequest = (request: RunOnlyRequest | null): string =>
+  request
+    ? `\nNothing was saved. Pass this to every later initialize and loop start in this run:\n--policy-request ${shellQuoted(request.policyRequest)}\n${request.authoringRequest ? `Pass this to every later initialize, proposal record-review, and loop start --mode resume in this run:\n--authoring-request ${shellQuoted(request.authoringRequest)}\n` : ""}`
+    : "";
+
+interface SetupRun {
+  result: Record<string, unknown> & {
+    confirmed: boolean;
+    policy: RepoPolicy;
+    runRequest: RunOnlyRequest | null;
+    scope: string;
+  };
+  text: string;
+}
+
 const runSetup = async (options: CliOptions): Promise<void> => {
   if (options.authoring !== undefined) {
     await runAuthoringSetup(options, options.authoring);
     return;
   }
+  const setup = await performSetup(options);
+  writeOutput(setup.result, options.json, setup.text);
+};
+
+const performSetup = async (options: CliOptions): Promise<SetupRun> => {
   const context = setupContext(options.repo);
   const instructionTargets = options.scope
     ? discoverInstructionTargets(
@@ -2249,8 +2507,17 @@ const runSetup = async (options: CliOptions): Promise<void> => {
       uiArtifactsRelevant: options.uiArtifacts,
       written,
     };
+    const runRequest = runOnlyRequestFor(
+      selection.confirmed,
+      selection.scope,
+      policy,
+      result.authoringAnswer
+    );
     const outcome = setupOutcome(selection.confirmed, written, path);
-    writeOutput(result, options.json, `${selection.summary}\n\n${outcome}\n`);
+    return {
+      result: { ...result, runRequest },
+      text: `${selection.summary}\n\n${outcome}\n${renderRunOnlyRequest(runRequest)}`,
+    };
   } finally {
     interactive.close();
   }
@@ -2560,7 +2827,12 @@ const renderInitialization = (status: InitializationStatus): string => {
       `Released worktree claim ${status.handoffClaimRelease.claimId} on ${status.handoffClaimRelease.path}; this finished work is now shippable by any controller.`
     );
   }
-  if (status.policyTrust === "untrusted") {
+  if (status.policyRequest) {
+    lines.push(
+      `Run-only policy request: ${status.policyRequest.status}. ${status.policyRequest.reason}`
+    );
+  }
+  if (status.policyTrust === "untrusted" && status.policySource !== "request") {
     lines.push(
       "Repository policy requests consequential authority but has not been confirmed on this clone; running with reduced authority until setup confirms it."
     );
@@ -2738,46 +3010,26 @@ const initializationAuthoring = (
   };
 };
 
-const runInitialize = async (options: CliOptions): Promise<void> => {
-  if (!options.mode) {
-    throw new SimpleChangesError(
-      "initialize requires --mode",
-      EXIT_CODES.usage
-    );
-  }
-  if (options.ready && options.mode !== "handoff") {
-    throw new SimpleChangesError(
-      "--ready is valid only with --mode handoff",
-      EXIT_CODES.usage
-    );
-  }
-  // The request layer is validated before anything is read or changed: an
-  // invalid --authoring-request is a usage error that leaves every claim
-  // where it was.
-  const authoringRequest =
-    options.authoringRequest === undefined
-      ? null
-      : parseAuthoringRequest(options.authoringRequest);
-  const inventory = captureInventory(options.repo);
-  const activeLoop = readLoopLease(options.repo);
-  if (activeLoop && !["preview", "pause", "handoff"].includes(options.mode)) {
-    const agentId = requireCliOption(
-      options.agentId,
-      "--agent-id while an integration loop is active"
-    );
-    guardLoopMutation(options.repo, activeLoop.runId, agentId);
-  }
-  const changelogCoordination = inspectChangelogCoordination(
-    inventory.repository.primaryCheckout
-  );
+// Everything `initialize` reports for one policy layer and authoring request.
+// A proceeding handoff releases the author's own claim here, unless an
+// earlier status in the same invocation already did.
+const initializationStatusFor = (
+  options: CliOptions,
+  mode: InitializationMode,
+  inventory: RepositoryInventory,
+  changelogCoordination: ChangelogCoordination,
+  policyLayer: ReturnType<typeof applyPolicyRequest>,
+  authoringRequest: AuthoringSidecar | null,
+  earlierRelease: { claimId: string; path: string } | null
+): InitializationStatus => {
   const authoring = initializationAuthoring(
     inventory.repository.primaryCheckout,
-    options.mode,
+    mode,
     authoringRequest
   );
   const inspected = inspectInitialization(
-    options.mode,
-    inventory.policy,
+    mode,
+    policyLayer.policy,
     changelogCoordination,
     {
       changelogRequired: options.changelogRequired,
@@ -2798,17 +3050,21 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
   // A proceeding handoff declares the current checkout finished: release the
   // author's own claim there so the work becomes an ordinary stable unit that
   // any controller may ship, instead of a concurrent-author exclusion.
-  const handoffClaimRelease =
-    inspected.handoffAction === "proceed" && options.agentId
+  const released =
+    earlierRelease === null &&
+    inspected.handoffAction === "proceed" &&
+    options.agentId
       ? releaseHandoffWorktreeClaim(options.repo, options.agentId)
       : null;
-  const status = validateSchema<InitializationStatus>("initialization", {
+  const handoffClaimRelease =
+    earlierRelease ??
+    (released ? { claimId: released.claimId, path: released.path } : null);
+  return validateSchema<InitializationStatus>("initialization", {
     ...inspected,
     ...authoring.fields,
     changelogInstall: pendingChangelogInstallOffer(changelogCoordination),
-    handoffClaimRelease: handoffClaimRelease
-      ? { claimId: handoffClaimRelease.claimId, path: handoffClaimRelease.path }
-      : null,
+    handoffClaimRelease,
+    policyRequest: policyLayer.report,
     reviewer,
     reviewLoopRule: initializationInstructionRule(
       "review-loop",
@@ -2830,6 +3086,54 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
     ),
     turnEndGuard: initializationTurnEndGuard(),
   });
+};
+
+const runInitialize = async (options: CliOptions): Promise<void> => {
+  const { mode } = options;
+  if (!mode) {
+    throw new SimpleChangesError(
+      "initialize requires --mode",
+      EXIT_CODES.usage
+    );
+  }
+  if (options.ready && mode !== "handoff") {
+    throw new SimpleChangesError(
+      "--ready is valid only with --mode handoff",
+      EXIT_CODES.usage
+    );
+  }
+  // The request layers are validated before anything is read or changed: an
+  // invalid or stale --policy-request or an invalid --authoring-request is a
+  // usage error that leaves every claim where it was.
+  const policyRequest =
+    options.policyRequest === undefined
+      ? null
+      : parsePolicyRequest(options.policyRequest);
+  const authoringRequest =
+    options.authoringRequest === undefined
+      ? null
+      : parseAuthoringRequest(options.authoringRequest);
+  const inventory = captureInventory(options.repo);
+  const activeLoop = readLoopLease(options.repo);
+  if (activeLoop && !["preview", "pause", "handoff"].includes(mode)) {
+    const agentId = requireCliOption(
+      options.agentId,
+      "--agent-id while an integration loop is active"
+    );
+    guardLoopMutation(options.repo, activeLoop.runId, agentId);
+  }
+  const changelogCoordination = inspectChangelogCoordination(
+    inventory.repository.primaryCheckout
+  );
+  const status = initializationStatusFor(
+    options,
+    mode,
+    inventory,
+    changelogCoordination,
+    applyPolicyRequest(inventory.policy, policyRequest),
+    authoringRequest,
+    null
+  );
   if (!status.onboardingRequired) {
     writeOutput(status, options.json, renderInitialization(status));
     return;
@@ -2855,7 +3159,34 @@ const runInitialize = async (options: CliOptions): Promise<void> => {
       changelogInstallOfferApplies(changelogCoordination)
     )
   ) {
-    await runSetup(setupOptions);
+    const setup = await performSetup(setupOptions);
+    const { runRequest } = setup.result;
+    if (!runRequest) {
+      writeOutput(setup.result, options.json, setup.text);
+      return;
+    }
+    // Run-only setup saved nothing, so a plain initialize still reports
+    // onboarding. Report the status the rest of this run gets by passing the
+    // request back, exactly as `initialize --policy-request` computes it.
+    const initialization = initializationStatusFor(
+      options,
+      mode,
+      inventory,
+      changelogCoordination,
+      applyPolicyRequest(
+        inventory.policy,
+        parsePolicyRequest(runRequest.policyRequest)
+      ),
+      runRequest.authoringRequest === null
+        ? authoringRequest
+        : parseAuthoringRequest(runRequest.authoringRequest),
+      status.handoffClaimRelease
+    );
+    writeOutput(
+      { ...setup.result, initialization },
+      options.json,
+      `${setup.text}\n${renderInitialization(initialization)}`
+    );
     return;
   }
   writeOutput(status, options.json, renderInitialization(status));
@@ -3401,6 +3732,8 @@ const runProposalLedgerCommand = (
       ...(options.instanceId === undefined
         ? {}
         : { instance: options.instanceId }),
+      ...executingIdentityOptions(options),
+      ...lockWaitInput(options),
     });
     writeOutput(result, options.json, renderRecordedAuthors(result));
     return;
@@ -3416,6 +3749,7 @@ const runProposalLedgerCommand = (
       receipt,
       repositoryPath: options.repo,
       ...(request === undefined ? {} : { request }),
+      ...lockWaitInput(options),
     });
     writeOutput(result, options.json, renderRecordedReview(result));
     return;
@@ -3426,6 +3760,7 @@ const runProposalLedgerCommand = (
     proposalId,
     receipt,
     repositoryPath: options.repo,
+    ...lockWaitInput(options),
   });
   writeOutput(result, options.json, renderWaiver(result));
 };
@@ -3498,6 +3833,22 @@ const runAuthorCoverage = (options: CliOptions): number => {
     : EXIT_CODES.validation;
 };
 
+// The executing identity a ledger write is told about: the session and
+// harness it must agree with, and the identity receipt its harness gave.
+const executingIdentityOptions = (
+  options: CliOptions
+): {
+  harness?: string;
+  identityReceipt?: IdentityReceipt;
+  session?: string;
+} => ({
+  ...(options.sessionId === undefined ? {} : { session: options.sessionId }),
+  ...(options.harness === undefined ? {} : { harness: options.harness }),
+  ...(options.identityReceipt === undefined
+    ? {}
+    : { identityReceipt: options.identityReceipt }),
+});
+
 // `author attest` is a public command that takes the loop lock itself, so it
 // runs after `loop exec` returns and never inside it.
 const runAuthorCommand = (options: CliOptions): number => {
@@ -3518,8 +3869,7 @@ const runAuthorCommand = (options: CliOptions): number => {
     ...(options.instanceId === undefined
       ? {}
       : { instance: options.instanceId }),
-    ...(options.sessionId === undefined ? {} : { session: options.sessionId }),
-    ...(options.harness === undefined ? {} : { harness: options.harness }),
+    ...executingIdentityOptions(options),
     ...(options.contribution === undefined
       ? {}
       : { contribution: options.contribution }),
@@ -3528,9 +3878,44 @@ const runAuthorCommand = (options: CliOptions): number => {
     ...(options.worktreePath === undefined
       ? {}
       : { worktreePath: options.worktreePath }),
+    ...lockWaitInput(options),
   });
   writeOutput(result, options.json, renderAttestation(result));
   return EXIT_CODES.success;
+};
+
+// `reviewer room` reads Git, the review ledger and the authoring sidecars
+// and writes nothing, so a controller may run it before every dispatch.
+const runReviewerCommand = (options: CliOptions): number => {
+  if (options.positional.length !== 1 || options.positional[0] !== "room") {
+    throw new SimpleChangesError("reviewer requires room", EXIT_CODES.usage);
+  }
+  // Every input is parsed before anything is read.
+  const wouldAuthors = options.wouldAuthors.map(parseWouldAuthor);
+  const verifiedRoutes = options.verifiedRoutes.map(parseVerifiedRoute);
+  const request =
+    options.authoringRequest === undefined
+      ? null
+      : parseAuthoringRequest(options.authoringRequest);
+  const room = withReadOnlyGit(() =>
+    reviewerRoom({
+      authoring: resolveRepositoryAuthoring(primaryCheckoutOf(options.repo), {
+        request,
+        writeCapable: false,
+      }),
+      repositoryRoot: options.repo,
+      request,
+      verifiedRoutes,
+      wouldAuthors,
+      ...(options.baseRef === undefined ? {} : { base: options.baseRef }),
+      ...(options.headRef === undefined ? {} : { head: options.headRef }),
+      ...(options.proposalId === undefined
+        ? {}
+        : { proposalId: options.proposalId }),
+    })
+  );
+  writeOutput(room, options.json, renderReviewerRoom(room));
+  return room.status === "open" ? EXIT_CODES.success : EXIT_CODES.validation;
 };
 
 const PROPOSAL_LEDGER_ACTIONS = new Set([
@@ -3719,18 +4104,73 @@ const workSessionOf = (
 ): string | null =>
   session ? `${session.harness}:${session.sessionId}` : null;
 
-// The harness session a work directory binding follows, when known.
-const workDirectorySession = (): string | null =>
-  workSessionOf(currentHarnessSession());
+// The harness session a work directory binding follows, when known. A
+// binding without a session matches any session, so with sessions of two
+// harnesses in the environment the command must say which is its own rather
+// than share another session's directory.
+const workDirectorySession = (command = "workdir"): string | null =>
+  workSessionOf(requireHarnessSession(command));
 
 const renderRemovedWorkDirectories = (removed: readonly string[]): string =>
   removed.length > 0
     ? `Removed ${removed.length} agent work director${removed.length === 1 ? "y" : "ies"}.\n`
     : "";
 
+// Held units, reported apart from delivered work.
+const renderHeldUnits = (
+  held: readonly LoopFinalizationHeldUnit[] | undefined
+): string =>
+  (held ?? [])
+    .map(
+      (unit) =>
+        `Held, not delivered: unit ${unit.unitId} (${unit.title}) stays preserved in ${unit.sourceWorktree}${unit.sourceBranch ? ` on ${unit.sourceBranch}` : ""}; its checkout, branch, and claim were left untouched${unit.sourceMatchesHold ? "" : ", and its source changed after the hold"}.\n`
+    )
+    .join("");
+
 // A cleanup's non-fatal notes, one per line.
 const renderCleanupNotes = (notes: readonly string[]): string =>
   notes.map((note) => `Note: ${note}\n`).join("");
+
+const remoteBranchProofText = (item: RemoteBranchCleanupItem): string =>
+  `${item.proof === "merged-proposal-head" ? `merged proposal ${item.proposalObjectId} at this exact head` : `target contains it (${item.proof})`}${item.movedDuringRun ? ", moved during this run" : ""}`;
+
+export const renderRemoteBranchCleanup = (
+  report: RemoteBranchCleanupReport | undefined
+): string => {
+  if (!report) {
+    return "";
+  }
+  const lines = [
+    // A branch deleted outside the run needs the user's attention before its
+    // pin expires, so its note is always printed.
+    ...(report.deletedExternally ?? []).map(
+      (item) =>
+        `Remote branch deleted outside this run: ${item.name}. ${item.note}\n`
+    ),
+    ...report.pending.map(
+      (item) =>
+        `Remote branch pending cleanup: ${item.name} at ${item.headRevision}, ${remoteBranchProofText(item)}.\n`
+    ),
+    ...report.held.map(
+      (item) =>
+        `Remote branch kept while in use: ${item.name} at ${item.headRevision}, ${remoteBranchProofText(item)}; ${item.reasons.join("; ")}.\n`
+    ),
+    ...report.errors.map((error) => `Remote branch cleanup: ${error}\n`),
+  ];
+  return lines.join("");
+};
+
+// Pins of branches deleted outside earlier runs that this close removed.
+export const renderExpiredExternalDeletionPins = (
+  expired: LoopFinalizationResult["expiredExternalDeletionPins"]
+): string =>
+  [
+    ...(expired?.removed ?? []).map(
+      (ref) =>
+        `Removed expired pin ${ref} of a branch deleted outside an earlier run.\n`
+    ),
+    ...(expired?.errors ?? []).map((error) => `Pin expiry: ${error}\n`),
+  ].join("");
 
 const runLoopFinalizationAction = (
   action: string,
@@ -3835,7 +4275,7 @@ const runLoopFinalizationAction = (
       writeOutput(
         { ...result, manifestDigest: null, removedWorkDirectories },
         options.json,
-        `Closed ${runId} without changing anything: the repository changed after the loop started, so its shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderRemovedWorkDirectories(removedWorkDirectories)}`
+        `Closed ${runId} without changing the repository's work: it changed after the loop started, so the loop's shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
       );
       return true;
     }
@@ -3846,7 +4286,7 @@ const runLoopFinalizationAction = (
         removedWorkDirectories,
       },
       options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderCleanupNotes(result.cleanup.notes)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
     );
     return true;
   }
@@ -3961,14 +4401,32 @@ const runLoopStart = (options: CliOptions): void => {
     options.authoringRequest === undefined
       ? undefined
       : parseAuthoringRequest(options.authoringRequest);
+  // A run-only setup's policy, validated like the authoring request; it only
+  // stands in for a missing saved policy in the initialization check below.
+  const policyRequest =
+    options.policyRequest === undefined
+      ? null
+      : parsePolicyRequest(options.policyRequest);
+  // Without --changelog-required loop start checks no initialization, so a
+  // valid request is reported as unused rather than silently dropped.
+  let policyRequestReport: PolicyRequestReport | null =
+    policyRequest === null
+      ? null
+      : {
+          reason:
+            "loop start checks initialization only with --changelog-required; the request was validated and not otherwise used.",
+          status: "ignored",
+        };
   if (options.changelogRequired) {
     const inventory = captureInventory(options.repo);
     const changelogCoordination = inspectChangelogCoordination(
       inventory.repository.primaryCheckout
     );
+    const policyLayer = applyPolicyRequest(inventory.policy, policyRequest);
+    policyRequestReport = policyLayer.report;
     const initialization = inspectInitialization(
       options.mode,
-      inventory.policy,
+      policyLayer.policy,
       changelogCoordination,
       { changelogRequired: true }
     );
@@ -4014,7 +4472,7 @@ const runLoopStart = (options: CliOptions): void => {
             workRepository,
             started.runId,
             agentId,
-            workDirectorySession(),
+            workDirectorySession("loop start"),
             openingWorkDirectory
           );
         } catch (error) {
@@ -4038,13 +4496,14 @@ const runLoopStart = (options: CliOptions): void => {
       inheritedAwaitingUser: resumedQuestions,
       lease,
       manifestDigest: loopManifestDigest(lease),
+      ...(policyRequestReport ? { policyRequest: policyRequestReport } : {}),
       ...(reviewLedger ? { reviewLedger } : {}),
       removedWorkDirectories,
       runtimeFreshness: freshness,
       workDir,
     },
     options.json,
-    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${workDir ? `Work directory: ${workDir}\n` : ""}${
+    `Started ${lease.runId} for ${lease.ownerAgentId}.\nManifest: ${loopManifestDigest(lease)}\n${workDir ? `Work directory: ${workDir}\n` : ""}${policyRequestReport ? `Run-only policy request: ${policyRequestReport.status}. ${policyRequestReport.reason}\n` : ""}${
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
@@ -4207,6 +4666,16 @@ const runLoopRecoveryAction = (
         ? `Archived ${result.request.runId} (${result.outcome}); this transition did not ship or clean work. All historical receipts are preserved. Start a fresh loop through the normal workflow and reconcile current provider state.\n`
         : `Replanned ${result.request.runId}; the original lease is archived, this transition did not ship or clean work. Start a fresh loop through the normal workflow.\n`
     );
+    if (result.approvalDelta && !options.json) {
+      process.stdout.write(
+        `The approved coordination digest ${result.approvalDelta.approvedCoordinationDigest} changed to ${result.approvalDelta.currentCoordinationDigest} only through verified owner releases, recorded in replan-approval-delta.json: ${result.approvalDelta.acceptedReleases
+          .map(
+            (release) =>
+              `${release.ownerAgentId} released ${release.claimId} on ${release.path} (${release.releaseReason})`
+          )
+          .join("; ")}.\n`
+      );
+    }
     return true;
   }
   if (action === "close-equivalent") {
@@ -4293,6 +4762,9 @@ const readHookInput = async (): Promise<string> => {
  */
 const runLoopTurnCheck = async (options: CliOptions): Promise<void> => {
   if (!options.hook) {
+    // Run directly, it reports on this session, which the identity
+    // preflight made sure is clear; the hook reads the ending session from
+    // the harness instead.
     const result = turnCheck({ sessionId: null, stopHookActive: false });
     writeOutput(
       result,
@@ -4315,6 +4787,73 @@ const runLoopTurnCheck = async (options: CliOptions): Promise<void> => {
     writeSync(1, output);
   }
   process.exit(0);
+};
+
+// The shipment records a controller keeps: scope, outcome, and held units.
+const runLoopShipmentAction = (
+  action: string,
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): boolean => {
+  if (action === "record-scope" || action === "refresh-scope") {
+    const receipt = recordShipmentScope(
+      options.repo,
+      runId,
+      agentId,
+      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
+      action === "refresh-scope",
+      lockWaitOption(options)
+    );
+    writeOutput(receipt, options.json, `${receipt.summary}\n`);
+    return true;
+  }
+  if (action === "record-outcome") {
+    const outcome = recordShipmentOutcome(
+      options.repo,
+      runId,
+      agentId,
+      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
+      {
+        approvalReference: options.approvalReference,
+        approvedBy: options.approvedBy,
+      },
+      lockWaitOption(options)
+    );
+    writeOutput(outcome, options.json, `${outcome.summary}\n`);
+    return true;
+  }
+  if (action === "hold-unit") {
+    runLoopHoldUnit(options, runId, agentId);
+    return true;
+  }
+  return false;
+};
+
+const runLoopHoldUnit = (
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): void => {
+  const result = holdScopedUnit(options.repo, {
+    agentId,
+    approval: {
+      approvalReference: options.approvalReference,
+      approvedBy: options.approvedBy,
+      observationDigest: options.observationDigest,
+    },
+    readinessEvidence: options.readinessEvidence,
+    reason: requireCliOption(options.reason, "--reason"),
+    runId,
+    unitId: requireCliOption(options.unitId, "--unit"),
+  });
+  writeOutput(
+    result,
+    options.json,
+    result.status === "held"
+      ? `Held unit ${result.observation.unitId} in ${runId}: its exact source, branch, and claim stay preserved, and finalization reports it as held, never as delivered or target-equivalent.\n${result.summary}\n`
+      : `Nothing is held yet. Show the user this exact observation and ask for their approval now; an earlier or conditional instruction is not enough.\n${result.summary}\nAfter the user approves, run:\n${result.approvalCommand}\n`
+  );
 };
 
 const runLoopDraftOutcome = (options: CliOptions, runId: string): void => {
@@ -4357,7 +4896,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "loop requires start, status, verify, record-scope, refresh-scope, draft-outcome, record-outcome, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
+      "loop requires start, status, verify, record-scope, refresh-scope, draft-outcome, record-outcome, hold-unit, guard, exec, recover, recover-post-cleanup, close-equivalent, replan-status, replan, archive-recorded, takeover, rebaseline, allow, dispose-worktree, retain-worktree, retire-absent-worktree, adopt-worktree, accept-paused-change, reconcile-remote-branches, emergency, end, finalize, or turn-check",
       EXIT_CODES.usage
     );
   }
@@ -4382,29 +4921,7 @@ const runLoopCommand = async (options: CliOptions): Promise<void> => {
     return;
   }
   const agentId = requireCliOption(options.agentId, "--agent-id");
-  if (action === "record-scope" || action === "refresh-scope") {
-    const receipt = recordShipmentScope(
-      options.repo,
-      runId,
-      agentId,
-      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
-      action === "refresh-scope"
-    );
-    writeOutput(receipt, options.json, `${receipt.summary}\n`);
-    return;
-  }
-  if (action === "record-outcome") {
-    const outcome = recordShipmentOutcome(
-      options.repo,
-      runId,
-      agentId,
-      readJsonFile(requireCliOption(options.receiptPath, "--receipt")),
-      {
-        approvalReference: options.approvalReference,
-        approvedBy: options.approvedBy,
-      }
-    );
-    writeOutput(outcome, options.json, `${outcome.summary}\n`);
+  if (runLoopShipmentAction(action, options, runId, agentId)) {
     return;
   }
   if (runLoopTakeover(action, options, runId, agentId)) {
@@ -4582,10 +5099,144 @@ const runWorktreeClaim = (options: CliOptions, agentId: string): void => {
   );
 };
 
+const renderReviewedReplacement = (
+  outcome: ReplacementLineageOutcome | null,
+  dryRun: boolean
+): string => {
+  if (!outcome) {
+    return "";
+  }
+  const proof =
+    outcome.byteProof.status === "proven"
+      ? "its touched files equal the reviewed target byte for byte"
+      : "the replacement changed bytes, so the reviewed mapping is the evidence";
+  const { archive } = outcome;
+  const retention = `${archive.bytes} bytes; it expires ${archive.expiresAt} (${archive.retention.days} day(s) by repository policy), or sooner once the archives together exceed ${archive.retention.maxTotalBytes} bytes`;
+  const fallbacks = archive.retentionFallbacks
+    .map((fallback) => `\n  note: ${fallback}`)
+    .join("");
+  if (dryRun) {
+    return `Reviewed replacement: would archive ${outcome.path} (${retention}), pin ${outcome.headSha} and every object the checkout names, and remove it (${outcome.uniqueCommits.length} mapped commit(s); ${proof}).${fallbacks}\n`;
+  }
+  const archived = archive.archiveId
+    ? `archived as ${archive.archiveId} at ${archive.path} (${retention}); ${outcome.pinRefs.length} pin(s) under refs/simple-changes/archives/${archive.archiveId}/`
+    : "not archived";
+  const restore =
+    archive.archiveId && outcome.worktreeRemoved
+      ? ` Restore it with \`simple-changes worktree restore-archive --archive ${archive.archiveId}\`.`
+      : "";
+  return `Reviewed replacement: ${outcome.worktreeRemoved ? "removed" : "kept"} ${outcome.path}${outcome.branch ? `, branch ${outcome.branch} ${outcome.branchDeleted ? "deleted" : "kept"}` : ""}; ${archived} (${proof}).${restore}${fallbacks}\n`;
+};
+
+const renderArchivePruning = (
+  pruning: ArchivePruneResult | null,
+  dryRun: boolean
+): string => {
+  if (!pruning) {
+    return "";
+  }
+  const lines = [
+    ...pruning.pruned.map(
+      (entry) =>
+        `${dryRun ? "Would prune" : "Pruned"} archive ${entry.archiveId} (${entry.cause}, ${entry.bytes} bytes, ${entry.pinRefsDeleted.length} pin(s)).${entry.notes.map((note) => `\n  note: ${note}`).join("")}`
+    ),
+    ...pruning.keptForAttention.map(
+      (entry) =>
+        `! Archive ${entry.archiveId} needs attention: ${entry.reason} Restore it with \`${entry.restoreCommand}\`, or prune it by ID.`
+    ),
+    ...pruning.skipped.map(
+      (entry) => `- skipped archive ${entry.archiveId}: ${entry.reason}`
+    ),
+  ];
+  // The cap and window are named whenever an archive exists, so the user
+  // sees what the pruning applied.
+  if (lines.length > 0 || pruning.totalBytesBefore > 0) {
+    lines.push(
+      `Archives hold ${pruning.totalBytesAfter} bytes of the ${pruning.appliedRetention.maxTotalBytes}-byte cap; by the current repository policy a new archive expires after ${pruning.appliedRetention.days} day(s), and an existing one keeps the expiry its manifest records.`
+    );
+  }
+  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+};
+
+const renderNoteLines = (notes: readonly string[]): string =>
+  notes.map((note) => `  note: ${note}\n`).join("");
+
+const renderFinalizeArchivePruning = (
+  pruning: LoopFinalizationResult["archivePruning"]
+): string =>
+  `${renderArchivePruning(pruning?.result ?? null, false)}${renderNoteLines(pruning?.notes ?? [])}`;
+
+const renderArchiveListing = (
+  archives: ReturnType<typeof listArchivedWorktrees>
+): string => {
+  if (archives.length === 0) {
+    return "No worktree archives.\n";
+  }
+  return `${archives
+    .map((entry) => {
+      if (!entry.manifest) {
+        return `${entry.archiveId}: unreadable (${entry.error ?? "no manifest"})`;
+      }
+      const { manifest } = entry;
+      const state = `${
+        entry.restoring
+          ? `; a restore started ${entry.restoring.startedAt} has not finished`
+          : ""
+      }${entry.error ? `; ${entry.error}` : ""}`;
+      return `${entry.archiveId}: ${manifest.source.path} (${manifest.source.branch ?? "detached"} at ${manifest.source.headSha}), ${manifest.checkout.bytes + manifest.gitDirectory.bytes} bytes, created ${manifest.createdAt}, expires ${manifest.expiresAt}, ${manifest.pinRefs.length} pin(s)${state}`;
+    })
+    .join("\n")}\n`;
+};
+
+// The worktree archive commands: list, restore or extract, and the manual
+// prune.
+const runWorktreeArchives = (action: string, options: CliOptions): boolean => {
+  if (action === "archives") {
+    const archives = listArchivedWorktrees(options.repo);
+    writeOutput(archives, options.json, renderArchiveListing(archives));
+    return true;
+  }
+  if (action === "restore-archive") {
+    const result = restoreArchivedWorktree({
+      archiveId: requireCliOption(options.archiveId, "--archive"),
+      extractTo: options.extractTo,
+      repositoryPath: options.repo,
+    });
+    writeOutput(
+      result,
+      options.json,
+      result.extracted
+        ? `Copied archive ${options.archiveId} into ${result.destination} (${result.bytes} bytes); the archive itself is unchanged.\n`
+        : `Restored ${result.path} from archive ${result.archiveId} at ${result.headSha}${result.branch ? ` on branch ${result.branch}${result.branchCreated ? " (recreated)" : ""}` : " (detached)"}. The archive stays until it expires.\n`
+    );
+    return true;
+  }
+  if (action === "prune-archives") {
+    const result = pruneArchivedWorktrees({
+      approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
+      archiveId: options.archiveId,
+      dryRun: options.dryRun,
+      olderThanDays: options.olderThanDays,
+      reason: requireCliOption(options.reason, "--reason"),
+      repositoryPath: options.repo,
+    });
+    writeOutput(
+      result,
+      options.json,
+      `${renderArchivePruning(result, options.dryRun) || `${options.dryRun ? "Would prune" : "Pruned"} no archives.\n`}Archives hold ${result.totalBytesAfter} bytes${options.dryRun ? " after this plan" : ""}.\n`
+    );
+    return true;
+  }
+  return false;
+};
+
 const runWorktreeMaintenance = (
   action: string,
   options: CliOptions
 ): boolean => {
+  if (runWorktreeArchives(action, options)) {
+    return true;
+  }
   if (action === "refresh-index") {
     const result = refreshWorktreeIndex(options.repo);
     writeOutput(
@@ -4599,6 +5250,10 @@ const runWorktreeMaintenance = (
     const receipt = standaloneWorktreeCleanup({
       agentId: requireCliOption(options.agentId, "--agent-id"),
       approvedBy: requireCliOption(options.approvedBy, "--approved-by"),
+      lineageReceipt: options.lineageReceiptPath
+        ? readJsonFile(options.lineageReceiptPath)
+        : undefined,
+      maxArchiveBytes: options.maxArchiveBytes,
       reason: requireCliOption(options.reason, "--reason"),
       repositoryPath: options.repo,
       targetRef: options.targetRef,
@@ -4606,7 +5261,7 @@ const runWorktreeMaintenance = (
     writeOutput(
       receipt,
       options.json,
-      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderCleanupNotes(receipt.notes)}`
+      `Standalone cleanup ${receipt.cleanupId} vs ${receipt.targetRef}: removed ${receipt.removed.length} proven worktree(s), pruned ${receipt.prunedPaths.length} stale record(s), released ${(receipt.releasedClaims ?? []).length} orphaned claim(s), preserved ${receipt.preserved.length}.\n${receipt.preserved.map((entry) => `- preserved ${entry.path}: ${entry.reason}`).join("\n")}${receipt.preserved.length > 0 ? "\n" : ""}${renderReviewedReplacement(receipt.reviewedReplacement, false)}${renderArchivePruning(receipt.archivePruning, false)}${receipt.errors.map((error) => `! ${error}\n`).join("")}${renderCleanupNotes(receipt.notes)}`
     );
     return true;
   }
@@ -4644,7 +5299,7 @@ const runWorktreeReadyRelease = (
     agentId,
     requireCliOption(options.claimId, "--claim-id"),
     parseReadyWorkInput(readJsonFile(readyReceiptPath)),
-    { leaveUncovered: options.leaveUncovered }
+    { leaveUncovered: options.leaveUncovered, ...lockWaitInput(options) }
   );
   writeOutput(
     result,
@@ -4707,7 +5362,7 @@ const runWorktreeCommand = (options: CliOptions): void => {
   const [action] = options.positional;
   if (!action) {
     throw new SimpleChangesError(
-      "worktree requires status, observe, equivalence, refresh-index, cleanup, request, claim, pause, detach, attach, resume-ready, release, or takeover",
+      "worktree requires status, observe, equivalence, refresh-index, cleanup, archives, restore-archive, prune-archives, request, claim, pause, detach, attach, resume-ready, release, or takeover",
       EXIT_CODES.usage
     );
   }
@@ -5119,14 +5774,30 @@ const renderPrune = (report: PruneReport): string => {
   for (const entry of report.preservedBranches) {
     lines.push(`- preserved branch ${entry.branch}: ${entry.reason}`);
   }
+  const lineage = renderReviewedReplacement(
+    report.reviewedReplacement,
+    report.dryRun
+  );
+  if (lineage) {
+    lines.push(lineage.trimEnd());
+  }
+  const pruning = renderArchivePruning(report.archivePruning, report.dryRun);
+  if (pruning) {
+    lines.push(pruning.trimEnd());
+  }
   lines.push(...report.notes, ...report.errors.map((error) => `! ${error}`));
   return `${lines.join("\n")}\n`;
 };
 
 const runPrune = (options: CliOptions): void => {
   const report = pruneRepository({
+    agentId: options.agentId,
     approvedBy: options.approvedBy,
     dryRun: options.dryRun,
+    lineageReceipt: options.lineageReceiptPath
+      ? readJsonFile(options.lineageReceiptPath)
+      : undefined,
+    maxArchiveBytes: options.maxArchiveBytes,
     reason: options.reason,
     repositoryPath: options.repo,
     targetRef: options.targetRef,
@@ -5249,6 +5920,36 @@ const renderRemoteInventoryBuild = (build: RemoteInventoryBuild): string => {
         lines.push(`${label}: ${names.join(", ")}`);
       }
     }
+    if (summary.deletionProposals.length > 0) {
+      lines.push(
+        "Proposed deletions (for each: run `loop guard`, delete exactly that branch at that head, run `loop verify`; then fetch and build the final inventory again):",
+        ...summary.deletionProposals.map(
+          (proposal) =>
+            `  ${proposal.name} at ${proposal.headRevision}: ${
+              proposal.basis === "decision"
+                ? `approved by the decisions file (${proposal.proof})`
+                : `merged proposal ${proposal.proposalObjectId} at this exact head`
+            }`
+        )
+      );
+    }
+    if (summary.externallyDeletedBranches.length > 0) {
+      lines.push(
+        "Deleted outside this run (recorded without claiming delivery or obsolescence; `loop reconcile-remote-branches` pins each last head that is present locally, and `loop finalize` reports each one as needing attention):",
+        ...summary.externallyDeletedBranches.map(
+          (branch) => `  ${branch.name}, last head ${branch.lastHeadRevision}`
+        )
+      );
+    }
+    if (summary.heldBranches.length > 0) {
+      lines.push(
+        "Merged-proposal heads kept and not proposed:",
+        ...summary.heldBranches.map(
+          (held) =>
+            `  ${held.name} at ${held.headRevision}: ${held.reasons.join("; ")}`
+        )
+      );
+    }
   }
   return `${lines.join("\n")}\n`;
 };
@@ -5269,7 +5970,23 @@ const runRemoteInventoryCommand = (options: CliOptions): void => {
   }
   const build = buildRemoteInventory(readJsonFile(pagesPath), {
     ...(options.openingRemoteInventoryPath
-      ? { opening: readJsonFile(options.openingRemoteInventoryPath) }
+      ? {
+          opening: readJsonFile(options.openingRemoteInventoryPath),
+          // Live worktrees and claims keep a branch; read only locally.
+          resolveHolds: (targetBranch: string, targetRevision: string) => {
+            const inventory = captureInventory(options.repo, {
+              skipWorktreeStatus: true,
+            });
+            return remoteBranchHolds({
+              claims: readCoordinationDocumentFromCommonDirectory(
+                inventory.repository.commonGitDirectory
+              ).claims,
+              inventory,
+              targetBranch,
+              targetRevision,
+            });
+          },
+        }
       : {}),
     ...(options.decisionsPath
       ? { decisions: readJsonFile(options.decisionsPath) }
@@ -5399,8 +6116,9 @@ const workDirectoryFor = async (
   lease: LoopLease | null,
   agentId: string
 ): Promise<{ bound: boolean; path: string }> => {
-  const session = workDirectorySession();
   if (lease) {
+    // Only a run's bindings follow a session.
+    const session = workDirectorySession();
     const use = runWorkDirectoryUse(repository, lease, agentId, session);
     if (use.action === "use") {
       return { bound: true, path: use.path };
@@ -5592,14 +6310,19 @@ const notInstallableHere = (): string =>
   isForkRuntime(SCRIPT_FILE) ? NOT_INSTALLABLE_FROM_FORK : NOT_INSTALLABLE_HERE;
 
 const resolveHarness = (options: CliOptions): TurnGuardHarness => {
-  const harness = options.harness ?? currentHarnessSession()?.harness;
-  if (!harness) {
+  if (options.harness) {
+    return options.harness;
+  }
+  const resolution = resolveHarnessSession(process.env, null);
+  if (!resolution.session) {
     throw new SimpleChangesError(
-      "No harness session detected; pass --harness claude-code or --harness codex.",
+      resolution.status === "ambiguous"
+        ? `Sessions of ${resolution.present.join(" and ")} are both visible, so the running harness is unclear; pass --harness claude-code or --harness codex.`
+        : "No harness session detected; pass --harness claude-code or --harness codex.",
       EXIT_CODES.usage
     );
   }
-  return harness;
+  return resolution.session.harness;
 };
 
 const shellWord = (value: string): string =>
@@ -5633,14 +6356,125 @@ const runHarnessCommand = (options: CliOptions): void => {
   );
 };
 
-const executeCommand = async (
+// The metadata writers that take the loop lock and accept --wait-lock.
+// `worktree release` takes it only with --ready-receipt.
+const LOCK_WAIT_COMMANDS = new Set([
+  "author attest",
+  "loop record-outcome",
+  "loop record-scope",
+  "loop refresh-scope",
+  "proposal record-authors",
+  "proposal record-review",
+  "proposal waive-coverage",
+  "worktree release",
+]);
+
+// Refused before anything runs, so a flag never silently does nothing.
+const assertLockWaitApplies = (command: string, options: CliOptions): void => {
+  if (options.waitLockTimeoutMs !== undefined && !options.waitLock) {
+    throw new SimpleChangesError(
+      "--timeout-ms applies only with --wait-lock.",
+      EXIT_CODES.usage
+    );
+  }
+  if (!options.waitLock) {
+    return;
+  }
+  const name = `${command} ${options.positional[0] ?? ""}`;
+  if (
+    !LOCK_WAIT_COMMANDS.has(name) ||
+    (name === "worktree release" && !options.readyReceiptPath)
+  ) {
+    throw new SimpleChangesError(
+      `--wait-lock applies only to ${[...LOCK_WAIT_COMMANDS].sort().join(", ")} (with --ready-receipt).`,
+      EXIT_CODES.usage
+    );
+  }
+};
+
+// --wait-lock: wait for a busy loop lock for the bound instead of failing.
+const lockWaitOption = (options: CliOptions): LoopLockWait | undefined =>
+  options.waitLock
+    ? { timeoutMs: options.waitLockTimeoutMs ?? LOOP_LOCK_WAIT_DEFAULT_MS }
+    : undefined;
+
+const lockWaitInput = (options: CliOptions): { lockWait?: LoopLockWait } => {
+  const lockWait = lockWaitOption(options);
+  return lockWait ? { lockWait } : {};
+};
+
+// Commands that record, bind, or check the executing session. With sessions
+// of two harnesses in the environment, they ask which is theirs before they
+// take a lock or touch a directory or file, even an owner command on a claim
+// that turns out to be unbound. The library checks again for direct callers.
+// `workdir` asks only inside a run, before any lock or write, since outside
+// one it needs no session.
+const SESSION_COMMANDS = new Set([
+  "author attest",
+  "loop start",
+  "loop takeover",
+  "loop turn-check",
+  "proposal record-authors",
+  "worktree attach",
+  "worktree claim",
+  "worktree detach",
+  "worktree pause",
+  "worktree release",
+  "worktree takeover",
+]);
+
+const checksSession = (command: string, options: CliOptions): boolean => {
+  const name = `${command} ${options.positional[0] ?? ""}`.trim();
+  if (name === "loop turn-check") {
+    // The Stop hook names its ending session itself and must never fail.
+    return !options.hook;
+  }
+  // A proceeding handoff releases the author's own claim.
+  if (command === "initialize") {
+    return options.mode === "handoff" && options.agentId !== undefined;
+  }
+  return SESSION_COMMANDS.has(name);
+};
+
+// The identity preflight every command runs before dispatch. A receipt is
+// checked against the environment and against every argument that states an
+// identity, whether or not the command uses it, so a disputed receipt stops
+// any command before it acts. The harness it returns is the one this
+// command runs in: the receipt's, or else `--harness`. `harness stop-hook
+// --harness <id>` names the harness to install for instead, so that command
+// names none and its `--harness` is not compared.
+const invocationHarnessFor = (
+  command: string,
+  options: CliOptions
+): string | null => {
+  const named = command === "harness" ? null : (options.harness ?? null);
+  const receipt = options.identityReceipt;
+  if (receipt) {
+    receiptSession(receipt, process.env, {
+      agent: options.agentName ?? null,
+      harness: named,
+      instance: options.instanceId ?? null,
+      session: options.sessionId ?? null,
+    });
+  }
+  if (command === "harness") {
+    return null;
+  }
+  const harness = receipt?.harness ?? named;
+  if (checksSession(command, options)) {
+    requireHarnessSession(
+      `${command} ${options.positional[0] ?? ""}`.trim(),
+      process.env,
+      harness
+    );
+  }
+  return harness;
+};
+
+const dispatchCommand = async (
   command: string,
   options: CliOptions
 ): Promise<number> => {
-  if (options.help) {
-    process.stdout.write(HELP);
-    return EXIT_CODES.success;
-  }
   switch (command) {
     case "help":
     case "--help":
@@ -5748,6 +6582,8 @@ const executeCommand = async (
       return EXIT_CODES.success;
     case "author":
       return runAuthorCommand(options);
+    case "reviewer":
+      return runReviewerCommand(options);
     case "release-notes":
       return runReleaseNotes(options);
     case "negotiate-changelog":
@@ -5788,6 +6624,25 @@ const executeCommand = async (
   }
 };
 
+const executeCommand = async (
+  command: string,
+  options: CliOptions
+): Promise<number> => {
+  if (options.help) {
+    process.stdout.write(HELP);
+    return EXIT_CODES.success;
+  }
+  assertLockWaitApplies(command, options);
+  const restore = selectInvocationHarness(
+    invocationHarnessFor(command, options)
+  );
+  try {
+    return await dispatchCommand(command, options);
+  } finally {
+    restore();
+  }
+};
+
 export const runCli = async (args: string[]): Promise<number> => {
   const [command = "help", ...rest] = args;
   try {
@@ -5803,9 +6658,14 @@ export const runCli = async (args: string[]): Promise<number> => {
           );
     const wantsJson = args.includes("--json");
     const message = redactSecrets(simpleError.message);
+    // A bounded lock wait that ended without the lock adds its report.
+    const lockWait =
+      simpleError instanceof LoopLockWaitError
+        ? { lockWait: simpleError.lockWait }
+        : {};
     process.stderr.write(
       wantsJson
-        ? `${JSON.stringify({ error: message, exitCode: simpleError.exitCode, ok: false })}\n`
+        ? `${JSON.stringify({ error: message, exitCode: simpleError.exitCode, ok: false, ...lockWait })}\n`
         : `simple-changes: ${message}\n`
     );
     return simpleError.exitCode;

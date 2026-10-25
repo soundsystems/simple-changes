@@ -111,7 +111,18 @@ export interface ChangelogCoordination {
   relevant: boolean;
 }
 
+/**
+ * How long worktree archives are kept, as written in the policy file. Both
+ * values are optional and read with fallback (`archiveRetentionPolicy`): a
+ * value that is not a whole number in range falls back to the default.
+ */
+export interface ArchiveRetentionSetting {
+  days?: number;
+  maxTotalBytes?: number;
+}
+
 export interface RepoPolicy {
+  archiveRetention?: ArchiveRetentionSetting;
   changelogHandling: ChangelogHandling;
   concurrentWork: "allow-claimed" | "strict" | "preserve";
   defaultFinish: "open-change-request" | "integrate" | "ship" | "preview";
@@ -138,7 +149,9 @@ export interface RepoPolicy {
   uiArtifactVersioning: UiArtifactVersioning;
 }
 
-export type PolicySource = "default" | "user" | "repository";
+// `request`: a run-only setup's policy passed back as `--policy-request`,
+// applied for one invocation when nothing is saved, and never written.
+export type PolicySource = "default" | "user" | "repository" | "request";
 
 export interface GitChange {
   conflicted: boolean;
@@ -344,6 +357,43 @@ export interface PreservedSourceOverrideReceipt {
   unitId: string;
 }
 
+/**
+ * A user-approved handoff on a `delivered` unit whose source is a dirty
+ * checkout, detached or on a branch, that its original owner paused in place
+ * and the controller accepted. A committed copy of the source's exact bytes
+ * reached the target, independently reviewed changes may follow it, and the
+ * source stays preserved under its owner's claim.
+ */
+export interface PreservedSourceHandoffReceipt {
+  approvalReason: string;
+  approvalReference: string;
+  approvedAt: string;
+  approvedBy: string;
+  claimId: string;
+  /** The commit that copied the source's exact bytes into the target line. */
+  copyRevision: string;
+  decision: "reviewed-handoff";
+  ownerAgentId: string;
+  paths: Array<{
+    copyEntry: string | null;
+    path: string;
+    sourceEntry: string | null;
+    targetEntry: string | null;
+  }>;
+  pauseReceiptId: string;
+  preservation: "keep-source-in-place";
+  reviewedAt: string;
+  reviewerAgentId: string;
+  reviewReference: string;
+  runId: string;
+  sourceBranch: string | null;
+  sourceChangeDigest: string;
+  sourceHeadRevision: string;
+  sourceWorktree: string;
+  targetRevision: string;
+  unitId: string;
+}
+
 export interface ShipmentOutcomeReceipt {
   additionalPaths: Array<
     ShipmentOutcomePath & {
@@ -372,6 +422,7 @@ export interface ShipmentOutcomeReceipt {
 export type ShipmentOutcomeInput = Omit<ShipmentOutcomeReceipt, "units"> & {
   units: Array<
     ShipmentOutcomeReceipt["units"][number] & {
+      preservedSourceHandoff?: PreservedSourceHandoffReceipt;
       preservedSourceOverride?: PreservedSourceOverrideReceipt;
     }
   >;
@@ -380,6 +431,14 @@ export type ShipmentOutcomeInput = Omit<ShipmentOutcomeReceipt, "units"> & {
 /** The sidecar beside the lease that holds one outcome's overrides. */
 export interface PreservedSourceOverrideRecord {
   overrides: PreservedSourceOverrideReceipt[];
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
+}
+
+/** The sidecar beside the lease that holds one outcome's source handoffs. */
+export interface PreservedSourceHandoffRecord {
+  handoffs: PreservedSourceHandoffReceipt[];
   receiptDigest: string;
   runId: string;
   schemaVersion: 1;
@@ -1306,6 +1365,44 @@ export interface RemoteBranchSupersessionRecord {
   supersessions: RemoteBranchSupersession[];
 }
 
+/** An open proposal the final inventory saw, from any source project. */
+export interface RemoteBranchOpenProposalTarget {
+  objectId: string;
+  targetBranch: string;
+}
+
+export interface RemoteBranchOpenTargetsRecord {
+  openProposalTargets: RemoteBranchOpenProposalTarget[];
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
+}
+
+/**
+ * An opening branch absent from the final inventory with no merged proposal
+ * or decision that proves it obsolete: this run never proposed or approved
+ * deleting it. The receipt records it as deleted with classification
+ * `ambiguous` and a null `obsoleteProof`, and this record, in a sidecar beside
+ * the lease, is what makes that entry valid. It never counts as delivered or
+ * obsolete.
+ */
+export interface RemoteBranchExternalDeletion {
+  branch: string;
+  /** The branch head the opening inventory observed, its last known head. */
+  lastHeadRevision: string;
+}
+
+/**
+ * The branches one recorded receipt records as deleted outside the run, kept
+ * in its own immutable file named by the receipt's digest.
+ */
+export interface RemoteBranchExternalDeletionRecord {
+  deletions: RemoteBranchExternalDeletion[];
+  receiptDigest: string;
+  runId: string;
+  schemaVersion: 1;
+}
+
 export interface RemoteBranchReconciliationEntry {
   classification:
     | "canonical-target"
@@ -1406,6 +1503,11 @@ export interface LoopLease {
    * predates it and cannot prove that it never mutated.
    */
   firstMutationAt?: string | null;
+  /**
+   * Present only on a run that held a unit: the digest of its holds, so a
+   * runtime that predates holds refuses to read this lease at all.
+   */
+  heldUnits?: { holdsDigest: string };
   mode: Exclude<RequestMode, "pause" | "preview" | "sync">;
   openingBranches?: Array<{ name: string; sha: string }>;
   /**
@@ -1486,6 +1588,69 @@ export interface ChangelogAuthorBinding {
 /** The sidecar beside the lease that holds a run's changelog authors. */
 export interface ChangelogAuthorRecord {
   authors: ChangelogAuthorBinding[];
+  runId: string;
+  schemaVersion: 1;
+}
+
+/**
+ * The exact state `loop hold-unit` observed for one frozen scoped unit. The
+ * user approves its digest, so any change to it before recording refuses.
+ */
+export interface HeldUnitObservation {
+  claim: {
+    branch: string | null;
+    claimId: string;
+    ownerAgentId: string;
+    state: WorktreeCoordinationState;
+  } | null;
+  controllerAgentId: string;
+  /**
+   * Each original path of the unit's own renames that is not an opening
+   * change of its own, with the source checkout's entry there, which must
+   * be absent, as it was when the scope froze.
+   */
+  originalPaths: Array<{ path: string; sourceEntry: string | null }>;
+  paths: Array<{
+    openingEntry: string | null;
+    path: string;
+    sourceEntry: string | null;
+  }>;
+  readinessEvidence: string[];
+  reason: string;
+  runId: string;
+  scopePlanDigest: string;
+  source: {
+    branch: string | null;
+    changeDigest: string;
+    headSha: string | null;
+    isPrimary: boolean;
+    worktree: string;
+  };
+  target: { ref: string; revision: string };
+  unitDigest: string;
+  unitId: string;
+}
+
+/** One immutable hold: a scoped unit kept preserved, never delivered. */
+export interface HeldUnitHold {
+  authorization: {
+    approvalReference: string;
+    approvedAt: string;
+    approvedBy: string;
+  };
+  /** The held unit's paths, in the shape of the scope's plan exclusions. */
+  exclusions: Array<{ path: string; reason: string; worktreePath: string }>;
+  holdDigest: string;
+  observation: HeldUnitObservation;
+  observationDigest: string;
+  recordedAt: string;
+  /** The original unit exactly as the frozen scope recorded it. */
+  unit: ChangeUnit;
+}
+
+/** The sidecar beside the lease that holds a run's held units. */
+export interface HeldUnitsRecord {
+  holds: HeldUnitHold[];
   runId: string;
   schemaVersion: 1;
 }

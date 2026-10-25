@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AuthoringSidecar } from "./authoring.ts";
 import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { currentHarnessSession } from "./harness-session.ts";
+import { requireHarnessSession } from "./harness-session.ts";
 import { sha256Json } from "./hash.ts";
 import {
   captureInventory,
@@ -167,6 +167,12 @@ export const startLoop = (
       EXIT_CODES.usage
     );
   }
+  // Every start binds or refreshes the run's controller session, a repeated
+  // start included, so with sessions of two harnesses in the environment the
+  // command must say which is its own before it touches anything.
+  const session = requireHarnessSession(
+    mode === "resume" ? "loop start --mode resume" : "loop start"
+  );
   const opening = locateRepository(repositoryPath);
   // The run's request layer, when one is passed, reaches resume revalidation.
   const resumeOptions =
@@ -207,7 +213,6 @@ export const startLoop = (
             return resumed;
           }
           const now = new Date().toISOString();
-          const session = currentHarnessSession();
           const currentPath = inventory.repository.currentCheckout;
           const concurrentWork =
             inventory.policy.value.concurrentWork === "strict"

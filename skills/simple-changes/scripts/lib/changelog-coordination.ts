@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { globalSkillRoots } from "./skill-roots.ts";
 import type { ChangelogCoordination } from "./types.ts";
 
@@ -241,12 +241,20 @@ const storedGuidanceVersion = (repositoryRoot: string | null): StoredPolicy => {
   return { distribution: null, path: null, version: null };
 };
 
+// Only an own key names an installation: a renamed folder such as
+// `constructor` or `__proto__` must not read an inherited object property.
+const installationDistribution = (provider: string): string | null => {
+  const name = basename(resolve(provider, ".."));
+  return Object.hasOwn(DISTRIBUTION_BY_INSTALLATION, name)
+    ? (DISTRIBUTION_BY_INSTALLATION[name] ?? null)
+    : null;
+};
+
 // Declared marker first, then the installation directory name; null when
 // only SKILL.md prose could say which distribution this is.
 const providerDistribution = (provider: string): string | null =>
   readProviderMarker(provider)?.distribution ??
-  DISTRIBUTION_BY_INSTALLATION[basename(resolve(provider, ".."))] ??
-  null;
+  installationDistribution(provider);
 
 // Only a marker can declare a provider discovery-only; an installation without
 // a marker is assumed handoff-capable and its capability record decides.
@@ -299,16 +307,90 @@ const canonicalPath = (path: string): string => {
 
 // Symlinked skill roots (for example ~/.codex/skills -> ~/.agents/skills)
 // expose one installed provider under several paths. Keep the first path seen
-// for each real location so the same installation is never counted twice.
+// for each real installation folder so the same installation is never counted
+// twice. The folder, not SKILL.md, is the identity: it holds the marker and
+// the setup helper, so two folders whose SKILL.md links to one shared file
+// are still two installations with their own capabilities.
 const uniqueByRealPath = (candidates: string[]): string[] => {
   const seen = new Map<string, string>();
   for (const candidate of candidates) {
-    const key = canonicalPath(candidate);
+    const key = canonicalPath(resolve(candidate, ".."));
     if (!seen.has(key)) {
       seen.set(key, candidate);
     }
   }
   return [...seen.values()];
+};
+
+const staysInside = (realRoot: string, path: string): boolean => {
+  let realTarget: string;
+  try {
+    realTarget = realpathSync(path);
+  } catch {
+    return false;
+  }
+  const offset = relative(realRoot, realTarget);
+  return (
+    offset !== ".." && !offset.startsWith(`..${sep}`) && !isAbsolute(offset)
+  );
+};
+
+const compareNames = (left: string, right: string): number => {
+  if (left === right) {
+    return 0;
+  }
+  return left < right ? -1 : 1;
+};
+
+// A repository may install its own changelog provider under a folder name of
+// its choosing (for example `hash-changelog-maintainer`). Such a folder counts
+// only when it carries a valid provider marker and the folder, its SKILL.md,
+// and its marker all really live inside the repository, so a symlink can never
+// pass a global or foreign installation off as repository-selected. Only the
+// direct children of the repository skill roots are listed; global roots are
+// still matched by installation name alone.
+const markedRepositoryProviders = (repositoryRoot: string): string[] => {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(repositoryRoot);
+  } catch {
+    return [];
+  }
+  return REPOSITORY_SKILL_ROOTS.flatMap((root) => {
+    const skillRoot = resolve(repositoryRoot, root);
+    // A skill root that leaves the repository (one linked to a global root,
+    // say) is never listed, so no global folder is ever matched by marker.
+    if (!staysInside(realRoot, skillRoot)) {
+      return [];
+    }
+    let names: string[];
+    try {
+      names = readdirSync(skillRoot).sort(compareNames);
+    } catch {
+      return [];
+    }
+    // Installation names are already visited by name. A differently cased
+    // spelling of one is kept as a candidate: when it is the same folder on a
+    // case-insensitive file system, its real path matches and the real-path
+    // de-duplication below keeps only the installation-name entry.
+    return (
+      names
+        .filter((name) => !Object.hasOwn(DISTRIBUTION_BY_INSTALLATION, name))
+        .map((name) => resolve(skillRoot, name, "SKILL.md"))
+        // Containment is settled before the marker is read, so nothing outside
+        // the repository is opened on the way to rejecting it.
+        .filter(
+          (provider) =>
+            staysInside(realRoot, resolve(provider, "..")) &&
+            staysInside(realRoot, provider) &&
+            staysInside(
+              realRoot,
+              resolve(provider, "..", PROVIDER_MARKER_FILENAME)
+            ) &&
+            readProviderMarker(provider) !== null
+        )
+    );
+  });
 };
 
 /** The release surfaces a repository holds: the changelog and policy files. */
@@ -322,12 +404,20 @@ export const inspectChangelogCoordination = (
   const releaseSurfaces = repositoryRoot
     ? releaseSurfacesIn(repositoryRoot)
     : [];
+  // Installation names first, in their established order, then renamed
+  // repository folders that declare a marker. Every repository candidate
+  // precedes every global one, and the stable handoff sort below keeps that
+  // order within each capability group, so a repository-selected provider
+  // drives the guidance comparison instead of a global installation.
   const repositoryProviders = repositoryRoot
-    ? REPOSITORY_SKILL_ROOTS.flatMap((root) =>
-        INSTALLATION_NAMES.map((name) =>
-          resolve(repositoryRoot, root, name, "SKILL.md")
-        )
-      ).filter(existsSync)
+    ? [
+        ...REPOSITORY_SKILL_ROOTS.flatMap((root) =>
+          INSTALLATION_NAMES.map((name) =>
+            resolve(repositoryRoot, root, name, "SKILL.md")
+          )
+        ).filter(existsSync),
+        ...markedRepositoryProviders(repositoryRoot),
+      ]
     : [];
   const globalProviders = globalSkillRoots(options)
     .flatMap((root) =>

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { inspectGuidanceUpdate } from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
+import {
+  guidanceNotice,
+  inspectGuidanceUpdate,
+} from "../../../skills/simple-changes/scripts/lib/guidance-updates.ts";
 import { inspectInitialization } from "../../../skills/simple-changes/scripts/lib/initialization.ts";
 import { DEFAULT_POLICY } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { classifyEmergencyShipping } from "../../../skills/simple-changes/scripts/lib/triggers.ts";
@@ -74,7 +77,8 @@ describe("first-run initialization", () => {
     expect(from19.changes.map((item) => item.version)).toEqual([
       20, 20, 21, 21, 21, 22, 22, 22, 22, 23, 23, 24, 24, 24, 25, 25, 25, 26,
       26, 26, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 30, 30,
-      31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32,
+      31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(
       from19.changes.filter((item) => item.version === 27).at(-1)?.summary
@@ -105,8 +109,18 @@ describe("first-run initialization", () => {
     ).toContain(
       "Every path built from a run ID requires the `run-[a-z0-9-]+` form"
     );
-    expect(from19.changes.at(-1)?.summary).toContain(
+    expect(
+      from19.changes.filter((item) => item.version === 32).at(-1)?.summary
+    ).toContain(
       "The GitLab provider reference documents recovery of a passed hosted CI run"
+    );
+    expect(
+      from19.changes.find((item) => item.version === 33)?.summary
+    ).toContain(
+      "checks Git's answer for the repository's common Git directory"
+    );
+    expect(from19.changes.at(-1)?.summary).toContain(
+      "discovers a repository's own changelog provider under any folder name"
     );
     const from29 = inspectGuidanceUpdate(
       {
@@ -117,7 +131,7 @@ describe("first-run initialization", () => {
     );
     expect(from29.changes.map((item) => item.version)).toEqual([
       30, 30, 31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32,
-      32,
+      32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from29.summaryBullets.join(" ")).toContain(
       "`author attest --complete-identity`"
@@ -130,7 +144,8 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from30.changes.map((item) => item.version)).toEqual([
-      31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32,
+      31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 32, 32, 32, 32, 32, 33,
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
     ]);
     expect(from30.requiredAnswers).toEqual([]);
     const from31 = inspectGuidanceUpdate(
@@ -141,11 +156,35 @@ describe("first-run initialization", () => {
       changelogCoordination
     );
     expect(from31.changes.map((item) => item.version)).toEqual([
-      32, 32, 32, 32, 32, 32, 32, 32,
+      32, 32, 32, 32, 32, 32, 32, 32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+      33, 33, 33,
     ]);
     expect(from31.requiredAnswers).toEqual([]);
     expect(from31.summaryBullets.join(" ")).toContain(
       "`scratch-file-rule refresh`"
+    );
+    const from32 = inspectGuidanceUpdate(
+      {
+        ...DEFAULT_POLICY,
+        guidance: { disposition: "accepted", version: 32 },
+      },
+      changelogCoordination
+    );
+    expect(from32.changes.map((item) => item.version)).toEqual([
+      33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33,
+    ]);
+    expect(from32.requiredAnswers).toEqual([]);
+    expect(from32.summaryBullets).toHaveLength(3);
+    expect(from32.summaryBullets[0]).toContain("`--harness <id>`");
+    expect(from32.summaryBullets.join(" ")).toContain("`loop hold-unit`");
+    expect(from32.summaryBullets.join(" ")).toContain(
+      "reports cleanup as pending"
+    );
+    expect(from32.summaryBullets.join(" ")).not.toContain("`reviewer room`");
+    expect(guidanceNotice(33)).toHaveLength(5);
+    expect(guidanceNotice(33).join(" ")).toContain("`reviewer room`");
+    expect(guidanceNotice(33).join(" ")).toContain(
+      "`worktree restore-archive`"
     );
     expect(from30.summaryBullets.join(" ")).toContain(
       "compares the model IDs your coding agents report"
@@ -331,6 +370,44 @@ describe("first-run initialization", () => {
     });
   });
 
+  test("treats a run-only policy request as finished onboarding for the run", () => {
+    const request = {
+      path: null,
+      source: "request" as const,
+      value: DEFAULT_POLICY,
+    };
+    const status = inspectInitialization("queue", request);
+    expect(status).toMatchObject({
+      firstUseWalkthroughAvailable: false,
+      guidanceUpdate: { status: "current" },
+      mutationAllowed: true,
+      onboardingRequired: false,
+      policyPath: null,
+      policySource: "request",
+      preLoopActionRequired: false,
+    });
+    expect(status.reason).toContain("onboarding returns on the next run");
+    // Readiness still gates a handoff, and an older guidance version in the
+    // layer still pauses, exactly as for a saved policy.
+    expect(inspectInitialization("handoff", request)).toMatchObject({
+      handoffAction: "confirm-readiness",
+      mutationAllowed: false,
+    });
+    expect(
+      inspectInitialization("queue", {
+        ...request,
+        value: {
+          ...DEFAULT_POLICY,
+          guidance: { disposition: "accepted", version: 32 },
+        },
+      })
+    ).toMatchObject({ mutationAllowed: false, preLoopActionRequired: true });
+    // Negative control: the same value as the default layer still onboards.
+    expect(
+      inspectInitialization("queue", { ...request, source: "default" })
+    ).toMatchObject({ mutationAllowed: false, onboardingRequired: true });
+  });
+
   test("pauses once for a meaningful installed guidance update", () => {
     const status = inspectInitialization(
       "queue",
@@ -369,7 +446,7 @@ describe("first-run initialization", () => {
           available: true,
           owner: "simple-changelogs",
         },
-        currentVersion: 32,
+        currentVersion: 33,
         headline: "**Simple Changes has recently been updated.**",
         presentationOrder: [
           "required-answers",

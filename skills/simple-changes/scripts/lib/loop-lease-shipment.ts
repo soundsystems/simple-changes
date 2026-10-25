@@ -4,22 +4,25 @@ import { resolve } from "node:path";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { sha256Json } from "./hash.ts";
+import { readHeldUnits } from "./held-units.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
 import {
   assertControllerActive,
   controllerLifecycle,
   currentTargetRevision,
   effectiveShipmentScopeFrozenAt,
+  type LoopLockWait,
   matchingOverride,
   ownerProcessEvidence,
+  PRESERVED_SOURCE_HANDOFF_DIRECTORY,
   PRESERVED_SOURCE_OVERRIDE_DIRECTORY,
   requiredRunId,
   requiredText,
   requireLease,
   resolvedCurrentTargetRevision,
   scopeInvariantDigest,
+  withLoopStateLockBounded,
   withMutationEvidence,
-  withStateLock,
   writeLease,
   writeReceiptSidecar,
 } from "./loop-lease-core.ts";
@@ -31,15 +34,23 @@ import {
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { validatePlanConservation } from "./planner.ts";
 import {
+  type PreservedSourceHandoffCopy,
+  preservedSourceHandoffFailure,
+} from "./preserved-source-handoff.ts";
+import {
+  boundOutcomeDigest,
   preservedSourceOverrideFailure,
   splitShipmentOutcomeInput,
 } from "./preserved-source-override.ts";
 import { runGit } from "./process.ts";
 import { validateSchema } from "./schema.ts";
+import { sourceWorktreeDelta } from "./source-worktree-delta.ts";
 import type {
   ChangePlan,
+  HeldUnitHold,
   LoopLease,
   LoopVerification,
+  PreservedSourceHandoffReceipt,
   PreservedSourceOverrideReceipt,
   RepositoryInventory,
   ShipmentOutcomeReceipt,
@@ -533,13 +544,14 @@ export const recordShipmentScope = (
   runIdInput: string,
   agentIdInput: string,
   planInput: unknown,
-  refresh = false
+  refresh = false,
+  lockWait?: LoopLockWait
 ): ShipmentScopeReceipt => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
   const plan = validateSchema<ChangePlan>("change-plan", planInput);
   const opening = locateRepository(repositoryPath);
-  return withStateLock(
+  return withLoopStateLockBounded(
     opening.repository.commonGitDirectory,
     "record shipment scope",
     () => {
@@ -640,7 +652,8 @@ export const recordShipmentScope = (
         runId,
         summary: shipmentScopeSummary(activePlan, inventory),
       };
-    }
+    },
+    lockWait
   );
 };
 
@@ -915,18 +928,167 @@ const preservedSourceOverrideIssue = (
   );
 };
 
+// The copy commit a handoff names, read lazily from the primary's Git.
+const handoffCopy = (
+  lease: LoopLease,
+  receipt: ShipmentOutcomeReceipt,
+  copyRevision: string
+): PreservedSourceHandoffCopy => ({
+  changedPaths: () => {
+    const parents = runGit(
+      lease.primaryCheckout,
+      ["rev-list", "--parents", "--max-count=1", `${copyRevision}^{commit}`],
+      true
+    );
+    const [commit, parent, ...others] = parents.stdout.trim().split(" ");
+    if (
+      parents.exitCode !== 0 ||
+      commit !== copyRevision ||
+      !parent ||
+      others.length > 0
+    ) {
+      return null;
+    }
+    const diff = runGit(
+      lease.primaryCheckout,
+      [
+        "diff-tree",
+        "-r",
+        "--no-renames",
+        "--name-only",
+        "-z",
+        "--ignore-submodules=none",
+        parent,
+        copyRevision,
+        "--",
+      ],
+      true
+    );
+    return diff.exitCode === 0 ? diff.stdout.split("\0").filter(Boolean) : null;
+  },
+  containedInOpeningTarget: () =>
+    targetContainsRevision(
+      lease.primaryCheckout,
+      lease.targetRevision,
+      copyRevision
+    ),
+  containedInTarget: () =>
+    targetContainsRevision(
+      lease.primaryCheckout,
+      receipt.targetRevision,
+      copyRevision
+    ),
+  entry: (path) => targetTreeEntry(lease.primaryCheckout, copyRevision, path),
+});
+
+/**
+ * Rechecks a user-approved preserved-source handoff against the original
+ * owner's claim and accepted pause, the source checkout, the committed copy,
+ * and the exact target tree. Reads the coordination document, so callers
+ * hold the worktree-coordination lock.
+ */
+const preservedSourceHandoffIssue = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  receipt: ShipmentOutcomeReceipt,
+  unit: OutcomeUnit,
+  handoff: PreservedSourceHandoffReceipt | undefined,
+  expected: PlannedUnit,
+  recordedAt: string
+): string | null => {
+  const { sourceWorktree } = expected;
+  const registered = lease.worktrees.find(
+    (worktree) => worktree.path === sourceWorktree
+  );
+  const document = readCoordinationDocumentFromCommonDirectory(
+    lease.commonGitDirectory
+  );
+  const openingEntries = new Map(
+    (lease.shipmentScope?.openingChanges ?? [])
+      .filter((change) => change.worktreePath === sourceWorktree)
+      .map((change) => [change.path, change.sourceEntry])
+  );
+  return preservedSourceHandoffFailure(
+    {
+      claim: document.claims.find(
+        (item) => item.claimId === registered?.claimId
+      ),
+      commonGitDirectory: lease.commonGitDirectory,
+      controllerAgentId: lease.ownerAgentId,
+      copy: handoffCopy(lease, receipt, handoff?.copyRevision ?? ""),
+      current: inventory.worktrees.find((item) => item.path === sourceWorktree),
+      disposition: unit.disposition,
+      finalPaths: unit.finalPaths,
+      handoff,
+      opening: lease.openingWorktrees?.find(
+        (worktree) => worktree.path === sourceWorktree
+      ),
+      openingEntries,
+      originalPaths: unit.originalPaths,
+      pauseReceipt: document.receipts.find(
+        (item) => item.receiptId === registered?.pauseReceiptId
+      ),
+      registered,
+      runId: lease.runId,
+      runStartedAt: lease.createdAt,
+      scopePaths: expected.paths,
+      sourceDelta: () => {
+        const head = inventory.worktrees.find(
+          (item) => item.path === sourceWorktree
+        )?.headSha;
+        return head
+          ? sourceWorktreeDelta(sourceWorktree, head, (path) =>
+              worktreeSourceEntry(sourceWorktree, path)
+            )
+          : { failure: "its HEAD cannot be resolved" };
+      },
+      sourceEntry: (path) => worktreeSourceEntry(sourceWorktree, path),
+      sourceWorktree,
+      targetEntry: (path) =>
+        targetTreeEntry(lease.primaryCheckout, receipt.targetRevision, path),
+      targetRevision: receipt.targetRevision,
+      unitId: unit.unitId,
+    },
+    recordedAt
+  );
+};
+
+interface PreservedSourceEvidenceForUnit {
+  handoff: PreservedSourceHandoffReceipt | undefined;
+  override: PreservedSourceOverrideReceipt | undefined;
+}
+
 const assertDirectOutcomeMatchesSource = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   receipt: ShipmentOutcomeReceipt,
   unit: OutcomeUnit,
-  override: PreservedSourceOverrideReceipt | undefined,
+  { handoff, override }: PreservedSourceEvidenceForUnit,
   expected: PlannedUnit,
   openingChanges: OpeningShipmentChange[],
   recordedAt: string
 ): void => {
   let reviewedPrimaryResultAllowed: boolean | null = null;
   let preservedSourceOverrideAllowed = false;
+  if (handoff) {
+    const issue = preservedSourceHandoffIssue(
+      lease,
+      inventory,
+      receipt,
+      unit,
+      handoff,
+      expected,
+      recordedAt
+    );
+    if (issue) {
+      throw new SimpleChangesError(
+        `Shipment outcome unit ${unit.unitId} has invalid preserved-source handoff: ${issue}.`,
+        EXIT_CODES.validation
+      );
+    }
+    // The handoff proved every scoped path's source, copy, and final entry.
+    return;
+  }
   if (override) {
     const issue = preservedSourceOverrideIssue(
       lease,
@@ -984,8 +1146,12 @@ const validateShipmentOutcomeUnits = (
   receipt: ShipmentOutcomeReceipt,
   targetDeltaPaths: Set<string>,
   renameOriginals: Map<string, string>,
-  overrides: readonly PreservedSourceOverrideReceipt[],
-  recordedAt: string
+  evidence: {
+    handoffs: readonly PreservedSourceHandoffReceipt[];
+    overrides: readonly PreservedSourceOverrideReceipt[];
+  },
+  recordedAt: string,
+  holds: readonly HeldUnitHold[]
 ): { accountedPaths: Set<string>; scopedPaths: Set<string> } => {
   const scope = lease.shipmentScope;
   if (!scope) {
@@ -994,12 +1160,26 @@ const validateShipmentOutcomeUnits = (
       EXIT_CODES.unsafe
     );
   }
+  // A held unit is preserved, never delivered or target-equivalent, so the
+  // outcome reports only the units that are not held, and a held unit's
+  // paths the target changed are external target changes.
+  const held = new Map(holds.map((hold) => [hold.unit.id, hold]));
+  const deliverableUnits = scope.plan.units.filter(
+    (unit) => !held.has(unit.id)
+  );
   const expectedUnits = new Map(
-    scope.plan.units.map((unit) => [unit.id, unit])
+    deliverableUnits.map((unit) => [unit.id, unit])
   );
   const seenUnits = new Set<string>();
   const accountedPaths = new Set<string>();
   for (const unit of receipt.units) {
+    const hold = held.get(unit.unitId);
+    if (hold) {
+      throw new SimpleChangesError(
+        `Shipment outcome unit ${unit.unitId} was held by loop hold-unit at ${hold.recordedAt}. A held unit stays preserved and is never ${unit.disposition}; remove it from units and account for any of its paths the target changed as additionalPaths.`,
+        EXIT_CODES.validation
+      );
+    }
     const expected = expectedUnits.get(unit.unitId);
     if (!expected || seenUnits.has(unit.unitId)) {
       throw new SimpleChangesError(
@@ -1036,7 +1216,12 @@ const validateShipmentOutcomeUnits = (
       inventory,
       receipt,
       unit,
-      overrides.find((item) => item.unitId === unit.unitId),
+      {
+        handoff: evidence.handoffs.find((item) => item.unitId === unit.unitId),
+        override: evidence.overrides.find(
+          (item) => item.unitId === unit.unitId
+        ),
+      },
       expected,
       scope.openingChanges,
       recordedAt
@@ -1053,7 +1238,7 @@ const validateShipmentOutcomeUnits = (
   }
   return {
     accountedPaths,
-    scopedPaths: new Set(scope.plan.units.flatMap((unit) => unit.paths)),
+    scopedPaths: new Set(deliverableUnits.flatMap((unit) => unit.paths)),
   };
 };
 
@@ -1120,16 +1305,20 @@ export interface PreservedSourceApproval {
 
 /**
  * The approval flags on `loop record-outcome` must restate every
- * preserved-source override exactly, and are refused when no override exists.
+ * preserved-source override and handoff exactly, and are refused when the
+ * outcome has neither.
  */
 const assertPreservedSourceApproval = (
-  overrides: readonly PreservedSourceOverrideReceipt[],
+  approved: readonly (
+    | PreservedSourceHandoffReceipt
+    | PreservedSourceOverrideReceipt
+  )[],
   approval: PreservedSourceApproval | undefined
 ): void => {
-  if (overrides.length === 0) {
+  if (approved.length === 0) {
     if (approval?.approvedBy || approval?.approvalReference) {
       throw new SimpleChangesError(
-        "Manual approval flags require a preserved-source override in the outcome.",
+        "Manual approval flags require a preserved-source override or handoff in the outcome.",
         EXIT_CODES.validation
       );
     }
@@ -1144,14 +1333,14 @@ const assertPreservedSourceApproval = (
     "manual preserved-source approval reference"
   );
   if (
-    overrides.some(
+    approved.some(
       (item) =>
         item.approvedBy !== approvedBy ||
         item.approvalReference !== approvalReference
     )
   ) {
     throw new SimpleChangesError(
-      "Manual preserved-source approval flags must match every exact outcome override.",
+      "Manual preserved-source approval flags must match every exact outcome override and handoff.",
       EXIT_CODES.validation
     );
   }
@@ -1241,7 +1430,8 @@ export const recordShipmentOutcome = (
   runIdInput: string,
   agentIdInput: string,
   receiptInput: unknown,
-  approval?: PreservedSourceApproval
+  approval?: PreservedSourceApproval,
+  lockWait?: LoopLockWait
 ): ShipmentOutcomeRecord => {
   const runId = requiredRunId(runIdInput);
   const agentId = requiredText(agentIdInput, "agent ID");
@@ -1258,15 +1448,15 @@ export const recordShipmentOutcome = (
   // Placeholders are refused before anything else reads the receipt, with
   // or without preserved-source overrides.
   assertNoOutcomeDraftPlaceholders(receiptInput);
-  // Overrides ride on the receipt's units but are stored beside the lease;
-  // the recorded digest covers the complete receipt, overrides included.
-  const { overrides, receipt, receiptDigest } =
+  // Overrides and handoffs ride on the receipt's units but are stored beside
+  // the lease; the recorded digest covers the complete receipt, both included.
+  const { handoffs, overrides, receipt, receiptDigest } =
     splitShipmentOutcomeInput(receiptInput);
-  assertPreservedSourceApproval(overrides, approval);
+  assertPreservedSourceApproval([...overrides, ...handoffs], approval);
   const opening = locateRepository(repositoryPath);
   // The coordination lock keeps the claim a preserved-source override binds
   // from changing between validation and the lease write.
-  return withStateLock(
+  return withLoopStateLockBounded(
     opening.repository.commonGitDirectory,
     "record shipment outcome",
     () =>
@@ -1307,14 +1497,16 @@ export const recordShipmentOutcome = (
             receipt.targetRevision
           );
           const recordedAt = new Date().toISOString();
+          const holds = readHeldUnits(lease);
           const { accountedPaths, scopedPaths } = validateShipmentOutcomeUnits(
             lease,
             inventory,
             receipt,
             targetDeltaPaths,
             renameOriginals,
-            overrides,
-            recordedAt
+            { handoffs, overrides },
+            recordedAt,
+            holds
           );
           validateAdditionalShipmentPaths(
             lease,
@@ -1324,6 +1516,13 @@ export const recordShipmentOutcome = (
             targetDeltaPaths
           );
           assertCompleteTargetDelta(lease, receipt, accountedPaths);
+          // The recorded digest also binds every held unit, so a runtime
+          // that does not know held units refuses this outcome, and a hold
+          // added, removed, or changed later no longer matches it.
+          const outcomeDigest = boundOutcomeDigest(
+            receiptDigest,
+            holds.map((hold) => hold.holdDigest)
+          );
           // A null record removes a sidecar left by an earlier outcome.
           writeReceiptSidecar(
             lease,
@@ -1332,7 +1531,19 @@ export const recordShipmentOutcome = (
               ? null
               : {
                   overrides,
-                  receiptDigest,
+                  receiptDigest: outcomeDigest,
+                  runId: lease.runId,
+                  schemaVersion: 1,
+                }
+          );
+          writeReceiptSidecar(
+            lease,
+            PRESERVED_SOURCE_HANDOFF_DIRECTORY,
+            handoffs.length === 0
+              ? null
+              : {
+                  handoffs,
+                  receiptDigest: outcomeDigest,
                   runId: lease.runId,
                   schemaVersion: 1,
                 }
@@ -1340,44 +1551,76 @@ export const recordShipmentOutcome = (
           writeLease({
             ...withMutationEvidence(lease, recordedAt),
             ownerProcess: ownerProcessEvidence(recordedAt),
-            shipmentOutcome: { receipt, receiptDigest, recordedAt },
+            shipmentOutcome: {
+              receipt,
+              receiptDigest: outcomeDigest,
+              recordedAt,
+            },
             updatedAt: recordedAt,
           });
           return {
-            receiptDigest,
+            receiptDigest: outcomeDigest,
             recordedAt,
-            summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.`,
+            summary: `Reviewed shipment outcome: ${receipt.units.length} scoped work item(s) and ${receipt.additionalPaths.length} additional final-target path(s) accounted at ${receipt.targetRevision}.${
+              holds.length > 0
+                ? ` ${holds.length} held unit(s) stay preserved and are not reported as delivered: ${holds.map((hold) => hold.unit.id).join(", ")}.`
+                : ""
+            }`,
           };
         }
-      )
+      ),
+    lockWait
   );
 };
+
+const ONE_LINE = /^[^\n]*\n$/u;
 
 export const targetTreeEntry = (
   repositoryPath: string,
   targetRevision: string,
   path: string
 ): string | null => {
-  try {
-    // A literal pathspec, so a file named like pathspec magic (`:README.md`)
-    // reads its own entry rather than another file's.
-    const output = runGit(repositoryPath, [
-      "--literal-pathspecs",
-      "ls-tree",
-      targetRevision,
-      "--",
-      path,
-    ]).stdout.trim();
-    const match = LS_TREE_ENTRY_PATTERN.exec(output);
-    return match ? `${match[1]}:${match[2]}:${match[3]}` : null;
-  } catch {
-    return null;
+  // A literal pathspec, so a file named like pathspec magic (`:README.md`)
+  // reads its own entry rather than another file's.
+  const listing = [
+    "--literal-pathspecs",
+    "ls-tree",
+    targetRevision,
+    "--",
+    path,
+  ];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const listed = runGit(repositoryPath, listing, true);
+    // A whole entry is one line ending with a line break.
+    if (listed.exitCode === 0 && ONE_LINE.test(listed.stdout)) {
+      const match = LS_TREE_ENTRY_PATTERN.exec(listed.stdout);
+      return match ? `${match[1]}:${match[2]}:${match[3]}` : null;
+    }
+    // No whole entry means the path is absent, or that Git's answer was
+    // lost, cut short, or failed. The exit code of a direct tree lookup
+    // tells them apart: it fails only when the path is absent, so a success
+    // means the answer did not arrive whole, and it is asked once more. The
+    // lookup also resolves a submodule entry whose commit is not local.
+    if (
+      runGit(
+        repositoryPath,
+        ["rev-parse", "--verify", "--quiet", `${targetRevision}:${path}`],
+        true
+      ).exitCode !== 0
+    ) {
+      return null;
+    }
   }
+  throw new SimpleChangesError(
+    `git ls-tree twice gave no whole entry for ${path} at ${targetRevision}, but the path is there, so its answer was lost; retry the command.`,
+    EXIT_CODES.inventory
+  );
 };
 
 export {
   openingScopeFailure,
   owesFirstScope,
+  preservedSourceHandoffIssue,
   preservedSourceOverrideIssue,
   worktreeSourceEntry,
 };

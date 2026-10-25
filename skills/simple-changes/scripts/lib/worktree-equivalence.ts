@@ -11,6 +11,12 @@ import {
   type BranchAuditReport,
 } from "./branch-audit.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import {
+  completeMergeBase,
+  completePatchId,
+  completeRevisionCount,
+  completeRevisionList,
+} from "./git-complete.ts";
 import { captureInventory } from "./inventory.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { gitExecutable, runGit } from "./process.ts";
@@ -20,7 +26,6 @@ import { validateSchema } from "./schema.ts";
 const EQUIVALENCE_DISCLAIMER =
   "Patch and byte evidence only; semantic equivalence requires review.";
 const RENAME_STATUSES = new Set(["R", "C"]);
-const WHITESPACE_PATTERN = /\s+/u;
 const TREE_ENTRY_PATTERN = /^(\d+)\s+(\w+)\s+([0-9a-f]+)\t/u;
 const INDEX_ENTRY_PATTERN = /^(\d+)\s+([0-9a-f]+)\s+0\t/u;
 
@@ -102,32 +107,14 @@ const rawGit = (
   return { exitCode: result.exitCode, stdout: new Uint8Array(result.stdout) };
 };
 
-const revisionList = (cwd: string, range: string): string[] =>
-  runGit(cwd, ["rev-list", "--reverse", range])
-    .stdout.split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-const patchIdFor = (cwd: string, sha: string): string | null => {
-  const diff = rawGit(cwd, [
-    "diff-tree",
-    "--patch",
-    "--no-commit-id",
-    "--full-index",
-    sha,
-  ]).stdout;
-  if (diff.length === 0) {
-    return null;
-  }
-  const output = textDecoder
-    .decode(rawGit(cwd, ["patch-id", "--stable"], diff).stdout)
-    .trim();
-  const [patchId] = output.split(WHITESPACE_PATTERN);
-  return patchId || null;
-};
-
 export interface CommitEquivalenceOptions {
   maxCommits?: number;
+  /**
+   * A merge base the caller already settled. When given, it is used as is
+   * and no `merge-base` call can fail quietly into "no merge base"; every
+   * remaining Git call throws on failure.
+   */
+  mergeBase?: string;
   targetPatchIdCache?: Map<string, Map<string, string>> | undefined;
 }
 
@@ -145,12 +132,14 @@ export const commitEquivalenceAgainstTarget = (
   targetRevision: string,
   options: CommitEquivalenceOptions = {}
 ): CommitEquivalenceResult => {
-  const mergeBaseResult = runGit(
-    repositoryPath,
-    ["merge-base", headSha, targetRevision],
-    true
-  );
-  if (mergeBaseResult.exitCode !== 0) {
+  // No common commit, or a merge base Git could not give, proves nothing,
+  // so the head reads as not fully matched; a merge base lost or cut short
+  // is refused instead.
+  const mergeBaseAnswer =
+    options.mergeBase === undefined
+      ? completeMergeBase(repositoryPath, headSha, targetRevision)
+      : { mergeBase: options.mergeBase };
+  if (!("mergeBase" in mergeBaseAnswer && mergeBaseAnswer.mergeBase)) {
     return {
       commitCount: 0,
       commits: [],
@@ -159,18 +148,13 @@ export const commitEquivalenceAgainstTarget = (
       mergeBase: null,
     };
   }
-  const mergeBase = mergeBaseResult.stdout.trim();
-  const commitCount = Number.parseInt(
-    runGit(repositoryPath, [
-      "rev-list",
-      "--count",
-      `${mergeBase}..${headSha}`,
-    ]).stdout.trim(),
-    10
+  const { mergeBase } = mergeBaseAnswer;
+  const commitCount = completeRevisionCount(
+    repositoryPath,
+    `${mergeBase}..${headSha}`
   );
   if (
     typeof options.maxCommits === "number" &&
-    Number.isInteger(commitCount) &&
     commitCount > options.maxCommits
   ) {
     return {
@@ -185,19 +169,22 @@ export const commitEquivalenceAgainstTarget = (
   const cachedTargetPatchIds = options.targetPatchIdCache?.get(targetRange);
   const targetPatchIds = cachedTargetPatchIds ?? new Map<string, string>();
   if (!cachedTargetPatchIds) {
-    for (const sha of revisionList(repositoryPath, targetRange)) {
-      const patchId = patchIdFor(repositoryPath, sha);
+    for (const sha of completeRevisionList(repositoryPath, [
+      "--reverse",
+      targetRange,
+    ])) {
+      const patchId = completePatchId(repositoryPath, sha);
       if (patchId && !targetPatchIds.has(patchId)) {
         targetPatchIds.set(patchId, sha);
       }
     }
     options.targetPatchIdCache?.set(targetRange, targetPatchIds);
   }
-  const commits: WorktreeEquivalenceCommit[] = revisionList(
+  const commits: WorktreeEquivalenceCommit[] = completeRevisionList(
     repositoryPath,
-    `${mergeBase}..${headSha}`
+    ["--reverse", `${mergeBase}..${headSha}`]
   ).map((sha) => {
-    const patchId = patchIdFor(repositoryPath, sha);
+    const patchId = completePatchId(repositoryPath, sha);
     const matchedTargetSha = patchId
       ? (targetPatchIds.get(patchId) ?? null)
       : null;

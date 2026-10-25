@@ -30,10 +30,16 @@ export const SCHEMA_NAMES = [
   "post-cleanup-recovery",
   "shipment-outcome",
   "preserved-source-override",
+  "preserved-source-handoff",
   "changelog-author",
+  "held-units",
   "remote-branch-reconciliation",
   "remote-branch-ancestry",
   "remote-branch-supersession",
+  "remote-branch-open-targets",
+  "replacement-lineage-receipt",
+  "replacement-lineage-removal",
+  "remote-branch-external-deletions",
   "remote-inventory-pages",
   "remote-inventory-decisions",
   "release-consistency",
@@ -42,6 +48,8 @@ export const SCHEMA_NAMES = [
   "proposal-audit",
   "loop-lease",
   "loop-close-equivalent",
+  "worktree-archive",
+  "worktree-archive-prune",
   "worktree-coordination",
   "worktree-takeover",
   "ready-work-receipt",
@@ -49,6 +57,7 @@ export const SCHEMA_NAMES = [
   "worktree-equivalence",
   "worktree-cleanup",
   "stale-lease-recovery",
+  "identity-receipt",
 ] as const;
 export type SchemaName = (typeof SCHEMA_NAMES)[number];
 const schemas = new Map<string, JsonSchema>();

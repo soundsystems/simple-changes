@@ -13,11 +13,9 @@ Contents:
 - Replan a frozen shipment without cleanup
 - Archive a recorded run that cannot finish
 
-Read this reference when `loop status`, `loop verify`, or finalization reports
-a blocker, a stale, relinquished, or frozen run, a released or orphaned claim,
-or a missing, late, or changed worktree; when merged work or orphaned worktrees
-have no loop to clean them up; and when an editor's or desktop app's worktree
-list is stale after cleanup. Every path here preserves uncertain work. None replaces the normal
+Read this reference whenever the [reference router](../SKILL.md#reference-router)
+sends you here, including when an editor's or desktop app's worktree list is
+stale after cleanup. Every path here preserves uncertain work. None replaces the normal
 lifecycle in `SKILL.md`: initialize, hold one lease, mutate through `loop exec`,
 verify, and finalize before every terminal response.
 
@@ -31,9 +29,9 @@ authoritative Git inventory.
 If a controller disappears before finalization, do not delete the state file or
 infer abandonment from elapsed time or a dead helper PID: helper commands exit
 between agent steps. Re-read `loop status` and follow its recovery guidance using
-explicit session authority. A stale lease can use `loop recover --stale-lease`;
-an active takeover requires the exact current run ID and manifest digest,
-approver, and reason. Any intervening manifest change invalidates takeover evidence.
+explicit session authority: [stale lease recovery](#locks-and-stale-leases) or
+[takeover](#controller-handoff-and-takeover). Any intervening manifest change
+invalidates takeover evidence.
 
 If an older relinquished run already finished cleanup but lacks opening remote
 evidence, never relabel later observations as its opening inventory; use the
@@ -74,17 +72,9 @@ it; [cleanup and completion](cleanup-and-completion.md#complete-and-finalize)
 describes how `loop recover` and the next finalization attempt account for
 either after a process dies.
 
-When a lease
-itself is stale, `loop recover --stale-lease --run-id "$RUN_ID" --agent-id
-"$AGENT_ID" --approved-by "$USER" --reason "$WHY"` clears the bookkeeping
-record on explicit user authority while preserving every worktree and receipt.
-Reuse session authority that already covers this recovery. A dead helper PID or
-old heartbeat alone does not establish that the owning agent has stopped.
-
-**Stale lease recovery.** A lease whose owner died mid-run used to block every
-other agent in the repository until a human-approved `loop takeover`. Each
-operation that already writes lease state now records a heartbeat: the lease's
-`updatedAt` plus the owner process identity. A lease is `live` while that
+**Stale lease recovery.** Each operation that writes lease state records a
+heartbeat: the lease's `updatedAt` plus the owner process identity. A lease is
+`live` while that
 process is provably running or the heartbeat is recent, `stale` only when the
 owner cannot be proven alive and the heartbeat is older than the published
 threshold, and `unknown` when its timestamp cannot be parsed. `loop status`
@@ -96,7 +86,9 @@ terminal records, and preserves every worktree, branch, claim, and durable
 receipt. It clears the bookkeeping record only, never user work; run `prune`
 afterward to reconcile whatever local cleanup the dead owner never finished.
 (`loop recover --agent-id <you>` still recovers a dead *lock*; run it first if
-one remains.)
+one remains.) Reuse session authority that already covers this recovery. A dead
+helper PID or old heartbeat alone does not establish that the owning agent has
+stopped.
 Do not clear another task's run merely to complete a concurrent prune request.
 If that task is still shipping, defer its cleanup; recover the run only on
 explicit recovery authority after checking its owner.
@@ -172,38 +164,42 @@ exceptional user-approved override path.
 ## Absent and obsolete worktrees
 
 For changed opening work that later becomes obsolete, use `loop dispose-worktree`
-only after proving it clean with zero unique commits. When a preserved checkout,
-including one registered by `loop rebaseline`, has been removed by its owning
-task, record that absence with `loop retire-absent-worktree` on named approval;
-it requires the path to be gone from disk and from Git's worktree list, deletes
-nothing, and proves no delivery. A worktree the run's own finalization removed
-needs no retirement: its completed removal disposition keeps accepting the
-absence after a resume, even once a guarded fetch moves the target.
+only after proving it clean with zero unique commits.
 
-If a preserved worktree the run did not create, whether registered at loop
-start, adopted, or added by `loop rebaseline`, has already disappeared because
-its owning task removed it, `loop retire-absent-worktree` records the absence
-instead. It
-accepts only a path missing from disk and from the live worktree list, needs
-the loop owner and a named approver, binds to the exact registered baseline,
-and leaves branches, claims, and delivery proof untouched.
+When a preserved checkout the run did not create, whether registered at loop
+start, adopted, or added by `loop rebaseline`, has already been removed by its
+owning task, the loop owner records `loop retire-absent-worktree` with a named
+approver and reason. It requires the path to be absent from both the
+filesystem and `git worktree list`, binds to the exact registered baseline,
+writes an immutable retirement receipt, and clears only the missing-worktree
+violation. It never deletes anything, never proves a scoped unit was
+delivered, never authorizes branch cleanup, and leaves branches and claims
+untouched; do not recreate a deleted checkout merely to satisfy the record. A
+worktree the run's own finalization removed needs no retirement: its completed
+removal disposition keeps accepting the absence after a resume, even once a
+guarded fetch moves the target.
 
-When a
-preserved checkout has already been removed by its owning task, whether it
-was registered at loop start, adopted, or added by `loop rebaseline`, record
-`loop retire-absent-worktree` with a named approver and reason. It requires
-the path to be absent from both the filesystem and `git worktree list`,
-binds to the exact registered baseline, writes an immutable retirement
-receipt, and clears only the missing-worktree violation. It never deletes
-anything, never proves a scoped unit was delivered, and never authorizes
-branch cleanup; do not recreate a deleted checkout merely to satisfy the
-record.
+A run-created authoring checkout whose work reached the target inside a
+broader commit fails ancestry and patch-equivalence containment, so automatic
+cleanup keeps it. After the user approves removing that checkout, keep its
+branch and record `loop retire-absent-worktree` on the same approval. For a
+run-created registration it also requires exact-byte target proof: the branch
+still exists under its exact registered name, is unique to that registration
+and checked out nowhere, and every path its commits since the merge base
+touched equals the current target's bytes. A byte difference, a missing or
+shared branch, or a merge commit in that range refuses with nothing recorded.
+The proof goes in its own immutable recovery-history record, not the lease,
+and accounts for the checkout in verification, `loop close-equivalent`, and
+`loop recover-post-cleanup` only while the branch stays at the proven head, so
+automatic cleanup keeps that branch; a moved or deleted branch ends the
+retirement. It deletes nothing, forces no Git operation, and claims no
+ancestry or delivery.
 
 ## Repair bookkeeping after cleanup
 
 A legacy ledger may lack persisted opening evidence even though cleanup already
-finished. Do not fabricate an initial inventory from later observations.
-`loop recover-post-cleanup` is the recovery for already-complete cleanup (and
+finished. Do not fabricate an initial inventory from later observations; `loop
+recover-post-cleanup` is the recovery for already-complete cleanup (and
 `loop close-equivalent` below for work already contained in the target): it
 needs explicit approval,
 two complete matching final inventories observed at increasing times, exact
@@ -328,7 +324,9 @@ as an audited re-baseline. Registered late arrivals stay owner-controlled and
 untouched; if one changes afterward, verification blocks again until its owner
 coordinates or an exact `loop allow` override is approved. Re-baseline grants
 no mutation, cleanup, or shipping authority over the registered worktrees and
-never obligates them in a later `close-equivalent` proof.
+never obligates them in a later `close-equivalent` proof. Automatic cleanup in
+`loop end` and `loop close-equivalent` leaves them in place even when they are
+clean and the target contains them, and they do not block the run from ending.
 
 **Standalone cleanup.** When no loop record exists at all and orphaned
 worktrees remain, `worktree cleanup --agent-id <you> --approved-by <who>
@@ -337,7 +335,13 @@ shipment. It removes only what is proven safe right now: an unclaimed clean
 worktree whose head the refreshed target contains by exact ancestry or
 complete per-commit patch equivalence, and stale metadata whose directory no
 longer exists; it then releases orphaned claims whose worktree is gone and
-records them as `releasedClaims` on the receipt. Like
+records them as `releasedClaims` on the receipt. With `--lineage-receipt
+<file>` it also removes the one clean checkout that the
+[reviewed lineage receipt](replacement-lineage.md#remove-a-reviewed-replaced-checkout)
+names, after archiving it (`worktree restore-archive --archive <id>`
+brings it back until the archive expires; see
+[archive retention](replacement-lineage.md#archive-retention)), and it
+prunes expired archives at the end of a successful pass. Like
 [finalization](cleanup-and-completion.md#complete-and-finalize), it never
 removes a worktree's parent folder; it names the empty managed
 `.simple-changes-worktrees` folders older runtimes created in the
@@ -354,13 +358,7 @@ instead.
 ## Cleanup without a loop
 
 Cleanup is not tied to finalization. When work is merged but no loop will
-finalize it, run `prune --approved-by "$USER" --reason "$WHY"` (add
-`--dry-run` to see the plan first): it applies the same proven-safe audit
-without a lease, naming the containment method for every removal, and defers
-anything registered by an open lease to that run's controller. A stale heartbeat
-or released author claim never authorizes removing its registrations. Use the
-controller's audited removal path or wait for closure; never bypass this with
-raw Git removal or filesystem deletion.
+finalize it, run lease-less `prune` (add `--dry-run` to see the plan first).
 
 **Lease-less prune.** Cleanup that only ever runs inside `loop finalize`
 leaves residue whenever an agent merges its work and stops, merges outside a
@@ -374,7 +372,17 @@ contains by the same two proofs. Each disposition names its containment method
 (`target-contained` or `patch-equivalent`), and everything preserved is named
 with its reason: the primary checkout, the target branch, any dirty or
 actively claimed checkout, every path or branch registered by an open lease,
-and any branch beyond the patch-equivalence commit bound. Prune defers the
+and any branch beyond the patch-equivalence commit bound. A clean checkout
+whose work shipped through changed replacement commits stays preserved unless
+`--agent-id <you> --lineage-receipt <file>` supplies a user-approved,
+independently reviewed
+[lineage receipt](replacement-lineage.md#remove-a-reviewed-replaced-checkout);
+prune then archives it, pins its head and every object it names, and removes
+it as `reviewed-replacement`, or refuses the whole run, writing nothing;
+`worktree restore-archive --archive <id>` brings the checkout back until the
+archive expires, and prune reports the expired archives it pruned at the end
+of a successful pass ([archive
+retention](replacement-lineage.md#archive-retention)). Prune defers the
 lease's registered work to its controller, even when the run is stale or
 relinquished, and cleans only eligible unrelated state. An old heartbeat or
 released claim is not removal authority. For registered cleanup, use the
@@ -418,7 +426,8 @@ Do not edit the lease or widen its frozen scope by hand.
    `--status-digest <observed-status> --approved-by <user> --reason <reason>`.
    Both commands must use the same checkout: inventory digests include checkout
    identity. Any change to the bound evidence requires a fresh observation and
-   approval. An earlier approval to ship does not by itself authorize replan.
+   approval, except a verified owner release (below). An earlier approval to
+   ship does not by itself authorize replan.
 3. Keep the returned `replanned` receipt and start a fresh loop through the normal
    workflow. Inventory and reconcile all remaining work and provider truth;
    replan does not prove that earlier merge or deployment actions never occurred.
@@ -446,6 +455,44 @@ touching a newer active loop. A crash before the move can retry the exact reques
 if work changed meanwhile, a newly approved request creates a separate attempt
 and preserves the earlier intent. Never delete or modify an intent to retry.
 
+**When a concurrent owner releases its claim during the approval.**
+`loop replan-status` keeps each observation it shows at
+`<common-git-dir>/simple-changes/history/<run-id>/status-observations/<status-digest>.json`.
+When the current observation no longer matches the approved status digest,
+replan compares the two exactly. It keeps the approval only when every
+difference is a verified owner release and the source inventory digest and
+target revision are unchanged:
+
+- the claim's own owner released its own live claim, with `worktree release`
+  (`owner-release`) or a completed-work handoff (`handoff`), and the release
+  event is that owner's;
+- the release recorded the checkout's branch, head and status digest at
+  release time, and they equal the checkout the approval observed (path,
+  branch, head, status digest);
+- no other claim now holds that checkout, and no claim field changed except
+  its state, release reason, time and recorded checkout evidence.
+
+Any other difference refuses: a changed source or target; a new, removed or
+reassigned claim; a takeover; a release by another agent, without recorded
+checkout state, or with other evidence; a changed pause receipt; a
+rewritten, repeated or unexplained coordination event; or claims reordered
+beyond the release moving its own claim to the end. The refusal prints the exact delta with the
+approved and current coordination digests, and changes nothing. Review that
+delta with the user and get a fresh approval from a new `loop replan-status`.
+A stored observation that is missing or no longer matches its digest refuses
+the same way, without a delta.
+
+An accepted delta is recorded in the attempt directory as
+`replan-approval-delta.json`, before the lease moves: the approved and current
+status and coordination digests, the current observation, the exact inventory
+text whose digest the approval bound, and each accepted release. `replan.json` keeps the approved observation and its existing format,
+which older runtimes validate; an older runtime retrying such an attempt
+before the move refuses, because the current observation differs from the
+approved one. A retry after a crash proves the same delta again and must find
+exactly the recorded one, and every retry re-derives the recorded releases
+from the two recorded observations and the recorded inventory, which must
+still hash to the approved inventory digest. `loop archive-recorded` applies the same rule.
+
 ## Archive a recorded run that cannot finish
 
 `loop replan` refuses a run that already recorded a shipment outcome. When such
@@ -471,7 +518,8 @@ with a recorded outcome, and `loop replan-status` returns it as `nextCommand`.
 
 It requires an intact, nonempty historical receipt: the receipt's run ID matches
 the lease, its digest matches the recorded one (together with any
-[preserved-source overrides](focused-units.md#preserved-source-override) stored
+[preserved-source overrides](focused-units.md#preserved-source-override) and
+[handoffs](focused-units.md#preserved-source-handoff) stored
 beside the lease, which must be present and unchanged), every recorded path's entry
 matches the receipt's target tree, and the current target contains that target
 revision. It still refuses unfinished author preparations, target-equivalent

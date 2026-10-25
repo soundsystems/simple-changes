@@ -1,14 +1,21 @@
 import { createHash } from "node:crypto";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import {
+  holdReasons,
+  mergedHeadDeletionCandidate,
+  type RemoteBranchHolds,
+} from "./remote-branch-prune.ts";
+import {
   coverageDigest,
   remoteInventoryDigest,
   splitRemoteBranchReconciliationInput,
+  validateLedgerBranchEntry,
   validateOpeningRemoteInventory,
   validateRemoteBranchReconciliation,
 } from "./remote-branch-reconciliation.ts";
 import { validateSchema } from "./schema.ts";
 import type {
+  RemoteBranchOpenProposalTarget,
   RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
   RemoteInventoryCoverage,
@@ -49,6 +56,8 @@ export interface RemoteInventoryPages {
   proposalPages: Array<{
     cursorIn: string | null;
     cursorOut: string | null;
+    /** Every open proposal on the raw page, from any project, and its target. */
+    openProposalTargets?: RemoteBranchOpenProposalTarget[];
     proposals: RemoteInventoryProposalItem[];
     responseDigest?: string;
   }>;
@@ -76,6 +85,13 @@ type ProposalRecord = RemoteBranchReconciliationEntry["proposals"][number];
 
 /** A receipt branch entry as `loop reconcile-remote-branches` accepts it. */
 export type RemoteInventoryBranchEntry = RemoteBranchReconciliationEntry & {
+  /**
+   * An opening branch deleted outside the run: no merged proposal or decision
+   * proves it obsolete, so the build records it without claiming delivery,
+   * merge, or obsolescence. `loop reconcile-remote-branches` keeps it in a
+   * sidecar and pins the last head when it is present locally.
+   */
+  externalDeletion?: { lastHeadRevision: string };
   mergedHeadAncestry?: {
     initialHeadRevision: string;
     mergedHeadRevision: string;
@@ -89,7 +105,28 @@ export type RemoteInventoryBranchEntry = RemoteBranchReconciliationEntry & {
 export type RemoteInventoryReceipt = Omit<
   RemoteBranchReconciliationReceipt,
   "branches"
-> & { branches: RemoteInventoryBranchEntry[] };
+> & {
+  branches: RemoteInventoryBranchEntry[];
+  /** Final receipts only, and only when every proposal page listed them. */
+  openProposalTargets?: RemoteBranchOpenProposalTarget[];
+};
+
+/**
+ * A preserved branch the build proposes deleting. It is only a proposal: each
+ * deletion still goes through `loop guard`, an exact provider deletion,
+ * `loop verify`, and a fresh final inventory that records it.
+ */
+export interface RemoteInventoryDeletionProposal {
+  basis: "merged-proposal-head" | "decision";
+  headRevision: string;
+  name: string;
+  proof:
+    | "merged-proposal-head"
+    | "target-contains-head"
+    | "provider-diff-empty"
+    | "supersession";
+  proposalObjectId?: string;
+}
 
 export interface RemoteInventoryBuild {
   phase: "opening" | "final";
@@ -98,16 +135,43 @@ export interface RemoteInventoryBuild {
     arrivedBranches: string[];
     branches: number;
     deletedBranches: string[];
+    deletionProposals: RemoteInventoryDeletionProposal[];
+    /**
+     * Opening branches deleted outside the run, which no merged proposal or
+     * decision proves obsolete. Also listed in `deletedBranches`.
+     */
+    externallyDeletedBranches: Array<{
+      lastHeadRevision: string;
+      name: string;
+    }>;
+    /** Merged-proposal heads not proposed, with every reason. */
+    heldBranches: Array<{
+      headRevision: string;
+      name: string;
+      reasons: string[];
+    }>;
     movedBranches: string[];
     proposals: number;
     targetRevision: string;
   };
 }
 
+/**
+ * Local holds for the final build, resolved once the target revision is
+ * known. It throws when the holds cannot be read, and the build then proposes
+ * nothing.
+ */
+export type RemoteInventoryHoldResolver = (
+  targetBranch: string,
+  targetRevision: string
+) => RemoteBranchHolds;
+
 interface Snapshot {
   branches: Map<string, RemoteInventoryBranchItem>;
   branchPages: RemoteInventoryPages["branchPages"];
   input: RemoteInventoryPages;
+  /** Null when any proposal page omits its open proposal targets. */
+  openTargets: RemoteBranchOpenProposalTarget[] | null;
   proposalPages: RemoteInventoryPages["proposalPages"];
   proposalsByBranch: Map<string, ProposalRecord[]>;
   target: RemoteInventoryBranchItem;
@@ -147,6 +211,47 @@ const assertCursorChain = (
       );
     }
   }
+};
+
+/**
+ * Open proposal targets are known only when every proposal page lists them,
+ * and each list must name every open proposal its own page carries, so a
+ * fetcher that dropped one cannot hide a target.
+ */
+const readOpenTargets = (
+  input: RemoteInventoryPages
+): RemoteBranchOpenProposalTarget[] | null => {
+  if (input.proposalPages.some((page) => !page.openProposalTargets)) {
+    return null;
+  }
+  const targets: RemoteBranchOpenProposalTarget[] = [];
+  const seen = new Set<string>();
+  for (const [index, page] of input.proposalPages.entries()) {
+    const listed = page.openProposalTargets ?? [];
+    for (const target of listed) {
+      if (seen.has(target.objectId)) {
+        fail(
+          `open proposal ${target.objectId} is listed twice in openProposalTargets; the provider listing shifted during pagination, so fetch it again`
+        );
+      }
+      seen.add(target.objectId);
+      targets.push({
+        objectId: target.objectId,
+        targetBranch: target.targetBranch,
+      });
+    }
+    for (const proposal of page.proposals) {
+      if (
+        proposal.state === "open" &&
+        !listed.some((target) => target.objectId === proposal.objectId)
+      ) {
+        fail(
+          `open proposal ${proposal.objectId} on proposal page ${index + 1} is missing from that page's openProposalTargets`
+        );
+      }
+    }
+  }
+  return targets.sort((left, right) => byName(left.objectId, right.objectId));
 };
 
 const readSnapshot = (value: unknown): Snapshot => {
@@ -190,6 +295,7 @@ const readSnapshot = (value: unknown): Snapshot => {
     branches,
     branchPages: input.branchPages,
     input,
+    openTargets: readOpenTargets(input),
     proposalPages: input.proposalPages,
     proposalsByBranch,
     target: target as RemoteInventoryBranchItem,
@@ -367,6 +473,9 @@ const buildOpening = (snapshot: Snapshot): RemoteInventoryBuild => {
       arrivedBranches: [],
       branches: branches.length,
       deletedBranches: [],
+      deletionProposals: [],
+      externallyDeletedBranches: [],
+      heldBranches: [],
       movedBranches: [],
       proposals: branches.reduce(
         (total, branch) => total + branch.proposals.length,
@@ -521,9 +630,19 @@ const deletedEntry = (
     return { ...base, ...merged };
   }
   if (!decision) {
-    return fail(
-      `branch ${opening.name} (opening head ${initialHead}) was deleted without a merged proposal that proves it obsolete; add a --decisions entry naming target-contains-head, provider-diff-empty, or a user-approved supersession, or report it to the user`
-    );
+    // Nothing proves the work obsolete and this run never proposed or
+    // approved deleting it, so it was deleted outside the run. Record that
+    // truthfully: ambiguous, with no proof, and never delivered or obsolete.
+    return {
+      ...base,
+      classification: "ambiguous",
+      disposition: "deleted-proven-obsolete",
+      evidence: [
+        `Deleted outside this run: present at ${initialHead} in the opening inventory and absent from the final inventory, with no merged proposal or decision that proves it obsolete. This records no delivery, merge, or obsolescence; its last known head is ${initialHead}.`,
+      ],
+      externalDeletion: { lastHeadRevision: initialHead },
+      obsoleteProof: null,
+    };
   }
   // The validator judges an audited deletion by the final proposal records.
   const states = new Set(finalRecords.map((proposal) => proposal.state));
@@ -588,7 +707,7 @@ const presentEntry = (
 
 const assertDecisionsUsed = (
   decisions: RemoteInventoryDecisions | null,
-  deleted: ReadonlySet<string>
+  used: ReadonlySet<string>
 ): void => {
   const names = (decisions?.deletedBranches ?? []).map(
     (decision) => decision.name
@@ -596,18 +715,174 @@ const assertDecisionsUsed = (
   if (new Set(names).size !== names.length) {
     fail("each deleted branch may have only one decision");
   }
-  const unused = names.filter((name) => !deleted.has(name));
+  const unused = names.filter((name) => !used.has(name));
   if (unused.length > 0) {
     fail(
-      `decisions name branches that were not deleted during the run: ${unused.join(", ")}`
+      `decisions name branches that were neither deleted during the run nor present in both inventories: ${unused.join(", ")}`
     );
   }
+};
+
+/** Why the build cannot propose deleting a branch at a head, if anything. */
+type DeletionBlockers = (name: string, headRevision: string) => string[];
+
+const deletionBlockers = (
+  snapshot: Snapshot,
+  resolveHolds: RemoteInventoryHoldResolver | undefined
+): DeletionBlockers => {
+  const general: string[] = [];
+  let holds: RemoteBranchHolds | null = null;
+  if (resolveHolds) {
+    try {
+      holds = resolveHolds(
+        snapshot.input.targetBranch,
+        snapshot.target.headRevision
+      );
+    } catch (error) {
+      general.push(
+        `live worktrees and claims could not be checked (${error instanceof Error ? error.message : String(error)})`
+      );
+    }
+  } else {
+    general.push(
+      "no repository was available to check live worktrees and claims"
+    );
+  }
+  if (snapshot.openTargets === null) {
+    general.push(
+      "the proposal pages do not list open proposal targets, so an open proposal targeting the branch cannot be ruled out"
+    );
+  }
+  return (name, headRevision) => [
+    ...general,
+    ...(holds
+      ? holdReasons(name, headRevision, holds, snapshot.openTargets)
+      : []),
+  ];
+};
+
+/**
+ * A decision for a branch still present approves deleting it: the build
+ * proposes the deletion, and once the branch is gone the same decision
+ * records it. Rather than restating the receipt's rules, it builds the entry
+ * exactly as the later build will and judges it with the receipt's own
+ * per-branch validator, so a proposal is made only when the identical
+ * decision will record the deletion. On top of that it refuses what the
+ * receipt cannot see: a head that moved during the run (the receipt would
+ * check the opening head, not the deleted one), an open proposal into the
+ * branch, and a live worktree or claim.
+ */
+const presentDecisionProposal = (
+  opening: RemoteBranchReconciliationEntry,
+  current: RemoteInventoryBranchItem,
+  proposals: ProposalRecord[],
+  decisions: RemoteInventoryDecisions,
+  target: { targetBranch: string; targetRevision: string },
+  blockers: DeletionBlockers
+): RemoteInventoryDeletionProposal => {
+  const { name } = current;
+  const head = current.headRevision;
+  const refuse = (why: string): never =>
+    fail(`the decision for ${name} cannot approve deleting it: ${why}`);
+  const reason = (error: unknown): string =>
+    (error instanceof Error ? error.message : String(error)).replace(
+      "Cannot build the remote inventory: ",
+      ""
+    );
+  if (name === target.targetBranch || current.protected) {
+    refuse("it is the canonical target or a protected branch");
+  }
+  if (opening.initialHeadRevision !== head) {
+    refuse(
+      `its head moved from ${opening.initialHeadRevision} to ${head} during the run; decide it from the next run's opening inventory`
+    );
+  }
+  let deleted: RemoteInventoryBranchEntry;
+  try {
+    deleted = deletedEntry(opening, proposals, decisions);
+  } catch (error) {
+    return refuse(
+      `once it is deleted, the build would refuse it (${reason(error)})`
+    );
+  }
+  const { externalDeletion, mergedHeadAncestry, supersession, ...entry } =
+    deleted;
+  if (externalDeletion) {
+    return refuse("it has no decision to record its deletion");
+  }
+  if (mergedHeadAncestry || entry.disposition === "deleted-merged") {
+    return refuse("its merged proposal already proves it; remove its decision");
+  }
+  try {
+    validateLedgerBranchEntry(
+      entry,
+      target,
+      supersession ? { ...supersession, branch: name } : undefined
+    );
+  } catch (error) {
+    refuse(
+      `once it is deleted, the receipt would refuse it (${reason(error)})`
+    );
+  }
+  const reasons = blockers(name, head);
+  if (reasons.length > 0) {
+    refuse(reasons.join("; "));
+  }
+  return {
+    basis: "decision",
+    headRevision: head,
+    name,
+    proof: entry.obsoleteProof ?? "supersession",
+  };
+};
+
+/**
+ * Merged-proposal heads the provider proves finished, split into deletion
+ * proposals and branches held back with every reason.
+ */
+const mergedHeadProposals = (
+  branches: readonly RemoteInventoryBranchEntry[],
+  targetBranch: string,
+  decided: ReadonlySet<string>,
+  blockers: DeletionBlockers
+): Pick<
+  RemoteInventoryBuild["summary"],
+  "deletionProposals" | "heldBranches"
+> => {
+  const deletionProposals: RemoteInventoryDeletionProposal[] = [];
+  const heldBranches: RemoteInventoryBuild["summary"]["heldBranches"] = [];
+  for (const branch of branches) {
+    const candidate = decided.has(branch.name)
+      ? null
+      : mergedHeadDeletionCandidate(branch, targetBranch);
+    if (!candidate) {
+      continue;
+    }
+    const reasons = blockers(branch.name, candidate.headRevision);
+    if (reasons.length > 0) {
+      heldBranches.push({
+        headRevision: candidate.headRevision,
+        name: branch.name,
+        reasons,
+      });
+      continue;
+    }
+    deletionProposals.push({
+      basis: "merged-proposal-head",
+      headRevision: candidate.headRevision,
+      name: branch.name,
+      proof: "merged-proposal-head",
+      proposalObjectId: candidate.proposalObjectId,
+    });
+  }
+  return { deletionProposals, heldBranches };
 };
 
 const buildFinal = (
   snapshot: Snapshot,
   openingValue: unknown,
-  decisions: RemoteInventoryDecisions | null
+  decisions: RemoteInventoryDecisions | null,
+  resolveHolds: RemoteInventoryHoldResolver | undefined
 ): RemoteInventoryBuild => {
   const opening = validateOpeningRemoteInventory(openingValue);
   const { input } = snapshot;
@@ -623,6 +898,8 @@ const buildFinal = (
   const openingNames = new Set(opening.branches.map((branch) => branch.name));
   const deleted = new Set<string>();
   const moved: string[] = [];
+  const blockers = deletionBlockers(snapshot, resolveHolds);
+  const approved: RemoteInventoryDeletionProposal[] = [];
   const branches: RemoteInventoryBranchEntry[] = opening.branches.map(
     (openingBranch) => {
       const current = snapshot.branches.get(openingBranch.name);
@@ -653,6 +930,21 @@ const buildFinal = (
       ) {
         moved.push(current.name);
       }
+      if (decisions && decisionFor(decisions, current.name) !== undefined) {
+        approved.push(
+          presentDecisionProposal(
+            openingBranch,
+            current,
+            proposals,
+            decisions,
+            {
+              targetBranch: input.targetBranch,
+              targetRevision: snapshot.target.headRevision,
+            },
+            blockers
+          )
+        );
+      }
       return presentEntry(
         openingBranch,
         current,
@@ -661,7 +953,8 @@ const buildFinal = (
       );
     }
   );
-  assertDecisionsUsed(decisions, deleted);
+  const decided = new Set(approved.map((proposal) => proposal.name));
+  assertDecisionsUsed(decisions, new Set([...deleted, ...decided]));
   const arrived = [...snapshot.branches.keys()]
     .filter((name) => !openingNames.has(name))
     .sort(byName);
@@ -706,12 +999,16 @@ const buildFinal = (
       "final",
       coveragePages(snapshot, ledgerNames)
     ),
+    ...(snapshot.openTargets
+      ? { openProposalTargets: snapshot.openTargets }
+      : {}),
   };
   const split = splitRemoteBranchReconciliationInput(receipt);
   const validated = validateRemoteBranchReconciliation(
     split.receipt,
     split.ancestryProofs,
-    split.supersessions
+    split.supersessions,
+    split.externalDeletions
   );
   if (
     remoteInventoryDigest(opening, "final") !==
@@ -719,6 +1016,12 @@ const buildFinal = (
   ) {
     fail("the final receipt does not begin from the exact opening inventory");
   }
+  const merged = mergedHeadProposals(
+    branches,
+    input.targetBranch,
+    decided,
+    blockers
+  );
   return {
     phase: "final",
     receipt,
@@ -726,6 +1029,12 @@ const buildFinal = (
       arrivedBranches: arrived,
       branches: snapshot.branches.size,
       deletedBranches: [...deleted],
+      deletionProposals: [...merged.deletionProposals, ...approved],
+      externallyDeletedBranches: split.externalDeletions.map((deletion) => ({
+        lastHeadRevision: deletion.lastHeadRevision,
+        name: deletion.branch,
+      })),
+      heldBranches: merged.heldBranches,
       movedBranches: moved,
       proposals: branches.reduce(
         (total, branch) =>
@@ -748,7 +1057,11 @@ const buildFinal = (
  */
 export const buildRemoteInventory = (
   pages: unknown,
-  options: { decisions?: unknown; opening?: unknown } = {}
+  options: {
+    decisions?: unknown;
+    opening?: unknown;
+    resolveHolds?: RemoteInventoryHoldResolver;
+  } = {}
 ): RemoteInventoryBuild => {
   const snapshot = readSnapshot(pages);
   if (options.opening === undefined) {
@@ -764,5 +1077,5 @@ export const buildRemoteInventory = (
           "remote-inventory-decisions",
           options.decisions
         );
-  return buildFinal(snapshot, options.opening, decisions);
+  return buildFinal(snapshot, options.opening, decisions, options.resolveHolds);
 };

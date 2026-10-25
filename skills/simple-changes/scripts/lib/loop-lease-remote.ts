@@ -13,6 +13,8 @@ import {
   MISSING_REMOTE_RECONCILIATION_BLOCKER,
   ownerProcessEvidence,
   REMOTE_BRANCH_ANCESTRY_DIRECTORY,
+  REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY,
+  REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY,
   REMOTE_BRANCH_SUPERSESSION_DIRECTORY,
   REMOTE_RECONCILIATION_MODES,
   readReceiptSidecar,
@@ -29,6 +31,16 @@ import {
 import { verificationAgainst } from "./loop-lease-verify.ts";
 import { runGit } from "./process.ts";
 import {
+  EXTERNAL_DELETION_PIN_RETENTION_MS,
+  type ExternalDeletionPin,
+  externalDeletionPinRef,
+  listExternalDeletionPins,
+  liveExternalDeletionPin,
+} from "./remote-branch-prune.ts";
+import {
+  externalDeletionsForReceipt,
+  isExternalDeletionShape,
+  openProposalTargetsForReceipt,
   remoteBranchReconciliationDigest,
   remoteInventoryDigest,
   splitRemoteBranchReconciliationInput,
@@ -41,6 +53,11 @@ import type {
   LoopLease,
   RemoteBranchAncestryProof,
   RemoteBranchAncestryRecord,
+  RemoteBranchExternalDeletion,
+  RemoteBranchExternalDeletionRecord,
+  RemoteBranchOpenProposalTarget,
+  RemoteBranchOpenTargetsRecord,
+  RemoteBranchReconciliationEntry,
   RemoteBranchReconciliationReceipt,
   RemoteBranchSupersession,
   RemoteBranchSupersessionRecord,
@@ -96,6 +113,173 @@ const writeRemoteBranchSupersession = (
           }
         )
   );
+
+/**
+ * Open proposal targets follow the same sidecar rules. They only narrow the
+ * cleanup report `loop finalize` writes, so a missing or mismatched record
+ * reads as unknown targets, which reports more branches as pending, not fewer.
+ */
+const writeRemoteBranchOpenTargets = (
+  lease: LoopLease,
+  receipt: RemoteBranchReconciliationReceipt,
+  targets: RemoteBranchOpenProposalTarget[] | null
+): void =>
+  writeReceiptSidecar(
+    lease,
+    REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY,
+    targets === null
+      ? null
+      : validateSchema<RemoteBranchOpenTargetsRecord>(
+          "remote-branch-open-targets",
+          {
+            openProposalTargets: targets,
+            receiptDigest: remoteBranchReconciliationDigest(receipt),
+            runId: lease.runId,
+            schemaVersion: 1,
+          }
+        )
+  );
+
+/**
+ * Pins the last head of each branch deleted outside the run, when Git has it
+ * and no pin of this run already keeps it, at
+ * `refs/simple-changes/external/<runId>/<head>/<ms>`, so gc cannot remove
+ * the work while the user decides. The pin's time is in its name, so a pin
+ * that exists always has a known age and a failed one leaves nothing. A head
+ * that is not present locally is reported later, unpinned; it never stops
+ * the record.
+ */
+const pinExternallyDeletedHeads = (
+  repositoryPath: string,
+  runId: string,
+  deletions: readonly RemoteBranchExternalDeletion[]
+): void => {
+  for (const { branch, lastHeadRevision } of deletions) {
+    if (
+      liveExternalDeletionPin(repositoryPath, runId, lastHeadRevision) ||
+      runGit(
+        repositoryPath,
+        ["cat-file", "-e", `${lastHeadRevision}^{commit}`],
+        true
+      ).exitCode !== 0
+    ) {
+      continue;
+    }
+    const pinned = runGit(
+      repositoryPath,
+      [
+        "update-ref",
+        "-m",
+        `simple-changes: pin ${branch}, deleted outside ${runId}`,
+        externalDeletionPinRef(runId, lastHeadRevision, Date.now()),
+        lastHeadRevision,
+      ],
+      true
+    );
+    if (pinned.exitCode !== 0) {
+      throw new SimpleChangesError(
+        `Could not pin last head ${lastHeadRevision} of ${branch}, which was deleted outside this run: ${pinned.stderr.trim()}. The reconciliation was not recorded; fix the Git error and record the final reconciliation again.`,
+        EXIT_CODES.unsafe
+      );
+    }
+  }
+};
+
+/**
+ * Branches deleted outside the run live beside the lease, one immutable file
+ * per receipt, named by its digest. A record writes only its own receipt's
+ * file and never reads, rewrites, or removes another, so a record that fails
+ * or is interrupted before the lease write cannot take evidence away from the
+ * receipt the lease already holds.
+ */
+const writeRemoteBranchExternalDeletions = (
+  lease: LoopLease,
+  receipt: RemoteBranchReconciliationReceipt,
+  deletions: RemoteBranchExternalDeletion[]
+): void => {
+  if (deletions.length === 0) {
+    return;
+  }
+  const receiptDigest = remoteBranchReconciliationDigest(receipt);
+  writeReceiptSidecar(
+    lease,
+    REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY,
+    validateSchema<RemoteBranchExternalDeletionRecord>(
+      "remote-branch-external-deletions",
+      { deletions, receiptDigest, runId: lease.runId, schemaVersion: 1 }
+    ),
+    receiptDigest
+  );
+};
+
+export interface ExpiredExternalDeletionPins {
+  errors: string[];
+  removed: string[];
+}
+
+/**
+ * Removes pins of branches deleted outside earlier runs once their retention
+ * has passed. It reads only refs: a ref of exactly the shape this module makes
+ * whose value is its own head, from a run other than `currentRunId`, made
+ * more than the retention ago by the time in its name. Each removal names the
+ * exact old value, so a ref that changed meanwhile is kept.
+ */
+export const pruneExpiredExternalDeletionPins = (
+  repositoryPath: string,
+  currentRunId: string,
+  now: number = Date.now()
+): ExpiredExternalDeletionPins => {
+  const result: ExpiredExternalDeletionPins = { errors: [], removed: [] };
+  let pins: ExternalDeletionPin[];
+  try {
+    pins = listExternalDeletionPins(repositoryPath);
+  } catch (error) {
+    result.errors.push(error instanceof Error ? error.message : String(error));
+    return result;
+  }
+  for (const pin of pins) {
+    if (
+      pin.runId === currentRunId ||
+      now - pin.pinnedAtMs < EXTERNAL_DELETION_PIN_RETENTION_MS
+    ) {
+      continue;
+    }
+    const removal = runGit(
+      repositoryPath,
+      ["update-ref", "-d", pin.ref, pin.head],
+      true
+    );
+    if (removal.exitCode === 0) {
+      result.removed.push(pin.ref);
+    } else {
+      result.errors.push(
+        `Could not remove expired pin ${pin.ref}: ${removal.stderr.trim() || `exit ${removal.exitCode}`}`
+      );
+    }
+  }
+  return result;
+};
+
+/** The open proposal targets recorded with the lease's receipt, or null. */
+export const recordedOpenProposalTargets = (
+  lease: LoopLease
+): RemoteBranchOpenProposalTarget[] | null => {
+  const receipt = lease.remoteBranchReconciliation;
+  if (!receipt) {
+    return null;
+  }
+  let stored: unknown = null;
+  try {
+    stored = readReceiptSidecar(
+      lease.commonGitDirectory,
+      REMOTE_BRANCH_OPEN_TARGETS_DIRECTORY,
+      lease.runId
+    );
+  } catch {
+    return null;
+  }
+  return openProposalTargetsForReceipt(stored, lease.runId, receipt);
+};
 
 /**
  * The receipt validator is pure, so an ancestry proof is only a claim until
@@ -162,6 +346,21 @@ const assertRemoteBranchAncestry = (
         EXIT_CODES.unsafe
       );
     }
+  }
+};
+
+// Lets a test fail a record after its sidecars are written and before the
+// lease is, as an interrupted or failed lease write would.
+const failBeforeReconciliationLeaseWriteForTest = (): void => {
+  if (
+    process.env.NODE_ENV === "test" &&
+    process.env.SIMPLE_CHANGES_TEST_FAIL_BEFORE_RECONCILIATION_LEASE_WRITE ===
+      "1"
+  ) {
+    throw new SimpleChangesError(
+      "Test failure before the reconciliation lease write.",
+      EXIT_CODES.unsafe
+    );
   }
 };
 
@@ -403,6 +602,90 @@ const needsAncestryShape = (
         proposal.headRevision === branch.initialHeadRevision
     ));
 
+/**
+ * Re-joins the recorded receipt with its sidecars and validates it. When it
+ * fails and a sidecar its entries need is missing, the error says so.
+ */
+const validateRecordedRemoteBranchReconciliation = (
+  lease: LoopLease,
+  receipt: RemoteBranchReconciliationReceipt
+): {
+  ancestryProofs: RemoteBranchAncestryProof[];
+  supersessions: RemoteBranchSupersession[];
+} => {
+  const read = (directory: Parameters<typeof readReceiptSidecar>[1]) =>
+    readReceiptSidecar(lease.commonGitDirectory, directory, lease.runId);
+  const storedAncestry = read(REMOTE_BRANCH_ANCESTRY_DIRECTORY);
+  const storedSupersession = read(REMOTE_BRANCH_SUPERSESSION_DIRECTORY);
+  const storedExternal = readReceiptSidecar(
+    lease.commonGitDirectory,
+    REMOTE_BRANCH_EXTERNAL_DELETIONS_DIRECTORY,
+    lease.runId,
+    remoteBranchReconciliationDigest(receipt)
+  );
+  const ancestryProofs =
+    storedAncestry === null
+      ? []
+      : validateRemoteBranchAncestryRecord(
+          storedAncestry,
+          lease.runId,
+          receipt
+        );
+  const supersessions =
+    storedSupersession === null
+      ? []
+      : validateRemoteBranchSupersessionRecord(
+          storedSupersession,
+          lease.runId,
+          receipt
+        );
+  const externalDeletions =
+    storedExternal === null
+      ? []
+      : externalDeletionsForReceipt(storedExternal, lease.runId, receipt);
+  try {
+    validateRemoteBranchReconciliation(
+      receipt,
+      ancestryProofs,
+      supersessions,
+      externalDeletions
+    );
+  } catch (error) {
+    const needs = (
+      stored: unknown,
+      shape: (branch: RemoteBranchReconciliationEntry) => boolean,
+      kind: string
+    ) => (stored === null && receipt.branches.some(shape) ? [kind] : []);
+    const missing = [
+      ...needs(
+        storedAncestry,
+        needsAncestryShape,
+        "merged-head ancestry proof"
+      ),
+      ...needs(
+        storedSupersession,
+        (branch) =>
+          isSupersededShape(branch) && !isExternalDeletionShape(branch),
+        "supersession approval"
+      ),
+      ...needs(
+        externalDeletions.length === 0 ? null : storedExternal,
+        isExternalDeletionShape,
+        "external deletion record"
+      ),
+    ];
+    if (missing.length > 0 && error instanceof SimpleChangesError) {
+      throw SimpleChangesError.withCause(
+        `${error.message} No ${missing.join(" or ")} sidecar exists for ${lease.runId}; if one was recorded it is missing, so record the final reconciliation again.`,
+        error.exitCode,
+        error
+      );
+    }
+    throw error;
+  }
+  return { ancestryProofs, supersessions };
+};
+
 const assertCurrentRemoteBranchReconciliation = (
   lease: LoopLease,
   inventory: RepositoryInventory
@@ -427,52 +710,8 @@ const assertCurrentRemoteBranchReconciliation = (
       EXIT_CODES.unsafe
     );
   }
-  const storedAncestry = readReceiptSidecar(
-    lease.commonGitDirectory,
-    REMOTE_BRANCH_ANCESTRY_DIRECTORY,
-    lease.runId
-  );
-  const ancestryProofs =
-    storedAncestry === null
-      ? []
-      : validateRemoteBranchAncestryRecord(
-          storedAncestry,
-          lease.runId,
-          receipt
-        );
-  const storedSupersession = readReceiptSidecar(
-    lease.commonGitDirectory,
-    REMOTE_BRANCH_SUPERSESSION_DIRECTORY,
-    lease.runId
-  );
-  const supersessions =
-    storedSupersession === null
-      ? []
-      : validateRemoteBranchSupersessionRecord(
-          storedSupersession,
-          lease.runId,
-          receipt
-        );
-  try {
-    validateRemoteBranchReconciliation(receipt, ancestryProofs, supersessions);
-  } catch (error) {
-    const missing = [
-      storedAncestry === null && receipt.branches.some(needsAncestryShape)
-        ? "merged-head ancestry proof"
-        : null,
-      storedSupersession === null && receipt.branches.some(isSupersededShape)
-        ? "supersession approval"
-        : null,
-    ].filter((kind) => kind !== null);
-    if (missing.length > 0 && error instanceof SimpleChangesError) {
-      throw SimpleChangesError.withCause(
-        `${error.message} No ${missing.join(" or ")} sidecar exists for ${lease.runId}; if one was recorded it is missing, so record the final reconciliation again.`,
-        error.exitCode,
-        error
-      );
-    }
-    throw error;
-  }
+  const { ancestryProofs, supersessions } =
+    validateRecordedRemoteBranchReconciliation(lease, receipt);
   const targetBranch = targetBranchForRef(
     inventory.repository.primaryCheckout,
     lease.targetRef
@@ -514,12 +753,13 @@ export const recordRemoteBranchReconciliation = (
 } => {
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const split = splitRemoteBranchReconciliationInput(receiptInput);
-  const { ancestryProofs, supersessions } = split;
+  const { ancestryProofs, externalDeletions, supersessions } = split;
   const receipt: RemoteBranchReconciliationReceipt =
     validateRemoteBranchReconciliation(
       split.receipt,
       ancestryProofs,
-      supersessions
+      supersessions,
+      externalDeletions
     );
   const opening = locateRepository(repositoryPath);
   return withStateLock(
@@ -601,8 +841,16 @@ export const recordRemoteBranchReconciliation = (
         targetPatchIdCache
       );
       pinSupersededHeads(lease.primaryCheckout, lease.runId, supersessions);
+      pinExternallyDeletedHeads(
+        lease.primaryCheckout,
+        lease.runId,
+        externalDeletions
+      );
       writeRemoteBranchAncestry(lease, receipt, ancestryProofs);
       writeRemoteBranchSupersession(lease, receipt, supersessions);
+      writeRemoteBranchExternalDeletions(lease, receipt, externalDeletions);
+      failBeforeReconciliationLeaseWriteForTest();
+      writeRemoteBranchOpenTargets(lease, receipt, split.openProposalTargets);
       const reconciledAt = new Date().toISOString();
       return writeLease({
         ...withMutationEvidence(lease, reconciledAt),

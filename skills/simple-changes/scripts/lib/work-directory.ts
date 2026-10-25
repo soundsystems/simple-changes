@@ -22,6 +22,7 @@ import {
   sep,
 } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import { sha256 } from "./hash.ts";
 import { locateRepository } from "./inventory.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
@@ -468,7 +469,7 @@ const writeBinding = (
     runId,
     binding.agentId
   );
-  mkdirSync(dirname(target), { mode: 0o700, recursive: true });
+  ensureStateDirectory(repository.commonGitDirectory, dirname(target));
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(binding, null, 2)}\n`, {
     encoding: "utf8",

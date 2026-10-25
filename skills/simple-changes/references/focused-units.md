@@ -4,6 +4,8 @@ Contents:
 
 - Group work into units
 - Preserved-source override
+- Preserved-source handoff
+- Held unit
 
 ## Group work into units
 
@@ -68,7 +70,6 @@ reconciliation or added by external target movement as a short
 the exact entries and refuses an omitted unit, wrong blob/mode/gitlink, moved
 target, or unreported final-target delta. The controller records this receipt;
 it adds no user approval step, and existing cleanup safety remains unchanged.
-This controller audit step is not another user decision.
 
 Start from a draft instead of writing the receipt by hand:
 
@@ -101,7 +102,12 @@ every placeholder with the reviewed reason, delete `draftReview`, then run
 any placeholder marker and rechecks every entry. No runtime's schema accepts
 `draftReview`, so even an empty draft (no scoped units and no target change)
 and an older runtime refuse the draft until it is reviewed; only 0.28.0 and
-later also refuse a leftover marker.
+later also refuse a leftover marker. The draft never suggests a disposition
+for a [held unit](#held-unit): it leaves the unit out of `units`, warns that
+it is held, and when the target changed one of its paths, it attributes that
+change to the other unit that scopes the same filename or lists it as an
+`external-target-change` whose placeholder says the filename match does not
+show the held unit shipped.
 
 ## Preserved-source override
 
@@ -150,3 +156,183 @@ evidence; it never substitutes for them. Finish, end, or archive a run that
 recorded an override only with Simple Changes 0.25.0 or later: an older runtime
 still reads its lease but ignores the override file, so it cannot enforce these
 checks.
+
+## Preserved-source handoff
+
+A third exception covers a dirty source checkout, detached or on a branch, that
+the run must keep in place while it ships a committed copy of that source. The
+source's original owner claimed it before the run started and paused it for
+this run with `worktree pause --disposition preserve-in-place`, and the
+controller accepted that pause with `loop accept-paused-change`. The run then
+committed an exact copy of the source's bytes and may have integrated
+independently reviewed changes, such as docs or notes, on top. Like the
+override, it is user-approved and never a routine path.
+
+Record the unit as `delivered` with a `preservedSourceHandoff` object that
+binds: `runId`, `unitId`, the owner's `claimId`, `ownerAgentId`, and
+`pauseReceiptId`; `sourceWorktree`, `sourceBranch` (`null` when detached),
+`sourceHeadRevision`, and `sourceChangeDigest`; `copyRevision`, the commit that
+copied the source; the bound `targetRevision`; `paths` with each scoped path's
+opening `sourceEntry`, its `copyEntry` in the copy commit, and its final
+`targetEntry`; `decision: "reviewed-handoff"`, `reviewerAgentId`,
+`reviewReference`, and `reviewedAt`; and the user's
+`preservation: "keep-source-in-place"`, `approvedBy`, `approvalReference`,
+`approvalReason`, and `approvedAt`. Restate the approval with the same
+`--approved-by` and `--approval-reference` flags as for an override; they must
+match every override and handoff in the receipt. A unit carries an override or
+a handoff, never both.
+
+Recording requires:
+
+- a dirty, non-primary source the run registered as preserved through the
+  accepted pause, with no rename originals in the outcome, still at the exact
+  branch, head, and status digest it had at loop start, in the pause receipt,
+  and in its registration;
+- a source this unit covers whole, within the supported contract. The handoff
+  reads the source's changes from the filesystem, not from Git status, which
+  index flags (assume-unchanged, skip-worktree) and settings
+  (`core.filemode`, a submodule's `ignore`) can tell to look away: every path
+  in the source HEAD tree or listed by
+  `git ls-files --cached --others --exclude-standard` is read directly, a
+  regular file hashed with `git hash-object` and its mode taken from its own
+  executable bits. The paths that differ from HEAD must be exactly the unit's
+  scoped paths at their opening entries (none left to another unit,
+  preserved, or excluded), none may be conflicted, renamed, or copied, and
+  each must be a regular file, executable, symlink, or deletion. A submodule,
+  nested repository, untracked directory, or a path under a symlinked
+  directory is refused. Ignored files stay outside the change set, as
+  everywhere else. Every tracked file is hashed, so a large source takes
+  longer to record and finalize;
+- the owner's claim, created before the run started, still `adopted-preserved`
+  at that exact state, and the owner's own `preserve-in-place` receipt for this
+  run; the handoff's owner must be that claim's and receipt's owner, and never
+  the controller;
+- every scoped path covered exactly once, with unchanged source bytes, a copy
+  commit holding exactly those bytes, and the exact final target entries;
+- a copy commit with one parent that changes only this unit's scoped paths,
+  is in the final target, and was not in the run's opening target;
+- a reviewer who is neither the controller nor the owner, and an approval given
+  after the review, by someone other than either, no more than one hour before
+  recording.
+
+The runtime keeps handoffs out of the lease, in
+`<common-git-dir>/simple-changes/preserved-source-handoff/<run-id>.json`, a
+file of its own defined by `evals/schemas/preserved-source-handoff.schema.json`,
+and the recorded outcome digest covers them. `loop finalize` and `loop end`
+recheck all of it under the coordination lock, and the run closes as delivered
+with the source and its claim untouched only while nothing moved: a source,
+claim, pause, copy, or target change, including a target advance that drops a
+reviewed entry, or an edited or missing handoff file blocks completion. An
+older runtime does not read that file, so the digest it recomputes cannot match
+and it refuses to finish, end, or archive such a run; use Simple Changes 0.33.0
+or later.
+
+## Held unit
+
+A frozen scope cannot reclassify a unit, and an outcome may report a scoped
+unit only as `delivered` or `target-equivalent`. When a scoped unit is
+deliberately kept out of this shipment, for example because independent review
+found defects, neither is true: path movement such as a shared changelog edit
+does not show that it shipped, and a path absent from the target does not make
+it equivalent. Hold it instead:
+
+```sh
+simple-changes loop hold-unit --run-id <run> --agent-id <controller> \
+  --unit <unit ID> --reason <why> \
+  --readiness-evidence "<unit ID>: <the failed-readiness evidence>"
+```
+
+Without approval flags the command changes nothing. It prints the exact state
+it observed and its digest: the unit and its paths, the source checkout,
+branch, head, status digest, and each path's current and opening entry, the
+active claim and its owner, the target revision, the reason, and the cited
+evidence. Show that observation to the user and ask now. A hold needs the
+user's fresh approval of that exact observation; an earlier conditional
+instruction, such as "hold it if review finds defects", never stands in for
+it. After the user approves, run the printed command with `--approved-by
+<user> --approval-reference <where they approved> --observation-digest
+<digest>`. The command observes again under the loop and coordination locks
+and refuses when anything in the observation changed, so a moved source head,
+changed status or bytes, a changed claim, or a moved target needs a new
+approval. The approver must be neither the controller nor the claim owner.
+
+Attribution is declared, never inferred from filenames: each
+`--readiness-evidence` item must start with the held unit's exact ID and a
+colon, then state the evidence, and must not name another scoped unit's ID.
+A filename, especially a shared one such as a changelog, does not say which
+unit failed. The command also
+refuses a unit whose exact opening bytes are already in the target at every
+path and has each original path of its own renames absent (record it as
+delivered or target-equivalent). A copy's modified source is its own change,
+decided by whatever scopes it. A rename's original was absent when the scope
+froze, so if it exists again in the source checkout, the command refuses,
+records nothing, and asks you to replan. It also refuses a unit that is not in
+the frozen scope, a unit already held, a unit that a scoped unit that is not
+held depends on, a missing source checkout, and a run that already recorded
+its outcome: a hold never reinterprets a recorded outcome.
+Genuinely new scope still needs a new shipment run or an approved replan.
+
+The hold is immutable and lives beside the lease in
+`<common-git-dir>/simple-changes/held-units/<run-id>.json`, defined by
+`evals/schemas/held-units.schema.json`. It keeps the original unit exactly as
+the frozen scope recorded it, the approved observation and its digest, the
+authorization, and the unit's paths as exclusions bound to its source
+checkout, so the frozen scope still accounts for every original path once
+per checkout: delivered, preserved, or excluded, even when another checkout
+changes the same filename. Any edit to the record, a record from another run,
+or one that no longer matches the frozen unit fails closed. Each hold also
+writes an immutable event to the run's history,
+`<common-git-dir>/simple-changes/history/<run-id>/held-unit-<hold digest>.json`,
+and events and holds must match both ways, so removing, replacing, or adding
+to the record by hand, before or after the outcome, stops all automatic
+cleanup and blocks completion; a recorded hold whose approver is the
+controller or the claim owner fails the same way. A source checkout on a
+branch name that is not exact, such as a raw-byte name Git output decodes
+with U+FFFD, cannot be observed or held, since a second such name would share
+its approval. The held source head is pinned at
+`refs/simple-changes/held/<run-id>/<unit ID>`, which is kept afterward, so no
+branch deletion, by this runtime or an older one, can leave the held commit
+unreachable.
+
+`loop record-outcome` then refuses the held unit in `units` and no longer
+requires it; account for any of its paths the target changed as
+`additionalPaths`. Finalization never removes, demotes, or releases a held
+unit's source checkout or claim, keeps that claim, and any claim that later
+replaced it on the same checkout, even when someone else removed the
+checkout, never deletes its branch, and never
+switches, fast-forwards, or normalizes a primary checkout a held unit was
+packaged from, clean or not. A held primary path counts as excluded
+in the primary delivery proof, and so does each original path the hold
+observed, such as where a held rename moved from, so the other units can
+still verify delivery. A run that held every
+unit delivered none of its scope: it never reports verified delivery. `loop
+finalize` closes it with an exactly empty outcome and its held work in place
+(`deliveryStatus: unverified`), and both `loop finalize` and `loop end`
+refuse it unless the target is still its exact pinned revision. If the target
+moved, even by an empty commit, replan the run instead. Whole-run recovery
+closes, `loop close-equivalent` and `loop recover-post-cleanup`, refuse a run
+that held a unit, because they would report held work as finished; finish it
+with `loop finalize` or replan it.
+A unit that shares a non-primary checkout with a held unit cannot be verified
+delivered while the held bytes keep that checkout dirty. The finalization
+receipt reports each held unit under `heldUnits`, apart from verified
+delivery, with whether its source still matches the hold.
+
+Holding a unit is the one change to a run's lease. The first hold adds a
+`heldUnits` key holding the digest of every hold, and each later hold updates
+it. A run without holds keeps its lease and its outcome digest exactly as
+before, so earlier runs, receipts, and frozen scopes read as they always did.
+The key only makes older readers refuse: runtimes before 0.33.0 validate the
+lease strictly, so once a run holds a unit, every older command that reads
+the active lease refuses it, including `loop status`, `loop verify`, `loop
+record-outcome`, `loop finalize`, `loop end`, `loop archive-recorded`, and the
+worktree commands that check the active loop. An older runtime therefore
+cannot record an outcome over a held run, report it delivered, clean it up,
+or release a held checkout's claim through finalization. This runtime refuses
+a lease whose key disagrees with the held-unit record, including a key that
+was removed. The outcome digest the lease records also binds every hold, so
+adding, removing, or changing a hold after the outcome blocks completion, and
+finalization checks the record, the lease key, and that digest before any
+cleanup. The sidecar, the history events, and the pinned refs stay the
+source of truth; use Simple Changes 0.33.0 or later for every step of a run
+that held a unit.

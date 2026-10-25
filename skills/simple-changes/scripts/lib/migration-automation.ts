@@ -6,7 +6,6 @@ import {
   constants,
   existsSync,
   fstatSync,
-  mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
@@ -15,6 +14,7 @@ import {
 } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import { assertNoSymlinkAncestors } from "./path-safety.ts";
 import type { MigrationTarget, RepoPolicy } from "./types.ts";
 
@@ -401,7 +401,7 @@ const consumeMigrationAuthorization = (
     commonGitDirectory,
     "simple-changes/migration-authorizations"
   );
-  mkdirSync(directory, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, directory);
   const receiptPath = resolve(
     directory,
     `${decision.authorizationDigest}.json`
@@ -468,7 +468,7 @@ export const applyMigrationAuthorization = (
     commonGitDirectory,
     "simple-changes/migration-authorizations"
   );
-  mkdirSync(directory, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, directory);
   const executableBytes = readFileSync(executable);
   if (
     createHash("sha256").update(executableBytes).digest("hex") !==

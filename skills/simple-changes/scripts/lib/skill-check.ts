@@ -358,9 +358,12 @@ const VENDOR_NEUTRAL_FILES = [
   "scripts/lib/authoring.ts",
   "scripts/lib/authoring-onboarding.ts",
   "scripts/lib/review-ledger.ts",
+  "scripts/lib/reviewer-room.ts",
+  "scripts/lib/identity-receipt.ts",
   "evals/schemas/authoring.schema.json",
   "evals/schemas/harnesses.schema.json",
   "evals/schemas/review-ledger.schema.json",
+  "evals/schemas/identity-receipt.schema.json",
 ];
 const VENDOR_NEUTRAL_SECTIONS: { heading: string; path: string }[] = [
   { heading: "Agents, models, and reviews", path: "references/onboarding.md" },

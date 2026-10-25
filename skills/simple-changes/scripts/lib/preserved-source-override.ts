@@ -4,6 +4,8 @@ import { validateSchema } from "./schema.ts";
 import type {
   LoopOpeningWorktree,
   LoopWorktreeLease,
+  PreservedSourceHandoffReceipt,
+  PreservedSourceHandoffRecord,
   PreservedSourceOverrideReceipt,
   PreservedSourceOverrideRecord,
   ShipmentOutcomeInput,
@@ -19,26 +21,53 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const OVERRIDES_UNBOUND =
   "Preserved-source overrides do not match this run's recorded shipment outcome; record the outcome again.";
 
-/**
- * The receipt exactly as `loop record-outcome` received it: each override back
- * on the one unit it names. The recorded outcome digest is this receipt's
- * digest, so every override field, not only the receipt the lease stores, is
- * bound to the lease. Without overrides it is the stored receipt itself.
- */
-export const composeShipmentOutcome = (
+/** The user-approved preserved-source evidence one outcome's units carry. */
+export interface PreservedSourceEvidence {
+  handoffs: PreservedSourceHandoffReceipt[];
+  overrides: PreservedSourceOverrideReceipt[];
+}
+
+const NO_EVIDENCE: PreservedSourceEvidence = { handoffs: [], overrides: [] };
+
+const assertNamesOneUnit = (
   receipt: ShipmentOutcomeReceipt,
-  overrides: readonly PreservedSourceOverrideReceipt[]
-): ShipmentOutcomeInput => {
-  const byUnit = new Map(overrides.map((item) => [item.unitId, item]));
+  items: readonly { unitId: string }[],
+  field: string
+): void => {
+  const units = new Set(items.map((item) => item.unitId));
   if (
-    byUnit.size !== overrides.length ||
-    overrides.some(
+    units.size !== items.length ||
+    items.some(
       (item) =>
         receipt.units.filter((unit) => unit.unitId === item.unitId).length !== 1
     )
   ) {
     throw new SimpleChangesError(
-      "Invalid shipment outcome: each preservedSourceOverride must name exactly one recorded unit, at most once.",
+      `Invalid shipment outcome: each ${field} must name exactly one recorded unit, at most once.`,
+      EXIT_CODES.validation
+    );
+  }
+};
+
+/**
+ * The receipt exactly as `loop record-outcome` received it: each override and
+ * handoff back on the one unit it names. The recorded outcome digest is this
+ * receipt's digest, so every override and handoff field, not only the receipt
+ * the lease stores, is bound to the lease. Without either it is the stored
+ * receipt itself.
+ */
+export const composeShipmentOutcome = (
+  receipt: ShipmentOutcomeReceipt,
+  overrides: readonly PreservedSourceOverrideReceipt[],
+  handoffs: readonly PreservedSourceHandoffReceipt[] = []
+): ShipmentOutcomeInput => {
+  assertNamesOneUnit(receipt, overrides, "preservedSourceOverride");
+  assertNamesOneUnit(receipt, handoffs, "preservedSourceHandoff");
+  const byUnit = new Map(overrides.map((item) => [item.unitId, item]));
+  const handoffByUnit = new Map(handoffs.map((item) => [item.unitId, item]));
+  if (handoffs.some((item) => byUnit.has(item.unitId))) {
+    throw new SimpleChangesError(
+      "Invalid shipment outcome: a unit may carry a preservedSourceOverride or a preservedSourceHandoff, not both.",
       EXIT_CODES.validation
     );
   }
@@ -46,21 +75,43 @@ export const composeShipmentOutcome = (
     ...receipt,
     units: receipt.units.map((unit) => {
       const override = byUnit.get(unit.unitId);
-      return override ? { ...unit, preservedSourceOverride: override } : unit;
+      const handoff = handoffByUnit.get(unit.unitId);
+      return {
+        ...unit,
+        ...(override ? { preservedSourceOverride: override } : {}),
+        ...(handoff ? { preservedSourceHandoff: handoff } : {}),
+      };
     }),
   };
 };
 
+// Moves one structured field off a unit, which must name that unit.
+const takeUnitField = (
+  unit: Record<string, unknown>,
+  field: "preservedSourceHandoff" | "preservedSourceOverride"
+): Record<string, unknown> | null => {
+  if (!(field in unit)) {
+    return null;
+  }
+  const value = unit[field];
+  if (!isRecord(value) || value.unitId !== unit.unitId) {
+    throw new SimpleChangesError(
+      `Invalid shipment outcome: the ${field} on unit ${String(unit.unitId)} must be an object naming that unit.`,
+      EXIT_CODES.validation
+    );
+  }
+  return value;
+};
+
 /**
  * Splits a `loop record-outcome` receipt into the original receipt shape the
- * lease stores and the user-approved overrides its units carry, and digests
- * the complete receipt. Older clients strictly validate the lease, so
- * overrides live in a sidecar beside it.
+ * lease stores and the user-approved overrides and handoffs its units carry,
+ * and digests the complete receipt. Older clients strictly validate the lease
+ * and the override sidecar, so each kind lives in its own sidecar beside it.
  */
 export const splitShipmentOutcomeInput = (
   value: unknown
-): {
-  overrides: PreservedSourceOverrideReceipt[];
+): PreservedSourceEvidence & {
   receipt: ShipmentOutcomeReceipt;
   receiptDigest: string;
 } => {
@@ -69,84 +120,154 @@ export const splitShipmentOutcomeInput = (
       "shipment-outcome",
       value
     );
-    return { overrides: [], receipt, receiptDigest: sha256Json(receipt) };
+    return { ...NO_EVIDENCE, receipt, receiptDigest: sha256Json(receipt) };
   }
-  const overrides: PreservedSourceOverrideReceipt[] = [];
+  const rawOverrides: unknown[] = [];
+  const rawHandoffs: unknown[] = [];
   const units = value.units.map((unit: unknown) => {
-    if (!(isRecord(unit) && "preservedSourceOverride" in unit)) {
+    if (!isRecord(unit)) {
       return unit;
     }
-    const { preservedSourceOverride, ...entry } = unit;
-    if (
-      !isRecord(preservedSourceOverride) ||
-      preservedSourceOverride.unitId !== entry.unitId
-    ) {
-      throw new SimpleChangesError(
-        `Invalid shipment outcome: the preservedSourceOverride on unit ${String(entry.unitId)} must be an object naming that unit.`,
-        EXIT_CODES.validation
-      );
+    const override = takeUnitField(unit, "preservedSourceOverride");
+    const handoff = takeUnitField(unit, "preservedSourceHandoff");
+    if (!(override || handoff)) {
+      return unit;
     }
-    // Its shape is validated with the sidecar record below.
-    overrides.push(
-      preservedSourceOverride as unknown as PreservedSourceOverrideReceipt
-    );
+    // Their shapes are validated with the sidecar records below.
+    if (override) {
+      rawOverrides.push(override);
+    }
+    if (handoff) {
+      rawHandoffs.push(handoff);
+    }
+    const {
+      preservedSourceHandoff: _handoff,
+      preservedSourceOverride: _override,
+      ...entry
+    } = unit;
     return entry;
   });
   const receipt = validateSchema<ShipmentOutcomeReceipt>("shipment-outcome", {
     ...value,
     units,
   });
-  if (overrides.length === 0) {
-    return { overrides: [], receipt, receiptDigest: sha256Json(receipt) };
+  if (rawOverrides.length === 0 && rawHandoffs.length === 0) {
+    return { ...NO_EVIDENCE, receipt, receiptDigest: sha256Json(receipt) };
   }
-  const receiptDigest = sha256Json(composeShipmentOutcome(receipt, overrides));
-  const record = validateSchema<PreservedSourceOverrideRecord>(
-    "preserved-source-override",
-    { overrides, receiptDigest, runId: receipt.runId, schemaVersion: 1 }
+  const receiptDigest = sha256Json(
+    composeShipmentOutcome(
+      receipt,
+      rawOverrides as PreservedSourceOverrideReceipt[],
+      rawHandoffs as PreservedSourceHandoffReceipt[]
+    )
   );
-  return { overrides: record.overrides, receipt, receiptDigest };
+  const overrides =
+    rawOverrides.length === 0
+      ? []
+      : validateSchema<PreservedSourceOverrideRecord>(
+          "preserved-source-override",
+          {
+            overrides: rawOverrides,
+            receiptDigest,
+            runId: receipt.runId,
+            schemaVersion: 1,
+          }
+        ).overrides;
+  const handoffs =
+    rawHandoffs.length === 0
+      ? []
+      : validateSchema<PreservedSourceHandoffRecord>(
+          "preserved-source-handoff",
+          {
+            handoffs: rawHandoffs,
+            receiptDigest,
+            runId: receipt.runId,
+            schemaVersion: 1,
+          }
+        ).handoffs;
+  return { handoffs, overrides, receipt, receiptDigest };
 };
 
 /**
- * Re-joins the override sidecar with the exact outcome it was recorded for.
- * The stored receipt and the sidecar's overrides must recompose into the
- * complete receipt the recorded digest names, so editing any override field,
- * substituting another run's sidecar, or removing the sidecar of an outcome
- * recorded with overrides fails closed. `sidecar` is null when no file exists.
+ * The digest a lease records for an outcome: the complete receipt's digest,
+ * bound to the digest of every unit held when it was recorded. Without held
+ * units it is the receipt digest itself, so earlier outcomes read as before.
+ * With them it differs from that digest, so a runtime that does not know
+ * held units refuses the outcome instead of closing over the held work.
  */
-export const recordedPreservedSourceOverrides = (
-  sidecar: unknown,
+export const boundOutcomeDigest = (
+  receiptDigest: string,
+  holdDigests: readonly string[]
+): string =>
+  holdDigests.length === 0
+    ? receiptDigest
+    : sha256Json({ heldUnits: holdDigests, outcomeDigest: receiptDigest });
+
+/**
+ * Re-joins the override and handoff sidecars with the exact outcome they were
+ * recorded for. The stored receipt and the sidecars' entries must recompose
+ * into the complete receipt the recorded digest names, so editing any field,
+ * substituting another run's sidecar, or removing the sidecar of an outcome
+ * recorded with overrides or handoffs fails closed. A sidecar is null when no
+ * file exists. `holdDigests` are the run's held units, which the recorded
+ * digest also binds, so adding, removing, or changing a hold after recording
+ * fails too.
+ */
+export const recordedPreservedSourceEvidence = (
+  overrideSidecar: unknown,
+  handoffSidecar: unknown,
   runId: string,
   receipt: ShipmentOutcomeReceipt,
-  receiptDigest: string
-): PreservedSourceOverrideReceipt[] => {
-  if (sidecar === null) {
-    if (sha256Json(receipt) !== receiptDigest) {
+  receiptDigest: string,
+  holdDigests: readonly string[] = []
+): PreservedSourceEvidence => {
+  if (overrideSidecar === null && handoffSidecar === null) {
+    if (
+      boundOutcomeDigest(sha256Json(receipt), holdDigests) !== receiptDigest
+    ) {
       throw new SimpleChangesError(
-        `Shipment outcome for ${runId} was recorded with preserved-source overrides whose sidecar is missing; record the outcome again.`,
+        `Shipment outcome for ${runId} was recorded with preserved-source overrides or handoffs whose sidecar is missing, or with held units that are missing or changed; record the outcome again.`,
         EXIT_CODES.unsafe
       );
     }
-    return [];
+    return NO_EVIDENCE;
   }
-  const record = validateSchema<PreservedSourceOverrideRecord>(
-    "preserved-source-override",
-    sidecar
-  );
+  const overrideRecord =
+    overrideSidecar === null
+      ? null
+      : validateSchema<PreservedSourceOverrideRecord>(
+          "preserved-source-override",
+          overrideSidecar
+        );
+  const handoffRecord =
+    handoffSidecar === null
+      ? null
+      : validateSchema<PreservedSourceHandoffRecord>(
+          "preserved-source-handoff",
+          handoffSidecar
+        );
+  const overrides = overrideRecord?.overrides ?? [];
+  const handoffs = handoffRecord?.handoffs ?? [];
   let recomposed: string | null = null;
   try {
-    recomposed = sha256Json(composeShipmentOutcome(receipt, record.overrides));
+    recomposed = sha256Json(
+      composeShipmentOutcome(receipt, overrides, handoffs)
+    );
   } catch {
-    // An override that names no recorded unit cannot be this outcome's.
+    // An entry that names no recorded unit cannot be this outcome's.
   }
   if (
-    record.runId !== runId ||
-    record.receiptDigest !== receiptDigest ||
-    recomposed !== receiptDigest
+    [overrideRecord, handoffRecord].some(
+      (record) =>
+        record !== null &&
+        (record.runId !== runId || record.receiptDigest !== receiptDigest)
+    ) ||
+    recomposed === null ||
+    boundOutcomeDigest(recomposed, holdDigests) !== receiptDigest
   ) {
     throw new SimpleChangesError(OVERRIDES_UNBOUND, EXIT_CODES.unsafe);
   }
-  return record.overrides;
+  return { handoffs, overrides };
 };
 
 // Independence compares agent IDs without surrounding whitespace, so a padded

@@ -4,7 +4,7 @@ description: Use when a user asks to sync with remote main, package, queue, publ
 license: Apache-2.0
 compatibility: Requires Git and Bun 1.2 or later
 metadata:
-  version: "0.32.0"
+  version: "0.33.0"
 ---
 
 # Simple Changes
@@ -90,9 +90,7 @@ that step again until it passes. When the fix changed source, return to step 4
 (in Ship, record the fresh preview with `loop refresh-scope`); when the
 target, policy, controller checkout, or a scoped source worktree changed,
 return to step 3. Other modes follow the same order without the written
-checklist. Ship's pre-ship brief and permission checklist are in
-[Communicate](#communicate); multi-agent gates are in
-[Shipment holds](#shipment-holds).
+checklist.
 
 ## Authority and invariants
 
@@ -166,8 +164,7 @@ for this run.
 When changelog work is required, resolve the Simple Changelogs notice and the user's
 owner-controlled walkthrough, continue, defer, or release-notes choice before
 `loop start`. Do not start a Ship loop, send the pre-ship brief, acquire a
-lease, then pause it for this explanation. Continue only after initialization
-returns `preLoopActionRequired: false`. Repository policy that grants push,
+lease, then pause it for this explanation. Repository policy that grants push,
 automatic migration, break-glass, or production authority is effective only
 with the private digest-bound local trust receipt described in
 [setup and policy](references/setup-and-policy.md); a repository policy symlink
@@ -206,7 +203,8 @@ a newly discovered boundary or invalidated target.
 ## Hold one controller lease
 
 For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
-only after initialization returns `preLoopActionRequired: false`. Start the
+only after initialization returns `preLoopActionRequired: false`; after
+run-only setup, pass its `policy` as `--policy-request` (see onboarding). Start the
 loop before the first integration mutation and retain its run ID. A second
 controller is rejected; independent authors use distinct claimed worktrees.
 When the target is GitLab, first paginate the complete opening remote inventory
@@ -284,7 +282,7 @@ simple-changes initialize \
 
 If confirmation is required, ask: **The implementation and checks are complete.
 Is this ready for Simple Changes, or do you want more changes first?** Continue
-only when `mutationAllowed` is true. Do not invoke it after planning, diagnosis,
+only when `mutationAllowed` is true (run-only setup: `--policy-request`). Do not invoke it after planning, diagnosis,
 read-only work, or incomplete verification.
 
 ## Reports

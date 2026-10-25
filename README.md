@@ -69,7 +69,11 @@ destination so an older installation is not left nested beneath it.
 A compatible changelog provider declares itself with a machine-readable
 `changelog-provider.json` beside its `SKILL.md` (distribution, guidance
 version, and protocol capabilities); discovery falls back to installation-name
-inference only when no marker is present.
+inference only when no marker is present. A repository can keep its own
+provider under any folder name in its skill folders when that folder carries
+the marker and really lives inside the repository; it is then selected ahead
+of global installations, except that a discovery-only provider still yields to
+one that can take the release handoff.
 
 The installed directory is self-contained. Its release-note surface is
 read-only: `release-notes` displays Simple Changes' packaged public history. It
@@ -409,14 +413,16 @@ simple-changes help
 `release-delivery-receipt`, `release-tag-receipt`,
 `remote-branch-reconciliation`,
 `remote-branch-ancestry`, `remote-branch-supersession`,
+`remote-branch-open-targets`,
 `remote-inventory-pages`, `remote-inventory-decisions`,
 `release-consistency`, `release-notes`, `release-notes-pointer`,
 `proposal-audit`,
 `ready-work-receipt`, `ship-holds`, `loop-lease`, `loop-close-equivalent`,
 `migration-review`, `migration-pending`, `migration-apply-plan`,
 `post-cleanup-recovery`, `shipment-outcome`, `stale-lease-recovery`,
-`worktree-cleanup`, `worktree-coordination`, `worktree-takeover`,
-`worktree-equivalence`, or `branch-audit` (the schema filenames under
+`worktree-archive`, `worktree-archive-prune`, `worktree-cleanup`,
+`worktree-coordination`, `worktree-takeover`,
+`worktree-equivalence`, `identity-receipt`, or `branch-audit` (the schema filenames under
 `skills/simple-changes/evals/schemas/`).
 
 Before reapplying an old branch, use `branch audit` from the primary checkout

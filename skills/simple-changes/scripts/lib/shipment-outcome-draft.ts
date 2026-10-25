@@ -1,4 +1,5 @@
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { readHeldUnits } from "./held-units.ts";
 import {
   LS_TREE_ENTRY_PATTERN,
   OUTCOME_DRAFT_MARKER,
@@ -42,6 +43,8 @@ export interface ShipmentOutcomeDraft {
     additionalPaths: number;
     deletedPaths: string[];
     externalTargetChanges: number;
+    /** Units `loop hold-unit` held; the draft never suggests a disposition for them. */
+    heldUnits: string[];
     openingTargetRevision: string;
     releaseGenerated: number;
     targetRevision: string;
@@ -167,7 +170,7 @@ export const releasePathsFromChangelogReceipt = (value: unknown): string[] => {
  * source result its scope recorded. The disposition comes from path movement
  * alone, and an edit to a shared file or an absent path proves neither
  * delivery nor equivalence. Only a reviewed primary result or an approved
- * preserved-source override lets the recorder accept such an entry.
+ * preserved-source override or handoff lets the recorder accept such an entry.
  */
 const sourceMismatchWarning = (
   unit: { id: string; sourceWorktree: string },
@@ -194,8 +197,20 @@ const sourceMismatchWarning = (
   }
   const shown = mismatched.slice(0, MISMATCH_PATH_LIMIT).join(", ");
   const more = mismatched.length - MISMATCH_PATH_LIMIT;
-  return `Unit ${unit.id} is suggested as ${disposition}, but the final target entry for ${shown}${more > 0 ? ` and ${more} more path(s)` : ""} differs from the opening source result its scope recorded, so loop record-outcome refuses this disposition unless a reviewed primary-checkout result or an approved preserved-source override covers it. A changed shared file or an absent path does not show that the unit shipped; check it before recording.`;
+  return `Unit ${unit.id} is suggested as ${disposition}, but the final target entry for ${shown}${more > 0 ? ` and ${more} more path(s)` : ""} differs from the opening source result its scope recorded, so loop record-outcome refuses this disposition unless a reviewed primary-checkout result, an approved preserved-source override, or an approved preserved-source handoff covers it. A changed shared file or an absent path does not show that the unit shipped; check it before recording. If the unit is deliberately held, hold it with loop hold-unit instead of recording a disposition.`;
 };
+
+/**
+ * The warning for a held unit's path that changed on the target. The change
+ * matches the held unit by filename only, so the draft attributes it to the
+ * unit that also scopes it, or to the target, never to the held unit.
+ */
+const heldPathWarning = (
+  unitId: string,
+  path: string,
+  attributedTo: string | null
+): string =>
+  `Held unit ${unitId} scopes ${path}, which changed on the target. That is a filename match only and does not show the held unit shipped or became equivalent; the draft ${attributedTo ? `attributes the change to unit ${attributedTo}, which also scopes it` : "lists it as an external target change"}, and unit ${unitId} stays held.`;
 
 export const draftShipmentOutcome = (
   repositoryPath: string,
@@ -243,7 +258,17 @@ const buildDraft = (
     );
   }
   const openingChanges = lease.shipmentScope?.openingChanges ?? [];
-  const units = (lease.shipmentScope?.plan.units ?? []).map((unit) => {
+  const holds = readHeldUnits(lease);
+  const held = new Set(holds.map((hold) => hold.unit.id));
+  for (const hold of holds) {
+    warnings.push(
+      `Unit ${hold.unit.id} is held (loop hold-unit at ${hold.recordedAt}), so the draft leaves it out of units; it stays preserved and is never delivered or target-equivalent.`
+    );
+  }
+  const scopedUnits = (lease.shipmentScope?.plan.units ?? []).filter(
+    (unit) => !held.has(unit.id)
+  );
+  const units = scopedUnits.map((unit) => {
     const originals = [
       ...new Set(
         unit.paths
@@ -291,22 +316,44 @@ const buildDraft = (
     ...units.flatMap((unit) => unit.finalPaths.map((item) => item.path)),
     ...units.flatMap((unit) => unit.originalPaths.map((item) => item.path)),
   ]);
+  const heldPaths = new Map<string, string>();
+  for (const hold of holds) {
+    for (const path of hold.unit.paths) {
+      if (!deltaSet.has(path) || heldPaths.has(path)) {
+        continue;
+      }
+      heldPaths.set(path, hold.unit.id);
+      const attributedTo =
+        units.find((unit) =>
+          [...unit.finalPaths, ...unit.originalPaths].some(
+            (item) => item.path === path
+          )
+        )?.unitId ?? null;
+      warnings.push(heldPathWarning(hold.unit.id, path, attributedTo));
+    }
+  }
   const releasePaths = new Set(options.releasePaths ?? []);
   const additionalPaths = delta
     .filter((path) => !accounted.has(path))
     .map((path) => {
       const released = releasePaths.has(path);
+      const heldBy = heldPaths.get(path);
+      let reason = released
+        ? "name the release preparation that wrote this path"
+        : "name the reviewed change that brought this path into the target, such as the merged proposal and its exact head";
+      if (heldBy) {
+        reason = `held unit ${heldBy} also scopes this path, but a filename match does not show it shipped; ${reason}, not unit ${heldBy}`;
+      }
       return {
         classification: released
           ? ("release-generated" as const)
           : ("external-target-change" as const),
         entry: entry(path),
         path,
-        reason: `${OUTCOME_DRAFT_MARKER} ${
-          released
-            ? "name the release preparation that wrote this path"
-            : "name the reviewed change that brought this path into the target, such as the merged proposal and its exact head"
-        } (${context([path])}).`.slice(0, 500),
+        reason: `${OUTCOME_DRAFT_MARKER} ${reason} (${context([path])}).`.slice(
+          0,
+          500
+        ),
       };
     });
   const draft: ShipmentOutcomeDraftReceipt = {
@@ -333,6 +380,7 @@ const buildDraft = (
         .filter((item) => item.entry === null)
         .map((item) => item.path),
       externalTargetChanges: additionalPaths.length - releaseGenerated,
+      heldUnits: holds.map((hold) => hold.unit.id),
       openingTargetRevision: opening,
       releaseGenerated,
       targetRevision,

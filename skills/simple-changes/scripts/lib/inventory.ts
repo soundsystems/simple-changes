@@ -10,9 +10,11 @@ import {
   readSync,
   realpathSync,
 } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { inspectChangelogCoordination } from "./changelog-coordination.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { completeListing } from "./git-complete.ts";
+import { gitReportedPath, verifiedGitDirectories } from "./git-location.ts";
 import { sha256 } from "./hash.ts";
 import { assertSafeRelativePath } from "./path-safety.ts";
 import { loadPolicy } from "./policy.ts";
@@ -55,9 +57,6 @@ const nullableSha = (value: string | undefined): string | null => {
   }
   return value;
 };
-
-const absoluteGitPath = (root: string, value: string): string =>
-  realpathSync(isAbsolute(value) ? value : resolve(root, value));
 
 // Git output is decoded as UTF-8 with replacement (process.ts), so each byte
 // that is not valid UTF-8 reads as U+FFFD, and names made of different such
@@ -110,7 +109,7 @@ export const assertExactBranch = (
 const withoutLineEnds = (output: string): string =>
   output.replace(TRAILING_LINE_ENDS, "");
 
-const parseWorktreeList = (output: string): RawWorktree[] =>
+export const parseWorktreeList = (output: string): RawWorktree[] =>
   withoutLineEnds(output)
     .split(WORKTREE_BLOCK_PATTERN)
     .filter(Boolean)
@@ -414,11 +413,14 @@ const inventoryBranches = (root: string): BranchInventory[] => {
     "%(worktreepath)",
     "%(HEAD)",
   ].join("%00");
-  const output = runGit(root, [
-    "for-each-ref",
-    `--format=${format}`,
-    "refs/heads",
-  ]).stdout;
+  // A line cut short could drop a branch's worktree path and read a
+  // checked-out branch as free to delete, so the listing must end whole.
+  const output = completeListing(
+    root,
+    ["for-each-ref", `--format=${format}`, "refs/heads"],
+    "\n",
+    false
+  ).stdout;
   return output
     .split("\n")
     .filter(Boolean)
@@ -807,9 +809,11 @@ const REPOSITORY_DIRECTORY_FLAGS = [
 
 // One rev-parse answers all three questions, one line each in flag order. A
 // Git directory path containing a newline cannot be split that way, so it
-// falls back to asking one flag at a time.
+// falls back to asking one flag at a time. The answers are verified to name
+// one repository this checkout belongs to before anything uses them.
 const repositoryDirectories = (
-  root: string
+  root: string,
+  repository: string
 ): { bare: boolean; commonGitDirectory: string; gitDirectory: string } => {
   let lines = runGit(root, ["rev-parse", ...REPOSITORY_DIRECTORY_FLAGS])
     .stdout.replace(TRAILING_NEWLINE_PATTERN, "")
@@ -822,14 +826,21 @@ const repositoryDirectories = (
   const [bareOutput = "", gitDirectory = "", commonGitDirectory = ""] = lines;
   return {
     bare: bareOutput.trim() === "true",
-    commonGitDirectory: absoluteGitPath(root, commonGitDirectory.trim()),
-    gitDirectory: absoluteGitPath(root, gitDirectory.trim()),
+    ...verifiedGitDirectories(
+      root,
+      { commonGitDirectory, gitDirectory },
+      repository
+    ),
   };
 };
 
 const repositoryRoot = (directory: string): string =>
   realpathSync(
-    runGit(directory, ["rev-parse", "--show-toplevel"]).stdout.trim()
+    gitReportedPath(
+      runGit(directory, ["rev-parse", "--show-toplevel"]).stdout,
+      "--show-toplevel",
+      { repository: directory }
+    )
   );
 
 export interface RepositoryLocation {
@@ -845,13 +856,50 @@ export const locateRepository = (directory: string): RepositoryLocation => {
   const root = repositoryRoot(directory);
   return {
     repository: {
-      commonGitDirectory: absoluteGitPath(
-        root,
-        runGit(root, ["rev-parse", "--git-common-dir"]).stdout.trim()
-      ),
+      commonGitDirectory: repositoryDirectories(root, directory)
+        .commonGitDirectory,
     },
   };
 };
+
+type InventoryDigestFields = Pick<
+  RepositoryInventory,
+  | "branches"
+  | "capabilities"
+  | "localChanges"
+  | "policy"
+  | "repository"
+  | "stashes"
+  | "targetRef"
+  | "worktrees"
+>;
+
+/**
+ * The exact text whose SHA-256 is an inventory's `baselineDigest`, so a
+ * stored copy can be verified against that digest later.
+ */
+export const inventoryDigestInput = (fields: InventoryDigestFields): string =>
+  JSON.stringify({
+    branches: fields.branches,
+    capabilities: fields.capabilities,
+    localChanges: fields.localChanges,
+    policy: fields.policy,
+    repository: {
+      bare: fields.repository.bare,
+      branch: fields.repository.branch,
+      commonGitDirectory: fields.repository.commonGitDirectory,
+      currentCheckout: fields.repository.currentCheckout,
+      gitDirectory: fields.repository.gitDirectory,
+      headSha: fields.repository.headSha,
+      primaryCheckout: fields.repository.primaryCheckout,
+      remoteBindings: fields.repository.remoteBindings,
+      root: fields.repository.root,
+      targetRemote: fields.repository.targetRemote,
+    },
+    stashes: fields.stashes,
+    targetRef: fields.targetRef,
+    worktrees: fields.worktrees,
+  });
 
 export const captureInventory = (
   directory: string,
@@ -860,10 +908,15 @@ export const captureInventory = (
   const root = repositoryRoot(directory);
   const currentCheckout = root;
   const readGit = memoizedGitReader();
-  const { bare, commonGitDirectory, gitDirectory } =
-    repositoryDirectories(root);
+  const { bare, commonGitDirectory, gitDirectory } = repositoryDirectories(
+    root,
+    directory
+  );
+  // Each record ends with a blank line, so a record cut short, which could
+  // drop a checkout's branch, lock, or path, is asked again and refused.
   const rawWorktrees = parseWorktreeList(
-    runGit(root, ["worktree", "list", "--porcelain"]).stdout
+    completeListing(root, ["worktree", "list", "--porcelain"], "\n\n", false)
+      .stdout
   );
   const primaryCheckout =
     rawWorktrees.find((worktree) => !worktree.bare)?.path ?? root;
@@ -898,7 +951,7 @@ export const captureInventory = (
   );
   const capabilities = discoverCapabilities(readGit, primaryCheckout, options);
   const policy = loadPolicy(primaryCheckout, { commonGitDirectory });
-  const digestInput = JSON.stringify({
+  const digestInput = inventoryDigestInput({
     branches,
     capabilities,
     localChanges,

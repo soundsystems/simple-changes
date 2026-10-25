@@ -129,9 +129,12 @@ discovered:
    merged-head ancestry case below), and any work whose ownership or
    obsolescence is ambiguous.
 4. Delete a merged-MR branch only when the branch's current head is the exact
-   recorded head of that merged MR, no open MR uses it, it is unprotected, and
-   provider evidence proves there are no later commits. Record
-   `merged-proposal-head` proof; an MR setting or branch name is not proof.
+   recorded head of that merged MR, no open MR uses it as its source or
+   target, it is unprotected, and provider evidence proves there are no later
+   commits. Record `merged-proposal-head` proof; an MR setting or branch name
+   is not proof. The final `remote-inventory build` proposes these deletions
+   on its own (below), so a merged MR's surviving source branch is never left
+   behind by default.
 5. Audit closed/unmerged branches separately from branches with no MR.
    Preserve either class unless exact Git/provider evidence proves the target
    contains the head or the provider diff is empty. Only then may it be deleted
@@ -203,7 +206,11 @@ SHA-256 of the raw page; the builder hashes the normalized items when it is
 absent), and its items: branches as `{ name, headRevision, protected }`,
 proposals as `{ objectId, sourceBranch, state, headRevision }` with `state`
 one of `open`, `merged`, or `closed`. A proposal page accounts only the
-proposals whose source branch is in the ledger.
+proposals whose source branch is in the ledger. A proposal page may also list
+`openProposalTargets`: every open proposal on that raw page, forks included,
+as `{ objectId, targetBranch }`. It must name every open proposal the page
+carries. Only when every page has the list does the final receipt carry
+`openProposalTargets` and the build propose deletions.
 
 Without `--opening-remote-inventory` the builder writes an opening receipt:
 one snapshot, every branch preserved (the target, protected branches, branches
@@ -215,8 +222,10 @@ branch deleted during the run is recorded as `deleted-merged` only from
 provider records: a final merged proposal at its exact opening head, or the
 one proposal open at that head that later merged at another head, which adds
 `mergedHeadAncestry` for `loop reconcile-remote-branches` to check with Git.
-Any other deletion stops the build and names the branch: decide it from
-evidence or the user's approval, then pass `--decisions FILE`
+Any other deletion was not proposed or approved by this run, so the build
+records it as deleted outside the run (see
+[Branches deleted outside the run](#branches-deleted-outside-the-run)). When
+evidence or the user's approval does prove it obsolete, pass `--decisions FILE`
 (`evals/schemas/remote-inventory-decisions.schema.json`) with one
 `deletedBranches` entry naming either `obsoleteProof`
 (`target-contains-head` or `provider-diff-empty`) or a `supersession`, plus
@@ -225,6 +234,87 @@ command still checks every proof. It also refuses a branch or proposal listed
 twice (the listing shifted while paging; fetch again), a broken cursor chain,
 a missing target, a deleted branch with an open proposal, and a branch whose
 protection changed during the run.
+
+### Branches deleted outside the run
+
+An opening branch that is absent from the final inventory, with no merged
+proposal that proves it obsolete and no decision for it, was deleted by
+someone else: this run never proposed or approved deleting it. The build
+records it with classification `ambiguous`, disposition
+`deleted-proven-obsolete`, a null `obsoleteProof`, and `externalDeletion: {
+lastHeadRevision }` naming its opening head, and lists it under
+`externallyDeletedBranches` in the summary. It never counts as delivered,
+merged, or obsolete. A branch deleted while a proposal on it is still open
+still stops the build.
+
+`loop reconcile-remote-branches` keeps the record beside the lease in its own
+immutable file per receipt,
+`remote-branch-external-deletions/<run-id>/<receipt digest>.json` (a later
+record never rewrites it, so a failed or interrupted record never takes it
+from the receipt the lease holds), and pins each last head that
+Git has locally at `refs/simple-changes/external/<run-id>/<head>/<ms>`, where
+`<ms>` is when the pin was made. A head that is not local is recorded without
+a pin. `loop finalize` lists each branch under
+`remoteBranches.deletedExternally` with `lastHeadRevision`, `pinRef` (null
+unless the pin exists now at that head), `pinExpiresAt`, and a `note` that
+starts "This branch was deleted outside this run; its last head was ...". Any
+entry makes `cleanupStatus` `pending`; it never blocks closing the run. Tell
+the user, and restore the branch from the pin or fetch its head (GitLab keeps
+a merge request's head at `refs/merge-requests/<iid>/head`) if the work is
+still needed. When a later run closes, `loop finalize` removes each pin of
+another run 14 days after the time in its name, by exact value, and reports
+what it removed under `expiredExternalDeletionPins`.
+
+Older runtimes cannot read the record, so they refuse that receipt at `loop
+end` and cannot record it; they still read the lease.
+
+### Deletion proposals and held branches
+
+The final build also proposes deletions; it deletes nothing. Its summary lists
+`deletionProposals`, each with `name`, `headRevision`, `basis`, and `proof`.
+With basis `merged-proposal-head`, it proposes a branch with no decision only
+when all of these hold:
+
+- the branch is unprotected and not the target;
+- its head is the same in the opening and final inventories;
+- a final merged MR on that branch recorded exactly that head
+  (`proposalObjectId`);
+- no MR open in the final inventory has it as its source;
+- every proposal page lists `openProposalTargets` and none of them targets
+  it;
+- no worktree has it checked out, no unreleased claim holds it or names it as
+  a resume target, it is not the upstream of a live branch (a target
+  checkout included), and its head is not the exact fork point of a live
+  branch from the target (a fresh integration branch that still equals the
+  target).
+
+The build reads the worktrees and claims from `--repo`. A merged-MR head that
+fails only the last two checks is listed in `heldBranches` with every reason
+and is not proposed. When the pages lack open MR targets, the local state
+cannot be read, a fork point cannot be computed (a merge base Git returned
+empty is asked again, and a second empty answer counts as unreadable), or
+`--repo` is a shallow clone (fork points need full history; run `git fetch
+--unshallow`), every merged-MR head is held.
+
+Delete each proposal the guarded way: `loop guard`, a provider deletion of
+exactly that branch at that head, then `loop verify`. Then fetch fresh final
+pages and build again. The deleted branch is then recorded as
+`deleted-merged`, and `loop reconcile-remote-branches` checks it as usual.
+Skipping a proposal is allowed. The branch stays preserved, and `loop
+finalize` reports it as pending cleanup.
+
+A `--decisions` entry for a branch that is still present approves deleting it,
+and the build lists it with basis `decision`. Use this for a branch that
+finalization reported as contained in the target, once the user or
+controller approves. The same rules then apply as for a deleted branch's
+decision: one of `obsoleteProof` or `supersession`, no merged MR record, and
+a supersession at the exact head. The build refuses the entry when the branch
+is the target or protected, moved during the run (decide it from the next
+run's opening inventory), has an open MR from it or into it, or is held by a
+live worktree or claim. Delete it the guarded way and build again with the
+same decisions file. The entry then records the deletion, and the
+reconciliation command still checks its proof. A merged-MR head needs no
+entry; an entry for one is refused.
 
 A source branch whose MR was open at the opening inventory, then merged at that
 same head or after a fast-forward, and deleted by GitLab is recorded as
@@ -280,37 +370,31 @@ preserved outcomes, but they must be named and reported; they cannot disappear
 from the ledger. For GitLab reconciliation, report every disposition and every
 preserved uncertain branch.
 
-A legacy ledger may lack persisted opening evidence even though cleanup already
-finished. Do not fabricate an initial inventory from later observations;
-[recovery](recovery.md#repair-bookkeeping-after-cleanup) describes the approved
-`loop recover-post-cleanup` path.
+For a legacy ledger that lacks persisted opening evidence after cleanup already
+finished, follow [recovery](recovery.md#repair-bookkeeping-after-cleanup).
 
 ## Complete and finalize
 
-Recovery for inherited or broken state, including claim takeover, equivalence
-evidence, `loop close-equivalent`, `loop rebaseline`, standalone `worktree
-cleanup`, lease-less `prune`, stale lease recovery, `worktree refresh-index`,
-`loop replan`, and `loop archive-recorded`, lives in [recovery](recovery.md).
+Recovery for inherited or broken state lives in [recovery](recovery.md).
 
-Finalization performs the proven-safe cleanup described in
-[cleanup and completion](#complete-and-finalize) and releases
+Finalization performs the proven-safe cleanup described below and releases
 completed state. An exact verified shipment can close while unrelated work
 remains preserved; its durable finalization receipt reports delivery and cleanup
-separately. If delivery or safety blockers remain, it relinquishes durable state
-and exits nonzero. The exception is an untouched Ship run, one that owed a
-scope, recorded none, and changed nothing: finalization closes it instead of
-freezing its scope, so ending a turn on a scope question never strands it.
-`loop end` closes it the same way; then start a fresh loop for a new baseline.
+separately. Incomplete finalization relinquishes durable state and exits
+nonzero. The exception is an untouched Ship run, one that owed a scope,
+recorded none, and changed nothing: finalization closes it instead of freezing
+its scope, with `shipmentStatus: unstarted` and an `abort-unmutated.json`
+receipt, whether or not the repository moved, so ending a turn on a scope
+question never strands it. `loop end` closes it the same way; a fresh `loop
+start` then takes a new baseline, the same one on an unchanged repository, so
+nothing is lost.
 
 A dirty primary requires classification before completion. Finalization
 safely normalizes tracked target-identical paths; classify every remaining
 path against the refreshed target, ship genuine newer work, and prune proven
-obsolete or generated entries. An exact verified shipment may close with an
-unchanged primary explicitly preserved in its scope, an unchanged primary
-whose scoped dirty paths shipped as reviewed results now in the target, or
-unrelated late arrivals. Report pending cleanup separately and use guarded
-`prune` when safe; do not keep a delivered shipment open solely for that
-housekeeping.
+obsolete or generated entries. Report pending cleanup separately and use
+guarded `prune` when safe; do not keep a delivered shipment open solely for
+that housekeeping.
 
 Before reporting completion:
 
@@ -338,16 +422,12 @@ Before reporting completion:
    audited and current branch revisions are contained in the refreshed target,
    and no active claim remains. Missing branch evidence or unique work remains a
    blocker.
-   An unchanged clean unclaimed opening worktree whose exact head is contained
-   in the refreshed target is an automatic finalization cleanup candidate; use
-   `loop retain-worktree` when that checkout should remain. For changed opening
-   work later proven obsolete, record a user-approved `loop dispose-worktree`
-   disposition only when it is clean and has zero unique commits. Remove that
-   exact path through `loop exec`; audit its branch separately. When a
-   preserved checkout has already been removed by its owning task, record
-   `loop retire-absent-worktree` as
-   [recovery](recovery.md#absent-and-obsolete-worktrees) describes; do not
-   recreate a deleted checkout merely to satisfy the record. Remove every
+   Opening worktrees follow
+   [opening-worktree dispositions](inventory-and-concurrency.md#opening-worktree-dispositions);
+   audit a disposed worktree's branch separately. When a preserved checkout has
+   already been removed by its owning task, record `loop
+   retire-absent-worktree` as
+   [recovery](recovery.md#absent-and-obsolete-worktrees) describes. Remove every
    run-created authoring worktree only after
    its branch is merged,
    otherwise accounted for, or explicitly preserved. Completed-run release must refuse to
@@ -373,14 +453,26 @@ gone, each with a recorded `releaseReason`), and normalizes
 tracked dirty-primary paths
 only when their worktree state exactly matches the refreshed target and their
 index state is recoverable from the current head or target with ordinary index
-flags. Branch eligibility is unchanged (not the target, not attached to a
+flags. Normalization never rewrites a dirty repository policy file, or any
+path its trust receipt binds, to an older copy. When every other dirty primary
+path is normalizable and the primary can fast-forward in place, such a path
+already equal to the target is staged at the target entry and carried through
+the fast-forward unwritten. Otherwise it keeps its approved bytes and trust,
+and a cleanup note names it. Synchronizing to a target that committed
+different policy adopts that policy; the trust receipt binds exact bytes, so
+consequential settings stay reduced until `setup` confirms the new policy. Branch eligibility is unchanged (not the target, not attached to a
 worktree, and an unchanged opening branch, run-owned, or reconciled-absent),
 but containment accepts either exact ancestry or full patch equivalence: a
 branch whose every unique commit patch-id-matches a target commit (the normal
 result of a squash or rebase merge) is deleted with method `patch-equivalent`
 recorded, so merged provider branches stop accumulating locally. A branch with
 any unmatched commit, or one too far ahead to audit cheaply, is preserved and
-named. It then restores or fast-forwards the primary under the controller and
+named. Patch evidence counts only when it came back whole: each listing must
+match Git's own count, each commit's diff is asked for twice in one answer
+and must come back as the same block twice, and patch-id must answer with
+one whole line, so an answer lost or cut short under load is asked again
+and then refused, never read as a match or a miss. It then restores or
+fast-forwards the primary under the controller and
 coordination locks. Without an exact verified shipment outcome, a missing or
 stale target, dirty or off-target primary, or remaining cleanup candidate keeps
 the run open. With that outcome, clean source worktrees proven contained in the
@@ -400,14 +492,52 @@ Every finalization writes a durable receipt before releasing or relinquishing
 the controller. It reports `shipmentStatus`, `controllerStatus`,
 `deliveryStatus`, `cleanupStatus`, `blocksNextShipment`, blockers, preserved
 worktrees, and, when `review-ledger.json` exists, the review attempts recorded
-during the run per proposal (`reviewAttempts`). A closed shipment with pending cleanup does not block the next
-shipment; run guarded `prune` separately when safe. Incomplete finalization
-relinquishes durable state and exits nonzero. The exception is an untouched Ship
-run, with no recorded scope and no mutation evidence: finalization closes it
-with `shipmentStatus: unstarted` and an `abort-unmutated.json` receipt instead
-of freezing its scope, whether or not the repository moved, and `loop end`
-closes it the same way. A fresh `loop start` on an unchanged repository takes
-the same baseline, so nothing is lost.
+during the run per proposal (`reviewAttempts`), and any units held with `loop
+hold-unit` (`heldUnits`), which stay preserved and never count as delivered. A closed shipment with pending cleanup does not block the next
+shipment; run guarded `prune` separately when safe.
+
+When the run recorded a remote-branch reconciliation receipt, the
+finalization receipt also carries `remoteBranches`. It lists every preserved
+provider branch that the evidence shows is finished, judged at its final
+head. The branch must be preserved as ambiguous or audited, must not be the
+target or protected, and must have no MR open from it. It qualifies in one of
+two ways:
+
+- `merged-proposal-head`: a final merged MR recorded exactly that head; the
+  entry names the MR in `proposalObjectId`.
+- `target-contained` or `patch-equivalent`: Git finds its head locally and the
+  target contains it by exact ancestry or full patch-id equivalence. These
+  branches are never deleted automatically: one may be work that just
+  started.
+
+Each entry has `name` and `headRevision`, plus `movedDuringRun` when the head
+moved or arrived during the run. Entries go into `pending` or `held`:
+
+- `pending`: any pending entry makes `cleanupStatus` `pending`, never
+  `complete`, even when everything else is clean. Report each branch with its
+  proof. Approve a deletion with a `--decisions` entry in a run whose opening
+  inventory has the branch at that head, then delete it the guarded way.
+- `held`: an open MR targets the branch, or a live worktree or claim holds it
+  (the same holds the build uses). Each entry carries its `reasons`. A held
+  branch is reported but does not make cleanup pending: no decision is due
+  until the MR, worktree, or claim ends, and the next finalization reports it
+  again then.
+
+Open MR targets come from the final receipt's `openProposalTargets`, which
+`loop reconcile-remote-branches` keeps in a sidecar beside the lease. Without
+that sidecar, `openProposalTargets` is `unknown`, so an open MR's target
+cannot be held and is reported as pending. A check that fails is listed in
+`errors` and also makes cleanup pending: a head missing locally (fetch it and
+finalize again), a head with more than 200 commits outside the target (too
+many to prove by patch equivalence, so classify it yourself), any other Git
+failure while settling containment (such as a missing ancestor object, or a
+merge base, commit listing, diff or patch ID Git lost or cut short twice
+under load), any
+answer short of a positive proof in a shallow clone, or holds that cannot be
+read (a shallow clone always loses its fork-point holds). Holds apply first,
+so a held branch's unsettled audit is neither pending nor an error. Unknown
+evidence never reads as clean.
+
 An authorized agent resumes a relinquished run with `loop start --mode resume
 --agent-id <you>` without takeover approval; its existing frozen scope and
 safety checks remain in force. Under the same lock, beside the lease it
@@ -420,15 +550,22 @@ retained exclusions, active claims, and branches with unique commits remain
 preserved.
 
 For every automatic opening-worktree removal or stale-metadata prune,
-finalization persists the exact freshly revalidated removal intent before the
-destructive Git operation. If the process dies afterward, `loop recover` may
-clear only stale loop and coordination locks owned by that same dead local PID;
-the persisted intent then permits the next finalization attempt to account for
-that exact absence, mark the disposition completed, and continue. Both
+finalization holds the loop and worktree-coordination locks, re-reads each
+candidate's branch, head, digest, and claim state, and persists the exact
+removal intent before the destructive Git operation. If the process dies
+afterward, `loop recover` may clear only stale loop and coordination locks
+owned by that same dead local PID; the persisted intent then permits the next
+finalization attempt to account for that exact absence only, mark the
+disposition completed, and continue, without weakening any other
+preserved-worktree check. Both
 run-created and opening worktree removals remain in the historical audit.
 Because Git prunes stale registrations together, finalization defers all
 metadata pruning if any missing checkout is outside the freshly audited set.
 Unique work, retained checkouts, and active claims keep their registrations.
+A late arrival that `loop rebaseline` registered is never a cleanup candidate,
+even when it is clean and the target contains it, and it never blocks the run
+from ending; a later run that registers it at its opening treats it like any
+other opening checkout.
 `prepare-agent` creates each worktree directly beside the primary checkout, so
 removing it with Git leaves nothing behind. Finalization never removes a
 worktree's parent folder, including the managed

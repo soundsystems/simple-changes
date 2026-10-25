@@ -11,7 +11,8 @@ import {
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
-import { currentHarnessSession } from "./harness-session.ts";
+import { ensureStateDirectory, gitReportedPath } from "./git-location.ts";
+import { requireHarnessSession } from "./harness-session.ts";
 import { sha256, sha256Json } from "./hash.ts";
 import {
   assertExactBranch,
@@ -209,7 +210,7 @@ const acquireNamedLock = (
   label: string
 ): (() => void) => {
   const root = stateRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   try {
     mkdirSync(lockPath, { mode: 0o700 });
   } catch (error) {
@@ -353,7 +354,7 @@ const writeCoordinationDocument = (
     document
   );
   const root = coordinationRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   const temporaryPath = resolve(
     root,
     `${STATE_FILENAME}.${process.pid}.${randomUUID()}.tmp`
@@ -407,17 +408,25 @@ const replaceClaim = (
 // marker existed, or with no harness session) is unbound and refuses no one.
 // The session comes from the harness environment, so this stops mistakes and
 // recovery steps from acting under another agent's ID; it is not
-// authentication.
+// authentication. When the environment names sessions of two harnesses, a
+// command that binds or checks a session needs `--harness` (or an identity
+// receipt) to say which is its own, and refuses without it rather than bind
+// the claim to a parent harness's session.
 
 const SESSION_EVENT_PREFIX = "event-session-";
 const UNBOUND_SESSION_MARK = "unbound";
 const SESSION_DIGEST_LENGTH = 32;
 
-/** The executing harness session as `harness:sessionId`, or null. */
+/**
+ * The executing harness session as `harness:sessionId`, or null when the
+ * environment names none. Refuses when it names more than one and this
+ * command did not say which is its own.
+ */
 export const executingClaimSession = (
-  environment: Record<string, string | undefined> = process.env
+  environment: Record<string, string | undefined> = process.env,
+  command = "This worktree command"
 ): string | null => {
-  const session = currentHarnessSession(environment);
+  const session = requireHarnessSession(command, environment);
   return session ? `${session.harness}:${session.sessionId}` : null;
 };
 
@@ -570,16 +579,24 @@ export const claimTakeoverState = (
   };
 };
 
-/** Refuses when `claim` belongs to another harness session. */
+/**
+ * Refuses when `claim` belongs to another harness session. The executing
+ * session is read only for a bound claim, since an unbound one refuses no
+ * one; `session` passes one already read.
+ */
 export const assertClaimSession = (
   document: WorktreeCoordinationDocument,
   claim: WorktreeClaim,
   current: TakeoverState | null,
-  session: string | null = executingClaimSession()
+  session?: string | null
 ): void => {
-  if (claimHeldByAnotherSession(document, claim, session)) {
+  if (claimSessionBinding(document, claim) === null) {
+    return;
+  }
+  const executing = session === undefined ? executingClaimSession() : session;
+  if (claimHeldByAnotherSession(document, claim, executing)) {
     throw new SimpleChangesError(
-      claimSessionRefusal(claim, current, session),
+      claimSessionRefusal(claim, current, executing),
       EXIT_CODES.unsafe
     );
   }
@@ -745,7 +762,11 @@ const activeLoopTakeoverRefusal = (
 
 export const assertNoGitOperation = (worktreePath: string): void => {
   const gitDirectory = realpathSync(
-    runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout.trim()
+    gitReportedPath(
+      runGit(worktreePath, ["rev-parse", "--absolute-git-dir"]).stdout,
+      "--absolute-git-dir",
+      { repository: worktreePath }
+    )
   );
   const markers = [
     "MERGE_HEAD",
@@ -924,7 +945,7 @@ export const claimWorktree = (
           EXIT_CODES.unsafe
         );
       }
-      const session = executingClaimSession();
+      const session = executingClaimSession(process.env, "worktree claim");
       assertClaimantSession(
         document,
         inventory,
@@ -1690,13 +1711,16 @@ const releasedClaim = (
  * already hold the coordination lock. Such a claim protects nothing: the
  * checkout is absent and branch protection is decided separately, so leaving
  * it active only strands the owner's bookkeeping until a manual takeover.
- * Claims named in `keep` stay as they are.
+ * Claims named in `keep`, and every claim on a path in `keepPaths`, stay as
+ * they are; the paths are checked under the lock, so a claim made on such a
+ * path after the caller looked is kept too.
  */
 export const releaseAbsentWorktreeClaimsUnderLock = (
   commonGitDirectory: string,
   inventory: RepositoryInventory,
   actorAgentIdInput: string,
-  keep: ReadonlySet<string> = new Set()
+  keep: ReadonlySet<string> = new Set(),
+  keepPaths: ReadonlySet<string> = new Set()
 ): WorktreeClaim[] => {
   const actorAgentId = requiredText(actorAgentIdInput, "agent ID", 128);
   const presentPaths = new Set(
@@ -1713,7 +1737,8 @@ export const releaseAbsentWorktreeClaimsUnderLock = (
       claim.commonGitDirectory !== commonGitDirectory ||
       !ABSENT_RELEASABLE_STATES.has(claim.state) ||
       presentPaths.has(claim.path) ||
-      keep.has(claim.claimId)
+      keep.has(claim.claimId) ||
+      keepPaths.has(claim.path)
     ) {
       continue;
     }
@@ -1798,6 +1823,21 @@ export const releaseRecordedState = (
       event.claimId === claimId &&
       event.eventId.startsWith(RELEASED_STATE_EVENT_PREFIX)
   );
+
+/**
+ * Whether `event` is the release of `claimId` that recorded the checkout's
+ * exact state at release time.
+ */
+export const releaseEventRecordedState =
+  (claimId: string) =>
+  (event: WorktreeCoordinationEvent): boolean =>
+    event.claimId === claimId &&
+    event.state === "released" &&
+    event.eventId.startsWith(RELEASED_STATE_EVENT_PREFIX);
+
+/** Whether a claim in `state` still holds its checkout. */
+export const isLiveClaimState = (state: WorktreeCoordinationState): boolean =>
+  LIVE_STATES.has(state);
 
 /**
  * Completed-work handoff: the author declares the checkout it is running in
@@ -2102,7 +2142,7 @@ const writeWorktreeTakeovers = (
   receipts: WorktreeTakeoverReceipt[]
 ): void => {
   const root = coordinationRoot(commonGitDirectory);
-  mkdirSync(root, { mode: 0o700, recursive: true });
+  ensureStateDirectory(commonGitDirectory, root);
   const temporaryPath = resolve(
     root,
     `${TAKEOVERS_FILENAME}.${process.pid}.${randomUUID()}.tmp`
@@ -2347,7 +2387,7 @@ export const takeoverWorktreeClaim = (
         { ...options, approvedBy, claimId, newAgentId, reason },
         expected
       );
-      const session = executingClaimSession();
+      const session = executingClaimSession(process.env, "worktree takeover");
       const recovered = recoverAppliedTakeoverIntent(
         commonGitDirectory,
         takeoverHistory,

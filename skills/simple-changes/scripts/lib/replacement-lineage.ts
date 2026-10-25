@@ -16,13 +16,14 @@ import {
 } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
+import { completeRevisionList } from "./git-complete.ts";
 import { sha256Json } from "./hash.ts";
 import { parseWorktreeList } from "./inventory.ts";
 import {
   type ArchiveRetentionPolicy,
   archiveRetentionPolicy,
 } from "./policy.ts";
-import { countedRevisionList, runGit } from "./process.ts";
+import { runGit } from "./process.ts";
 import { headCoverage, readReviewLedger } from "./review-ledger.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -423,14 +424,12 @@ const uniqueSourceCommits = (
       `head ${head} shares no history with reviewed target ${receipt.targetRevision}.`
     );
   }
-  const unique = runGit(primary, [
-    "rev-list",
+  // Checked whole against Git's count, so a listing cut short never leaves
+  // a source commit out of the mapping the receipt must cover.
+  const unique = completeRevisionList(primary, [
     "--reverse",
     `${receipt.targetRevision}..${head}`,
-  ])
-    .stdout.split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  ]);
   if (unique.length > REPLACEMENT_LINEAGE_MAX_COMMITS) {
     refuse(
       `the source has ${unique.length} commits outside the reviewed target, more than the ${REPLACEMENT_LINEAGE_MAX_COMMITS} one receipt may map.`
@@ -1242,7 +1241,7 @@ const revisionListing = (
 ): { commits: string[] } | { failure: string } => {
   try {
     return {
-      commits: countedRevisionList(path, question, {
+      commits: completeRevisionList(path, question, {
         gitOptions: overrides,
         ...(stdin === undefined ? {} : { stdin }),
       }),

@@ -11,7 +11,12 @@ import { spawnSync, which } from "bun";
 
 const decoder = new TextDecoder();
 
-export type FakeGitLoss = "empty" | "first-line" | `lines:${number}`;
+export type FakeGitLoss =
+  | "empty"
+  | "first-line"
+  | `bytes:${number}`
+  | `lines:${number}`
+  | `nul:${number}`;
 
 export interface FakeGitRun {
   /** A child Bun script that prints one JSON value. */
@@ -26,9 +31,10 @@ export interface FakeGitRun {
   /** How many answers to lose. */
   lost: number;
   /**
-   * `empty`: exit 0 with no output. `first-line` and `lines:<n>`: exit 0
-   * with only the first line, or the first n lines, of the real answer, an
-   * answer cut short.
+   * `empty`: exit 0 with no output. `first-line`, `lines:<n>`, `nul:<n>`
+   * and `bytes:<n>`: exit 0 with only the first line, the first n lines,
+   * the first n NUL-terminated entries, or the first n bytes of the real
+   * answer, an answer cut short.
    */
   mode?: FakeGitLoss;
   /** How many calls naming `flag` to answer truthfully before losing any. */
@@ -80,6 +86,8 @@ if [ -n "$FAKE_GIT_EMPTY_FLAG" ] && [ -d "$FAKE_GIT_EMPTY_TOKENS" ]; then
           case "$FAKE_GIT_EMPTY_MODE" in
             first-line) "$real" "$@" | head -n 1 ;;
             lines:*) "$real" "$@" | head -n "\${FAKE_GIT_EMPTY_MODE#lines:}" ;;
+            nul:*) "$real" "$@" | perl -0 -ne 'print if $. <= '"\${FAKE_GIT_EMPTY_MODE#nul:}" ;;
+            bytes:*) "$real" "$@" | head -c "\${FAKE_GIT_EMPTY_MODE#bytes:}" ;;
           esac
           exit 0
         fi

@@ -1999,6 +1999,49 @@ describe("holds come from every source of checkouts, which must agree", () => {
     ]);
   });
 
+  test("a tag named like a checked-out branch is no disagreement", () => {
+    // Tags named main and fix/live make Git show each branch's short name
+    // as heads/<name>, which the worktree listing and claims never use.
+    const { fixture, head, heads, path } = liveCheckout();
+    const { root } = fixture;
+    git(root, ["tag", "main"]);
+    git(root, ["tag", "fix/live", heads["fix/live"]]);
+    expect(
+      git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+    ).toBe("heads/fix/live\nheads/main");
+    // The checkout still holds fix/live, and the finished done is proposed.
+    const built = mergedHeads(
+      head,
+      heads,
+      holdsFrom(root, () => undefined, [claimOf(root, "fix/live")])
+    );
+    expect(outcome(built)).toEqual({
+      held: [
+        [
+          "fix/live",
+          `checked out in ${path}; held by claim claim-fix/live (builder, active)`,
+        ],
+      ],
+      proposed: ["done"],
+    });
+    // The branch listing names each branch exactly, and finalize reports
+    // from the same holds: fix/live held, done pending.
+    const inventory = captureInventory(root, { skipWorktreeStatus: true });
+    expect(inventory.branches.map((branch) => branch.name)).toEqual([
+      "fix/live",
+      "main",
+    ]);
+    const report = remoteBranchCleanupReport({
+      claims: [],
+      inventory,
+      openTargets: [],
+      receipt: built.receipt,
+    });
+    expect(report.errors).toEqual([]);
+    expect(report.held.map((branch) => branch.name)).toEqual(["fix/live"]);
+    expect(report.pending.map((branch) => branch.name)).toEqual(["done"]);
+  });
+
   test("bare, unborn and prunable checkouts are no disagreement", () => {
     const { fixture, head, heads, path } = liveCheckout();
     const { base, root } = fixture;

@@ -404,9 +404,15 @@ const parseTracking = (tracking: string): { ahead: number; behind: number } => {
   };
 };
 
+// Each branch is named exactly, by `%(refname)` without this prefix.
+// `%(refname:short)` is a display name that Git disambiguates (`heads/main`
+// when a tag is also named `main`), which matches neither the worktree
+// listing, nor claims, nor `refs/heads/<name>`.
+const HEADS_PREFIX = "refs/heads/";
+
 const inventoryBranches = (root: string): BranchInventory[] => {
   const format = [
-    "%(refname:short)",
+    "%(refname)",
     "%(objectname)",
     "%(upstream:short)",
     "%(upstream:track)",
@@ -425,8 +431,11 @@ const inventoryBranches = (root: string): BranchInventory[] => {
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [name, sha, upstream, tracking, worktreePath, head] =
+      const [ref, sha, upstream, tracking, worktreePath, head] =
         line.split("\0");
+      const name = ref?.startsWith(HEADS_PREFIX)
+        ? ref.slice(HEADS_PREFIX.length)
+        : ref;
       const counts = parseTracking(tracking ?? "");
       return {
         ahead: counts.ahead,

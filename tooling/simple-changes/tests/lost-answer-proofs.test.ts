@@ -2047,7 +2047,7 @@ console.log(JSON.stringify({
   });
 
   const BRANCH_FORMAT =
-    "--format=%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track)%00%(worktreepath)%00%(HEAD)";
+    "--format=%(refname)%00%(objectname)%00%(upstream:short)%00%(upstream:track)%00%(worktreepath)%00%(HEAD)";
 
   // zz-busy is checked out in a dirty checkout, so prune keeps both; its
   // line sorts last, and the cut stops it right after its commit ID.

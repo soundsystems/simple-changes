@@ -6,8 +6,9 @@ import { redactSecrets } from "./redact.ts";
 // The one way a Git answer that decides whether something is deleted,
 // pruned, released, retired or counted as delivered is read: a commit
 // listing, a changed-path listing, a commit count, a merge base, a patch
-// ID, one line such as a configuration value or an object ID, or the list
-// of configured remotes. Under heavy load an answer has been seen to arrive
+// ID, one line such as a configuration value or an object ID, the whole
+// configuration, or the list of configured remotes. Under heavy load an
+// answer has been seen to arrive
 // empty or cut short with exit 0, and a partial answer that still parses
 // would settle a decision on evidence Git never gave: a cut commit listing
 // proves a range that leaves a commit out, a cut path listing hides a path,
@@ -315,6 +316,47 @@ export const completeListing = (
   }
   throw new LostGitAnswerError(
     `git ${quoted(args.join(" "))} twice gave a listing that stops inside an entry, so it was cut short ${LOST_IN_TRANSIT}`
+  );
+};
+
+export interface ConfigEntry {
+  /** As Git prints it: section and variable lowercased, subsection as is. */
+  key: string;
+  /** Null for a key written without a value (`[section] key`). */
+  value: string | null;
+}
+
+// The entry `completeConfigListing` sets on the command line to mark where
+// Git's answer ends.
+const CONFIG_END_KEY = "simple-changes.answer-end";
+
+/**
+ * Every configuration entry Git reads (`config -z --list`), in Git's own
+ * order, checked whole. Git gives no count for these, and a listing cut at
+ * an entry's end still parses, so the question carries its own end: an
+ * entry set on the command line with a fresh value, which Git reads after
+ * every configuration file. A whole answer ends with exactly that entry,
+ * and an answer lost or cut short anywhere does not, so it is asked once
+ * more and then refused. A configuration Git cannot read throws.
+ */
+export const completeConfigListing = (cwd: string): ConfigEntry[] => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const end = crypto.randomUUID();
+    const entries = nulEntries(
+      runGit(cwd, ["-c", `${CONFIG_END_KEY}=${end}`, "config", "-z", "--list"])
+        .stdout
+    );
+    if (entries?.pop() === `${CONFIG_END_KEY}\n${end}`) {
+      return entries.map((entry) => {
+        const split = entry.indexOf("\n");
+        return split === -1
+          ? { key: entry, value: null }
+          : { key: entry.slice(0, split), value: entry.slice(split + 1) };
+      });
+    }
+  }
+  throw new LostGitAnswerError(
+    `git config --list twice gave a listing without the entry that ends it, so the answer was lost or cut short ${LOST_IN_TRANSIT}`
   );
 };
 

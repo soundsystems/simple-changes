@@ -1121,10 +1121,15 @@ console.log(JSON.stringify({ errors: result.errors, pending: result.pending }));
   });
 });
 
+// Git's own upstream of a live branch, fix/live: its remote and the
+// remote's ref.
+const UPSTREAM_FORMAT =
+  "--format=%(upstream:remotename)%00%(upstream:remoteref)";
+const LIVE_UPSTREAM = `${UPSTREAM_FORMAT} refs/heads/fix/live`;
+
 describe("an upstream hold read from a lost upstream line", () => {
-  // fix/live tracks origin/kept, which it holds by name. The branch's remote
-  // cannot be read from its configuration, so the hold comes from the
-  // branch's upstream line instead.
+  // fix/live tracks origin/kept, which it holds by name, read from Git's
+  // own upstream line.
   const holds = (lost: number) => {
     const fixture = repository();
     const { root } = fixture;
@@ -1151,9 +1156,8 @@ try {
   console.log(JSON.stringify({ error: error.message }));
 }
 `,
-      "--format=%(upstream)",
-      lost,
-      "branch.fix/live.remote"
+      LIVE_UPSTREAM,
+      lost
     );
   };
 
@@ -1400,11 +1404,13 @@ describe("an upstream hold read from a remote name or merge ref cut short", () =
   // remote name cut from `origin` to `ori`, a merge ref cut from
   // `refs/heads/kept` to `refs/heads/ke`, or an upstream line cut the same
   // way once read as another remote or another branch and dropped the
-  // hold, which made the merged branch a deletion proposal.
+  // hold, which made the merged branch a deletion proposal. So would a
+  // configuration listing cut at an entry's end before the merge value,
+  // which an older Git without the upstream atoms reads instead.
   const holds = (
     flag: string,
     lost: number,
-    mode: FakeGitLoss = "empty",
+    cut: FakeGitLoss | "before-merge" = "empty",
     options: { failFlag?: string; remote?: string } = {}
   ) => {
     const fixture = repository();
@@ -1424,6 +1430,9 @@ describe("an upstream hold read from a remote name or merge ref cut short", () =
       repository: { targetRemote: string | null };
     };
     inventory.repository.targetRemote = "origin";
+    // The merge value is the last file entry, so a listing of one entry
+    // fewer ends whole right before it, with the command-line entry gone.
+    const entries = git(root, ["config", "--list"]).split("\n").length;
     return runInChild(
       `import { remoteBranchNameHolds } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
 try {
@@ -1441,7 +1450,7 @@ try {
       flag,
       lost,
       options.failFlag ?? "",
-      mode
+      cut === "before-merge" ? `nul:${entries - 1}` : cut
     );
   };
 
@@ -1450,18 +1459,14 @@ try {
       .join(" ")
       .includes("upstream of fix/live");
 
-  // The read, the Git call that answers it, and the cut that once read as
-  // another remote or branch. The upstream line is read only when the
-  // branch's remote cannot be read from its configuration.
-  const reads: [string, string, FakeGitLoss, string][] = [
-    ["the remote name", "branch.fix/live.remote", "bytes:3", ""],
-    ["the merge ref", "branch.fix/live.merge", "bytes:13", ""],
-    [
-      "the upstream line",
-      "--format=%(upstream)",
-      "bytes:22",
-      "branch.fix/live.remote",
-    ],
+  // The read, the Git call that answers it, and the cut that would read as
+  // another remote or branch, or as no upstream. The configuration is read
+  // when Git gives no upstream line, as an older Git without the atoms
+  // does by failing.
+  const reads: [string, string, FakeGitLoss | "before-merge", string][] = [
+    ["the upstream line", LIVE_UPSTREAM, "bytes:3", ""],
+    ["the upstream line without its line break", LIVE_UPSTREAM, "bytes:22", ""],
+    ["the configuration", "--list", "before-merge", UPSTREAM_FORMAT],
   ];
 
   test.each(reads)(
@@ -1958,6 +1963,75 @@ try {
       expect(remaining).toBe(0);
       expect(refusedForRetry(reply)).toBe(true);
     }
+  });
+
+  // Issue #27: a listing cut right after the primary's whole record still
+  // ends whole, so it once left the unclaimed checkout out, and its merged
+  // branch became a deletion proposal. The branch listing still names the
+  // checkout, so the two disagree and every proposal is withheld.
+  test("worktree records cut between two whole records withhold every proposal, never drop the hold", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    const path = join(fixture.base, "live");
+    git(root, ["worktree", "add", "--quiet", "-b", "fix/live", path]);
+    writeFixture(path, "work.txt", "work\n");
+    git(path, ["add", "work.txt"]);
+    git(path, ["commit", "--quiet", "-m", "Work"]);
+    const head = git(root, ["rev-parse", "HEAD"]);
+    const liveHead = git(path, ["rev-parse", "HEAD"]);
+    const branches = [
+      { headRevision: head, name: "main", protected: true },
+      { headRevision: liveHead, name: "fix/live", protected: false },
+    ];
+    const proposal = (state: RemoteProposal["state"]): RemoteProposal => ({
+      headRevision: liveHead,
+      objectId: "51",
+      sourceBranch: "fix/live",
+      state,
+    });
+    const opening = buildRemoteInventory(
+      remotePages("2026-10-21T10:00:00.000Z", branches, [proposal("open")])
+    ).receipt;
+    const final = remotePages("2026-10-21T11:00:00.000Z", branches, [
+      proposal("merged"),
+    ]);
+    const build = (lost: number) =>
+      runInChild(
+        `import { captureInventory } from ${JSON.stringify(libraryPath("inventory.ts"))};
+import { remoteBranchHolds } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
+import { buildRemoteInventory } from ${JSON.stringify(libraryPath("remote-inventory.ts"))};
+const built = buildRemoteInventory(${JSON.stringify(final)}, {
+  opening: ${JSON.stringify(opening)},
+  resolveHolds: (targetBranch, targetRevision) =>
+    remoteBranchHolds({
+      claims: [],
+      inventory: captureInventory(${JSON.stringify(root)}, { skipWorktreeStatus: true }),
+      targetBranch,
+      targetRevision,
+    }),
+});
+console.log(JSON.stringify({
+  held: built.summary.heldBranches.map((branch) => branch.reasons.join(" ")),
+  proposed: built.summary.deletionProposals.map((branch) => branch.name),
+}));
+`,
+        "list --porcelain",
+        lost,
+        "",
+        "lines:4"
+      );
+    expect(build(0).reply).toEqual({
+      held: [`checked out in ${path}`],
+      proposed: [],
+    });
+    const { remaining, reply } = build(1);
+    expect(remaining).toBe(0);
+    const { held, proposed } = reply as { held: string[]; proposed: string[] };
+    expect(proposed).toEqual([]);
+    expect(held.join(" ")).toContain(
+      `the branch listing has fix/live checked out in ${path}, but the worktree listing does not`
+    );
+    expect(held.join(" ")).toContain("retry the command");
   });
 
   const BRANCH_FORMAT =

@@ -288,13 +288,28 @@ when all of these hold:
   branch from the target (a fresh integration branch that still equals the
   target).
 
-The build reads the worktrees and claims from `--repo`. A merged-MR head that
-fails only the last two checks is listed in `heldBranches` with every reason
-and is not proposed. When the pages lack open MR targets, the local state
-cannot be read, a fork point cannot be computed (a merge base Git returned
-empty is asked again, and a second empty answer counts as unreadable), or
-`--repo` is a shallow clone (fork points need full history; run `git fetch
---unshallow`), every merged-MR head is held.
+The build reads the worktrees and claims from `--repo`. A live branch is one
+checked out by the worktree listing or by the branch listing's own checkout
+path, or held by an unreleased claim. Its upstream is the one Git uses
+(`%(upstream:remotename)` and `%(upstream:remoteref)`, which follow the first
+`branch.<name>.merge` value). When Git names none, such as an older Git
+without those fields or a fetch refspec that leaves the branch out, every
+`branch.<name>.merge` value counts while any `branch.<name>.remote` value is
+the target remote or not a configured remote.
+
+A merged-MR head that fails only the last two checks is listed in
+`heldBranches` with every reason and is not proposed. Every merged-MR head is
+held when:
+
+- the pages lack open MR targets;
+- the local state cannot be read;
+- the worktree listing, the branch listing and the claims disagree about what
+  is checked out (a listing cut between two whole records, or a checkout
+  changed between the reads; retry);
+- a fork point cannot be computed (a merge base Git returned empty is asked
+  again, and a second empty answer counts as unreadable);
+- `--repo` is a shallow clone (fork points need full history; run `git
+  fetch --unshallow`).
 
 Delete each proposal the guarded way: `loop guard`, a provider deletion of
 exactly that branch at that head, then `loop verify`. Then fetch fresh final
@@ -534,7 +549,8 @@ failure while settling containment (such as a missing ancestor object, or a
 merge base, commit listing, diff or patch ID Git lost or cut short twice
 under load), any
 answer short of a positive proof in a shallow clone, or holds that cannot be
-read (a shallow clone always loses its fork-point holds). Holds apply first,
+read (a shallow clone always loses its fork-point holds, and sources of
+checkouts that disagree lose every hold). Holds apply first,
 so a held branch's unsettled audit is neither pending nor an error. Unknown
 evidence never reads as clean.
 

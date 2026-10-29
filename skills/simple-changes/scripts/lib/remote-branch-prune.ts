@@ -1,5 +1,9 @@
+import { existsSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { PATCH_EQUIVALENCE_MAX_COMMITS } from "./cleanup-core.ts";
 import {
+  type ConfigEntry,
+  completeConfigListing,
   completeLine,
   completeMergeBase,
   completeRemoteNames,
@@ -133,9 +137,14 @@ export interface RemoteBranchHoldInput {
   targetRevision: string;
 }
 
+// A checkout path as the inventory's worktree records hold it.
+const checkoutPath = (path: string): string =>
+  existsSync(path) ? realpathSync(path) : resolve(path);
+
 /**
  * Holds by name, and the live local branches whose upstreams and fork points
- * also hold: every branch checked out in a worktree or held by an unreleased
+ * also hold: every branch checked out in a worktree, by the worktree listing
+ * or by the branch listing's own `worktreePath`, or held by an unreleased
  * claim, which includes a stale claim whose owner may still return.
  */
 const nameHolds = (
@@ -144,10 +153,22 @@ const nameHolds = (
 ): Map<string, string> => {
   const { claims, inventory } = input;
   const live = new Map<string, string>();
+  const checkedOut = (branch: string, path: string): void => {
+    addHold(byName, branch, `checked out in ${path}`);
+    if (!live.has(branch)) {
+      live.set(branch, `checked out in ${path}`);
+    }
+  };
   for (const worktree of inventory.worktrees) {
     if (worktree.branch) {
-      addHold(byName, worktree.branch, `checked out in ${worktree.path}`);
-      live.set(worktree.branch, `checked out in ${worktree.path}`);
+      checkedOut(worktree.branch, worktree.path);
+    }
+  }
+  const bare = bareCheckouts(inventory);
+  for (const branch of inventory.branches) {
+    const path = branch.worktreePath && checkoutPath(branch.worktreePath);
+    if (path && !bare.has(path)) {
+      checkedOut(branch.name, path);
     }
   }
   for (const claim of claims) {
@@ -173,6 +194,101 @@ const nameHolds = (
   return live;
 };
 
+// A bare repository's record has no branch, but the branch listing still
+// gives its HEAD branch the repository's path, which is not a checkout.
+const bareCheckouts = (
+  inventory: RemoteBranchHoldInput["inventory"]
+): Set<string> =>
+  new Set(
+    inventory.worktrees
+      .filter((worktree) => worktree.bare)
+      .map((worktree) => worktree.path)
+  );
+
+/**
+ * Whether a local branch exists, by `rev-parse`'s exit code, which a lost
+ * answer cannot fake. Any failure other than "no such branch" throws.
+ */
+const branchExists = (repositoryPath: string, branch: string): boolean => {
+  const answer = completeLine(
+    repositoryPath,
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
+    HEAD_PATTERN
+  );
+  if (answer.line !== null || answer.exitCode === 1) {
+    return answer.line !== null;
+  }
+  throw new Error(
+    `cannot tell whether ${branch} exists: ${answer.stderr.trim() || `exit ${answer.exitCode}`}`
+  );
+};
+
+/**
+ * Where the sources of checkouts disagree. The worktree listing and the
+ * branch listing are separate Git reads, and each is checked only to end
+ * whole, so one cut between two complete records still parses and leaves
+ * out a checkout, and with it the holds its branch gives. So every checkout
+ * one listing names must be in the other with the same branch, and a branch
+ * a checkout or an unreleased claim names must be in the branch listing
+ * unless Git confirms it does not exist (a branch with no commit yet, or a
+ * claim's branch not created or already deleted). A claim may name a
+ * checkout not made yet or already removed, so its path alone is not
+ * compared. Both listings losing the same checkout cannot be seen here.
+ */
+const checkoutDisagreements = (input: RemoteBranchHoldInput): string[] => {
+  const { claims, inventory } = input;
+  const { primaryCheckout } = inventory.repository;
+  if (inventory.worktrees.length === 0) {
+    return ["the worktree listing names no checkout, not even the main one"];
+  }
+  // Each branch the worktree listing has checked out, with every path.
+  const listed = new Map<string, string[]>();
+  for (const worktree of inventory.worktrees) {
+    if (worktree.branch) {
+      listed.set(worktree.branch, [
+        ...(listed.get(worktree.branch) ?? []),
+        worktree.path,
+      ]);
+    }
+  }
+  const bare = bareCheckouts(inventory);
+  const branches = new Map(
+    inventory.branches.map((branch) => [branch.name, branch])
+  );
+  const leftOut = (name: string): boolean =>
+    !branches.has(name) && branchExists(primaryCheckout, name);
+  return [
+    ...inventory.branches.flatMap((branch) => {
+      const path = branch.worktreePath && checkoutPath(branch.worktreePath);
+      const paths = listed.get(branch.name) ?? [];
+      return path && !bare.has(path) && !paths.includes(path)
+        ? [
+            `the branch listing has ${branch.name} checked out in ${path}, but the worktree listing ${paths.length > 0 ? `has it in ${paths.join(", ")}` : "does not"}`,
+          ]
+        : [];
+    }),
+    ...[...listed].flatMap(([name, paths]) => {
+      const where = `the worktree listing has ${name} checked out in ${paths.join(", ")}`;
+      if (branches.get(name)?.worktreePath === null) {
+        return [`${where}, but the branch listing has it checked out nowhere`];
+      }
+      return leftOut(name)
+        ? [`${where}, but the branch listing leaves the branch out`]
+        : [];
+    }),
+    ...claims.flatMap((claim) =>
+      claim.state !== "released" &&
+      claim.branch &&
+      !listed.has(claim.branch) &&
+      leftOut(claim.branch)
+        ? [
+            `claim ${claim.claimId} holds ${claim.branch}, but the branch listing leaves the branch out`,
+          ]
+        : []
+    ),
+  ];
+};
+
 /**
  * Whether Git could be missing history here. Anything other than an explicit
  * "false" counts as shallow, so an old Git or a failed check never reads as
@@ -190,119 +306,125 @@ const SHALLOW_ADVICE =
 
 const ONE_LINE = /^[^\n]*\n$/u;
 
+const UPSTREAM_FORMAT =
+  "--format=%(upstream:remotename)%00%(upstream:remoteref)";
+
 /**
- * The `%(upstream)` line of a local branch. Git prints one whole line,
- * empty or not, for a branch that exists and nothing for one that does not.
- * An answer cut short (no line break) is asked once more and then refused,
- * so a cut refname never names another branch. Nothing at all, twice, is
- * settled by whether the branch exists: a branch that exists makes it a
+ * Git's own upstream of a local branch: the remote and the remote's ref,
+ * which Git takes from the first `branch.<name>.merge` value. Null when Git
+ * gives none: it tracks nothing, Git maps no remote-tracking branch to it
+ * (a remote that is not configured, a fetch refspec that leaves the branch
+ * out, or a merge value without `refs/heads/`), the branch has no commit
+ * yet, or this Git does not know the atoms and fails. Git prints one whole
+ * line for a branch that exists and nothing for one that does not. An
+ * answer cut short (no line break) is asked once more and then refused, so
+ * a cut name never names another remote or branch. Nothing at all, twice,
+ * is settled by whether the branch exists: a branch that exists makes it a
  * lost answer, which throws rather than read as no upstream.
  */
-const upstreamListing = (
+const canonicalUpstream = (
   repositoryPath: string,
   branch: string
-): { exitCode: number; stderr: string; stdout: string } => {
+): { ref: string; remote: string } | null => {
   const ask = () =>
     runGit(
       repositoryPath,
-      ["for-each-ref", "--format=%(upstream)", `refs/heads/${branch}`],
+      ["for-each-ref", UPSTREAM_FORMAT, `refs/heads/${branch}`],
       true
     );
-  const whole = (answer: { exitCode: number; stdout: string }): boolean =>
-    answer.exitCode !== 0 || ONE_LINE.test(answer.stdout);
+  const whole = (reply: { exitCode: number; stdout: string }): boolean =>
+    reply.exitCode !== 0 || ONE_LINE.test(reply.stdout);
   const first = ask();
-  if (whole(first)) {
-    return first;
+  const answer = whole(first) ? first : ask();
+  if (!whole(answer)) {
+    if (first.stdout !== "" || answer.stdout !== "") {
+      throw new LostGitAnswerError(
+        `cannot read the upstream of ${branch}: Git twice printed an upstream line cut short, so its answer was lost.`
+      );
+    }
+    if (branchExists(repositoryPath, branch)) {
+      throw new Error(
+        `cannot read the upstream of ${branch}: Git printed nothing twice for a branch that exists, so its answer was lost; retry the command`
+      );
+    }
+    return null;
   }
-  const second = ask();
-  if (whole(second)) {
-    return second;
+  if (answer.exitCode !== 0) {
+    return null;
   }
-  if (first.stdout !== "" || second.stdout !== "") {
-    throw new LostGitAnswerError(
-      `cannot read the upstream of ${branch}: Git twice printed an upstream line cut short, so its answer was lost.`
-    );
-  }
-  const exists = runGit(
-    repositoryPath,
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
-    true
-  );
-  if (exists.exitCode === 1) {
-    return second;
-  }
-  throw new Error(
-    `cannot read the upstream of ${branch}: Git printed nothing twice for a branch that ${exists.exitCode === 0 ? "exists" : "may exist"}, so its answer was lost; retry the command`
-  );
+  const [remote = "", ref = "", ...extra] = answer.stdout
+    .slice(0, -1)
+    .split("\0");
+  return remote && ref && extra.length === 0 ? { ref, remote } : null;
 };
 
+const providerBranchName = (ref: string | null): string | null =>
+  ref === null
+    ? null
+    : (ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref) ||
+      null;
+
 /**
- * The provider branch a local branch tracks on the target remote, or null
- * when it tracks none there. It reads the canonical identity from
- * `branch.<name>.remote` and `branch.<name>.merge`, never the abbreviated
- * display name, which Git lengthens (`remotes/origin/kept`) when a local
- * branch shares the remote-tracking name. Each value must arrive as one
- * whole line, so a remote name cut from `origin` to `ori` never reads as
- * another remote. A remote that is neither the target, this repository
- * (`.`), nor one of the configured `remotes` is unknown, so the branch it
- * names is held as if it were the target's. When the config cannot be read
- * it falls back to the full `%(upstream)` refname, and throws when that
- * fails too, so an unknown upstream never reads as none.
+ * The provider branches a local branch may track on the target remote,
+ * read the way Git resolves its upstream. A remote that is neither the
+ * target, this repository (`.`), nor one of the configured `remotes` is
+ * unknown, so the branch it names is held as if it were the target's.
+ * When Git gives no upstream, the configuration still decides: any
+ * `branch.<name>.remote` value that is the target or unknown holds every
+ * `branch.<name>.merge` value, so an older Git, a merge value Git does not
+ * use, or one it cannot map to a remote-tracking branch holds too many
+ * branches, never too few. An answer that cannot be read throws, so an
+ * unknown upstream never reads as none.
  */
-const trackedProviderBranch = (
+const trackedProviderBranches = (
   repositoryPath: string,
   branch: string,
   targetRemote: string,
-  remotes: () => readonly string[]
-): string | null => {
-  const config = (key: "merge" | "remote") =>
-    completeLine(repositoryPath, [
-      "config",
-      "--get",
-      `branch.${branch}.${key}`,
-    ]);
-  const remote = config("remote");
-  const merge = config("merge");
-  if (remote.exitCode === 1 || merge.exitCode === 1) {
-    // Not set: the branch tracks nothing.
-    return null;
+  remotes: () => readonly string[],
+  configuration: () => readonly ConfigEntry[]
+): string[] => {
+  const targets = (remote: string | null): boolean =>
+    remote === null ||
+    remote === targetRemote ||
+    !(remote === "." || remotes().includes(remote));
+  const upstream = canonicalUpstream(repositoryPath, branch);
+  if (upstream) {
+    const tracked = providerBranchName(upstream.ref);
+    return tracked && targets(upstream.remote) ? [tracked] : [];
   }
-  if (remote.line !== null && merge.line !== null) {
-    const ref = merge.line;
-    const tracked =
-      (ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref) ||
-      null;
-    if (remote.line === targetRemote) {
-      return tracked;
-    }
-    return remote.line === "." || remotes().includes(remote.line)
-      ? null
-      : tracked;
+  const values = (key: "merge" | "remote") =>
+    configuration()
+      .filter((entry) => entry.key === `branch.${branch}.${key}`)
+      .map((entry) => entry.value);
+  if (!values("remote").some(targets)) {
+    return [];
   }
-  const upstream = upstreamListing(repositoryPath, branch);
-  if (upstream.exitCode !== 0) {
-    throw new Error(
-      `cannot read the upstream of ${branch}: ${upstream.stderr.trim() || `exit ${upstream.exitCode}`}`
-    );
-  }
-  const full = upstream.stdout.trim();
-  const prefix = `refs/remotes/${targetRemote}/`;
-  return full.startsWith(prefix) ? full.slice(prefix.length) || null : null;
+  return values("merge")
+    .map(providerBranchName)
+    .filter((tracked): tracked is string => tracked !== null);
 };
 
 /**
  * Holds that need no history: checkouts, claims, resume targets, and the
  * upstream of every live branch, the target's included (a target checkout
- * tracking another provider branch keeps that branch).
+ * tracking another provider branch keeps that branch). When the sources of
+ * checkouts disagree, this throws, so a caller deciding deletions withholds
+ * every proposal instead of trusting holds built from a listing cut short.
  */
 export const remoteBranchNameHolds = (
   input: RemoteBranchHoldInput
 ): { byName: Map<string, string[]>; live: Map<string, string> } => {
   const { inventory, targetBranch } = input;
   const { primaryCheckout, targetRemote } = inventory.repository;
+  const disagreements = checkoutDisagreements(input);
+  if (disagreements.length > 0) {
+    throw new LostGitAnswerError(
+      `The worktree listing, the branch listing and the claims disagree about what is checked out (${disagreements.join("; ")}), so a listing was cut short or a checkout changed between the reads.`
+    );
+  }
   const byName = new Map<string, string[]>();
   const live = nameHolds(input, byName);
-  // Read once, and only when a branch tracks a remote other than the target.
+  // Each is read once, and only when a branch needs it.
   let configured: string[] | undefined;
   const remotes = (): readonly string[] => {
     configured ??= completeRemoteNames(
@@ -311,12 +433,25 @@ export const remoteBranchNameHolds = (
     );
     return configured;
   };
+  let configuration: ConfigEntry[] | undefined;
+  const entries = (): readonly ConfigEntry[] => {
+    configuration ??= completeConfigListing(primaryCheckout);
+    return configuration;
+  };
   for (const [branch, why] of live) {
-    const upstream = targetRemote
-      ? trackedProviderBranch(primaryCheckout, branch, targetRemote, remotes)
-      : null;
-    if (upstream && upstream !== targetBranch) {
-      addHold(byName, upstream, `upstream of ${branch}, ${why}`);
+    const upstreams = targetRemote
+      ? trackedProviderBranches(
+          primaryCheckout,
+          branch,
+          targetRemote,
+          remotes,
+          entries
+        )
+      : [];
+    for (const upstream of upstreams) {
+      if (upstream !== targetBranch) {
+        addHold(byName, upstream, `upstream of ${branch}, ${why}`);
+      }
     }
   }
   return { byName, live };
@@ -785,22 +920,28 @@ export const remoteBranchCleanupReport = (
     targetRevision: receipt.targetRevision,
   };
   let holds: RemoteBranchHolds = { byName: new Map(), byRevision: new Map() };
+  const message = (error: unknown): string =>
+    error instanceof Error ? error.message : String(error);
   try {
     holds = remoteBranchHolds(holdInput);
   } catch (error) {
     // Holds by name need no history; only fork-point holds are lost, which
-    // reports more as pending, never fewer.
+    // reports more as pending, never fewer. When the holds by name cannot
+    // be read either, such as when the sources of checkouts disagree, none
+    // is kept at all.
     try {
       holds = {
         byName: remoteBranchNameHolds(holdInput).byName,
         byRevision: new Map(),
       };
-    } catch {
-      // Keep no holds at all.
+      errors.push(
+        `Fork-point holds could not be computed, so none is applied: ${message(error)}`
+      );
+    } catch (nameError) {
+      errors.push(
+        `Holds could not be computed, so none is applied: ${message(nameError)}`
+      );
     }
-    errors.push(
-      `Fork-point holds could not be computed, so none is applied: ${error instanceof Error ? error.message : String(error)}`
-    );
   }
   const shallow = mayBeShallow(repositoryPath);
   const deletedExternally = externallyDeletedItems(input, repositoryPath);

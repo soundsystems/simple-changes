@@ -757,8 +757,9 @@ exit 0
       return hold;
     };
     const lost = publish("Lost race.");
-    // Delete the ref on the server before the incoming delete applies, so Git
-    // reports the bare "unable to resolve reference" a lost race produces.
+    // Delete the ref on the server before the incoming delete applies, as a
+    // lost race does. Older Git reports a bare "unable to resolve reference";
+    // Git 2.53 rejects the delete with "reference does not exist".
     writeFileSync(
       join(origin, "hooks", "pre-receive"),
       `#!/bin/sh
@@ -795,6 +796,76 @@ exit 0
     });
     expect(failed.withdrawal.ok).toBe(false);
     expect(failed.hold.publication?.withdrawnAt).toBeNull();
+  });
+
+  test("decide a rejected delete from the remote's listing, not Git's message", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const publish = (reason: string) => {
+      const hold = addShipHold(fixture.root, {
+        adapter: "claude-code",
+        agentId: "owner",
+        reason,
+        scope: "ship",
+        severity: "delay",
+      });
+      publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+      return hold;
+    };
+    const hook = (removeRef: boolean) => {
+      writeFileSync(
+        join(origin, "hooks", "pre-receive"),
+        `#!/bin/sh
+while read old new ref; do
+  ${removeRef ? 'git update-ref -d "$ref"' : ":"}
+done
+exit 1
+`,
+        { mode: 0o755 }
+      );
+      git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+    };
+    const listed = () =>
+      git(fixture.root, ["ls-remote", "origin", `${HOLD_REF_PREFIX}*`]);
+
+    // The hook declines the push, but the ref is gone by then: whatever Git
+    // prints, the listing shows the hold withdrawn.
+    const gone = publish("Gone anyway.");
+    hook(true);
+    const released = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: gone.holdId,
+    });
+    expect(released.withdrawal).toEqual({
+      attempted: true,
+      error: null,
+      ok: true,
+    });
+    expect(released.hold.publication?.withdrawnAt).not.toBeNull();
+    expect(listed()).toBe("");
+
+    // A declined delete that leaves the ref listed stays a failure, and the
+    // next release retries it.
+    rmSync(join(origin, "hooks", "pre-receive"));
+    const kept = publish("Still listed.");
+    hook(false);
+    const declined = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: kept.holdId,
+    });
+    expect(declined.withdrawal.ok).toBe(false);
+    expect(declined.withdrawal.error).toContain("pre-receive hook declined");
+    expect(declined.hold.publication?.withdrawnAt).toBeNull();
+    expect(listed()).toContain(`${HOLD_REF_PREFIX}${kept.holdId}`);
+
+    rmSync(join(origin, "hooks", "pre-receive"));
+    const retried = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: kept.holdId,
+    });
+    expect(retried.withdrawal).toMatchObject({ attempted: true, ok: true });
+    expect(retried.hold.publication?.withdrawnAt).not.toBeNull();
+    expect(listed()).toBe("");
   });
 
   test("republish a hold whose ref was withdrawn elsewhere", () => {

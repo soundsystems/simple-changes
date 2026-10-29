@@ -37,7 +37,6 @@ export const HOLD_REF_PREFIX = "refs/simple-changes/holds/";
 const HOLD_PAYLOAD_PATH = "hold.json";
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const HOLD_ID_PATTERN = /^hold-[a-z0-9-]+$/u;
-const MISSING_REMOTE_REF = /remote ref does not exist/iu;
 const UNRESOLVED_REFERENCE = /unable to resolve reference '([^']+)'(:?)/giu;
 const WHITESPACE = /\s+/u;
 const SENTENCE_END = /[.!?]$/u;
@@ -1092,17 +1091,22 @@ const pushAuthorizationNever = (inventory: RepositoryInventory): boolean =>
   inventory.policy.value.gitPushAuthorization === "never";
 
 /**
- * True only when Git reports this exact ref as already absent: either the
- * client-side "remote ref does not exist", or a lost delete race's bare
- * "unable to resolve reference '<ref>'". A suffixed form such as
- * "...: reference broken" or "...: Permission denied" is a real failure.
+ * True when Git reports this exact ref as unreadable on the remote, as in
+ * "unable to resolve reference '<ref>': reference broken". The bare form
+ * without the suffix is a lost delete race, not a broken ref.
  */
-const refAlreadyGone = (detail: string, ref: string): boolean =>
-  (MISSING_REMOTE_REF.test(detail) && detail.includes(ref)) ||
+const refUnreadable = (detail: string, ref: string): boolean =>
   [...detail.matchAll(UNRESOLVED_REFERENCE)].some(
-    ([, name, suffix]) => name === ref && suffix === ""
+    ([, name, suffix]) => name === ref && suffix === ":"
   );
 
+/**
+ * Delete a hold ref. A failed delete still counts as withdrawn when a fresh
+ * listing shows the remote no longer has the ref, as after a lost delete
+ * race: Git words that differently across versions (2.53 says "reference
+ * does not exist"), so the outcome comes from the listing, not the message.
+ * A ref Git reports as unreadable stays a failure even if listings hide it.
+ */
 const deleteRemoteRef = (
   root: string,
   remote: string,
@@ -1113,13 +1117,23 @@ const deleteRemoteRef = (
     ["push", "--no-follow-tags", remote, `:${ref}`],
     PUSH_TIMEOUT_MS
   );
-  const detail = pushed.stderr || pushed.stdout;
-  if (pushed.exitCode === 0 || refAlreadyGone(detail, ref)) {
+  if (pushed.exitCode === 0) {
     return { attempted: true, error: null, ok: true };
   }
+  const detail = (pushed.stderr || pushed.stdout).trim();
+  const listed = refUnreadable(detail, ref)
+    ? null
+    : listRemoteHoldRefs(root, remote, ref);
+  if (Array.isArray(listed) && !listed.some((item) => item.ref === ref)) {
+    return { attempted: true, error: null, ok: true };
+  }
+  const error =
+    typeof listed === "string"
+      ? `${detail} Listing ${ref} on ${remote} also failed: ${listed.trim()}`
+      : detail;
   return {
     attempted: true,
-    error: redactSecrets(detail.trim()) || "push failed",
+    error: redactSecrets(error.trim()) || "push failed",
     ok: false,
   };
 };

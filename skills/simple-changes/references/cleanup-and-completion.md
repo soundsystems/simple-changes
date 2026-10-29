@@ -292,10 +292,11 @@ The build reads the worktrees and claims from `--repo`. A live branch is one
 checked out by the worktree listing or by the branch listing's own checkout
 path, or held by an unreleased claim. Its upstream is the one Git uses
 (`%(upstream:remotename)` and `%(upstream:remoteref)`, which follow the first
-`branch.<name>.merge` value). When Git names none, such as an older Git
-without those fields or a fetch refspec that leaves the branch out, every
-`branch.<name>.merge` value counts while any `branch.<name>.remote` value is
-the target remote or not a configured remote.
+`branch.<name>.merge` value). When Git names none, such as a Git older than
+2.16 refusing those fields or a fetch refspec that leaves the branch out,
+every `branch.<name>.merge` value counts while any `branch.<name>.remote`
+value is the target remote or not a configured remote. Any other failed
+upstream read counts as local state that cannot be read.
 
 A merged-MR head that fails only the last two checks is listed in
 `heldBranches` with every reason and is not proposed. Every merged-MR head is

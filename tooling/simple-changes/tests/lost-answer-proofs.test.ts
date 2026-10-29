@@ -73,7 +73,8 @@ const runInChild = (
   failFlag = "",
   mode: FakeGitLoss = "empty",
   skip = 0,
-  version?: string
+  version?: string,
+  failure?: { exitCode: number; stderr: string }
 ): { remaining: number; reply: unknown } =>
   runWithFakeGit(
     {
@@ -84,6 +85,7 @@ const runInChild = (
       mode,
       skip,
       ...(version === undefined ? {} : { version }),
+      ...(failure === undefined ? {} : { failure }),
     },
     (cleanup) => cleanups.push(cleanup)
   );
@@ -1399,6 +1401,12 @@ try {
   }
 });
 
+// How Git 2.13 to 2.15 refuse the upstream atoms.
+const OLDER_GIT_REFUSAL = {
+  exitCode: 128,
+  stderr: "fatal: unrecognized %(upstream) argument: remotename",
+};
+
 describe("an upstream hold read from a remote name or merge ref cut short", () => {
   // fix/live tracks kept on the target remote, which holds kept by name. A
   // remote name cut from `origin` to `ori`, a merge ref cut from
@@ -1450,7 +1458,11 @@ try {
       flag,
       lost,
       options.failFlag ?? "",
-      cut === "before-merge" ? `nul:${entries - 1}` : cut
+      cut === "before-merge" ? `nul:${entries - 1}` : cut,
+      0,
+      // A failing upstream read is Git 2.15 refusing the atoms.
+      options.failFlag ? "git version 2.15.4" : undefined,
+      options.failFlag ? OLDER_GIT_REFUSAL : undefined
     );
   };
 
@@ -1461,8 +1473,8 @@ try {
 
   // The read, the Git call that answers it, and the cut that would read as
   // another remote or branch, or as no upstream. The configuration is read
-  // when Git gives no upstream line, as an older Git without the atoms
-  // does by failing.
+  // when Git gives no upstream line, as a Git older than 2.16 does by
+  // refusing the atoms.
   const reads: [string, string, FakeGitLoss | "before-merge", string][] = [
     ["the upstream line", LIVE_UPSTREAM, "bytes:3", ""],
     ["the upstream line without its line break", LIVE_UPSTREAM, "bytes:22", ""],

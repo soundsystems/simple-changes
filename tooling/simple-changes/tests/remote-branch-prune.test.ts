@@ -1563,13 +1563,9 @@ const providerOnlyBranch = (root: string, name: string): string => {
 
 /**
  * Each provider branch beside main was merged by its own MR at its head, and
- * the provider kept it.
+ * the provider kept it: the opening and final pages.
  */
-const mergedHeads = (
-  head: string,
-  heads: Record<string, string>,
-  resolveHolds: RemoteInventoryHoldResolver
-) => {
+const mergedPages = (head: string, heads: Record<string, string>) => {
   const branches = [
     main(head),
     ...Object.entries(heads).map(([name, headRevision]) => ({
@@ -1582,24 +1578,38 @@ const mergedHeads = (
     Object.entries(heads).map(([name, headRevision], index) =>
       mr(String(50 + index), name, state, headRevision)
     );
-  return buildRemoteInventory(
-    pages(CLOSED, branches, proposals("merged"), []),
-    {
-      opening: buildRemoteInventory(
-        pages(
-          OPENED,
-          branches,
-          proposals("open"),
-          proposals("open").map((proposal) => ({
-            objectId: proposal.objectId,
-            targetBranch: "main",
-          }))
-        )
-      ).receipt,
-      resolveHolds,
-    }
-  );
+  return {
+    final: pages(CLOSED, branches, proposals("merged"), []),
+    opening: pages(
+      OPENED,
+      branches,
+      proposals("open"),
+      proposals("open").map((proposal) => ({
+        objectId: proposal.objectId,
+        targetBranch: "main",
+      }))
+    ),
+  };
 };
+
+const mergedHeads = (
+  head: string,
+  heads: Record<string, string>,
+  resolveHolds: RemoteInventoryHoldResolver
+) => {
+  const { final, opening } = mergedPages(head, heads);
+  return buildRemoteInventory(final, {
+    opening: buildRemoteInventory(opening).receipt,
+    resolveHolds,
+  });
+};
+
+const libraryPath = (name: string): string =>
+  join(import.meta.dir, `../../../skills/simple-changes/scripts/lib/${name}`);
+
+// Git's own upstream of a branch, which an older Git refuses.
+const UPSTREAM_FORMAT =
+  "--format=%(upstream:remotename)%00%(upstream:remoteref)";
 
 const outcome = (built: ReturnType<typeof buildRemoteInventory>) => ({
   held: built.summary.heldBranches.map((branch) => [
@@ -1679,39 +1689,133 @@ describe("an upstream is read the way Git resolves it", () => {
     });
   });
 
-  test("a Git without the upstream atoms holds every merge value", () => {
+  test("a Git older than 2.16, which refuses the upstream atoms, holds every merge value", () => {
     const { head, root } = twoMerges();
     git(root, ["config", "branch.main.remote", "origin"]);
     git(root, ["config", "--add", "branch.main.merge", "refs/heads/kept"]);
     git(root, ["config", "--add", "branch.main.merge", "refs/heads/other"]);
-    const libraryPath = (name: string): string =>
-      join(
-        import.meta.dir,
-        `../../../skills/simple-changes/scripts/lib/${name}`
-      );
-    const run = (failFlag: string) =>
+    const run = (
+      failure?: { exitCode: number; stderr: string },
+      version?: string
+    ) =>
       runWithFakeGit(
         {
           body: `import { captureInventory } from ${JSON.stringify(libraryPath("inventory.ts"))};
 import { remoteBranchHolds } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
 const inventory = captureInventory(${JSON.stringify(root)}, { skipWorktreeStatus: true });
-const holds = remoteBranchHolds({ claims: [], inventory, targetBranch: "main", targetRevision: ${JSON.stringify(head)} });
-console.log(JSON.stringify(Object.fromEntries(holds.byName)));
+try {
+  const holds = remoteBranchHolds({ claims: [], inventory, targetBranch: "main", targetRevision: ${JSON.stringify(head)} });
+  console.log(JSON.stringify(Object.fromEntries(holds.byName)));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
 `,
-          failFlag,
+          failFlag: failure ? UPSTREAM_FORMAT : "",
+          ...(failure ? { failure } : {}),
           flag: "",
           lost: 0,
+          ...(version ? { version } : {}),
         },
         (cleanup) => cleanups.push(cleanup)
       ).reply;
     const reason = `upstream of main, checked out in ${root}`;
     // Control: a Git that knows the atoms holds only its upstream.
-    expect(run("")).toMatchObject({ kept: [reason] });
-    expect(run("")).not.toHaveProperty("other");
-    // An older Git refuses them, so the configuration holds every value.
+    expect(run()).toMatchObject({ kept: [reason] });
+    expect(run()).not.toHaveProperty("other");
+    // Git 2.13 to 2.15, and Git before 2.13, refuse the atoms in their own
+    // words, so the configuration holds every value.
+    const refused = {
+      exitCode: 128,
+      stderr: "fatal: unrecognized %(upstream) argument: remotename",
+    };
+    expect(run(refused, "git version 2.15.4")).toMatchObject({
+      kept: [reason],
+      other: [reason],
+    });
     expect(
-      run("--format=%(upstream:remotename)%00%(upstream:remoteref)")
+      run(
+        {
+          exitCode: 128,
+          stderr: "fatal: unrecognized format: %(upstream:remotename)",
+        },
+        "git version 2.12.5"
+      )
     ).toMatchObject({ kept: [reason], other: [reason] });
+    // The same words from a Git that knows the atoms, or an older Git that
+    // fails for another reason, are a failed read, never a missing upstream.
+    for (const [failure, version] of [
+      [refused, undefined],
+      [refused, "git version 2.16.0"],
+      [{ ...refused, exitCode: 3 }, "git version 2.15.4"],
+      [
+        {
+          exitCode: 128,
+          stderr: "fatal: unable to read refs/heads/main: Input/output error",
+        },
+        "git version 2.15.4",
+      ],
+    ] as const) {
+      expect((run(failure, version) as { error?: string }).error).toStartWith(
+        "cannot read the upstream of main: "
+      );
+    }
+  });
+
+  test("an upstream read that fails withholds every proposal", () => {
+    // main tracks origin/kept; other is finished and unrelated. Git fails
+    // to read the upstream while the configuration still reads, which once
+    // fell back to the configuration as if Git had named no upstream.
+    const { head, heads, root } = twoMerges();
+    git(root, ["config", "branch.main.remote", "origin"]);
+    git(root, ["config", "branch.main.merge", "refs/heads/kept"]);
+    const { final, opening } = mergedPages(head, heads);
+    const build = (failFlag: string) =>
+      runWithFakeGit(
+        {
+          body: `import { captureInventory } from ${JSON.stringify(libraryPath("inventory.ts"))};
+import { remoteBranchHolds } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
+import { buildRemoteInventory } from ${JSON.stringify(libraryPath("remote-inventory.ts"))};
+const built = buildRemoteInventory(${JSON.stringify(final)}, {
+  opening: buildRemoteInventory(${JSON.stringify(opening)}).receipt,
+  resolveHolds: (targetBranch, targetRevision) =>
+    remoteBranchHolds({
+      claims: [],
+      inventory: captureInventory(${JSON.stringify(root)}, { skipWorktreeStatus: true }),
+      targetBranch,
+      targetRevision,
+    }),
+});
+console.log(JSON.stringify({
+  held: built.summary.heldBranches.map((branch) => [branch.name, branch.reasons.join("; ")]),
+  proposed: built.summary.deletionProposals.map((branch) => branch.name),
+}));
+`,
+          failFlag,
+          failure: {
+            exitCode: 128,
+            stderr: "fatal: unable to read refs/heads/main: Input/output error",
+          },
+          flag: "",
+          lost: 0,
+        },
+        (cleanup) => cleanups.push(cleanup)
+      ).reply as ReturnType<typeof outcome>;
+    // Control: with every read whole, kept is held and other proposed.
+    expect(build("")).toEqual({
+      held: [["kept", `upstream of main, checked out in ${root}`]],
+      proposed: ["other"],
+    });
+    const { held, proposed } = build(UPSTREAM_FORMAT);
+    expect(proposed).toEqual([]);
+    expect(held.map(([name]) => name)).toEqual(["kept", "other"]);
+    for (const [, reasons] of held) {
+      expect(reasons).toContain(
+        "live worktrees and claims could not be checked"
+      );
+      expect(reasons).toContain(
+        "cannot read the upstream of main: fatal: unable to read refs/heads/main: Input/output error"
+      );
+    }
   });
 });
 

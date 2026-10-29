@@ -309,18 +309,56 @@ const ONE_LINE = /^[^\n]*\n$/u;
 const UPSTREAM_FORMAT =
   "--format=%(upstream:remotename)%00%(upstream:remoteref)";
 
+// The first Git whose `for-each-ref` knows `%(upstream:remotename)` and
+// `%(upstream:remoteref)`.
+const UPSTREAM_ATOMS_SINCE = { major: 2, minor: 16 };
+
+const GIT_VERSION = /^git version ([0-9]+)\.([0-9]+)(?:[.\s]|$)/u;
+
+// How a Git older than 2.16 refuses either atom, by name.
+const UPSTREAM_ATOM_REFUSAL = /^fatal: unrecognized .*\bremote(?:name|ref)\b/mu;
+
+/**
+ * Whether a failed upstream read is an older Git refusing the atoms, not a
+ * read that failed. Both must say so: Git's own refusal naming an atom
+ * (`unrecognized format: %(upstream:remotename)` before 2.13, then
+ * `unrecognized %(upstream) argument: remotename`), and a whole `git
+ * version` line older than 2.16. Anything else, such as an I/O error, a
+ * newer Git, or a version that cannot be read, is a failure.
+ */
+const refusesUpstreamAtoms = (
+  repositoryPath: string,
+  failure: { exitCode: number; stderr: string }
+): boolean => {
+  if (failure.exitCode !== 128 || !UPSTREAM_ATOM_REFUSAL.test(failure.stderr)) {
+    return false;
+  }
+  const version = GIT_VERSION.exec(
+    completeLine(repositoryPath, ["version"], GIT_VERSION).line ?? ""
+  );
+  if (!version) {
+    return false;
+  }
+  const [major, minor] = [Number(version[1]), Number(version[2])];
+  return (
+    major < UPSTREAM_ATOMS_SINCE.major ||
+    (major === UPSTREAM_ATOMS_SINCE.major && minor < UPSTREAM_ATOMS_SINCE.minor)
+  );
+};
+
 /**
  * Git's own upstream of a local branch: the remote and the remote's ref,
  * which Git takes from the first `branch.<name>.merge` value. Null when Git
  * gives none: it tracks nothing, Git maps no remote-tracking branch to it
  * (a remote that is not configured, a fetch refspec that leaves the branch
  * out, or a merge value without `refs/heads/`), the branch has no commit
- * yet, or this Git does not know the atoms and fails. Git prints one whole
- * line for a branch that exists and nothing for one that does not. An
- * answer cut short (no line break) is asked once more and then refused, so
- * a cut name never names another remote or branch. Nothing at all, twice,
- * is settled by whether the branch exists: a branch that exists makes it a
- * lost answer, which throws rather than read as no upstream.
+ * yet, or a Git older than 2.16 refuses the atoms. Any other failure
+ * throws, so a read that failed never reads as no upstream. Git prints one
+ * whole line for a branch that exists and nothing for one that does not.
+ * An answer cut short (no line break) is asked once more and then refused,
+ * so a cut name never names another remote or branch. Nothing at all,
+ * twice, is settled by whether the branch exists: a branch that exists
+ * makes it a lost answer, which throws rather than read as no upstream.
  */
 const canonicalUpstream = (
   repositoryPath: string,
@@ -350,7 +388,12 @@ const canonicalUpstream = (
     return null;
   }
   if (answer.exitCode !== 0) {
-    return null;
+    if (refusesUpstreamAtoms(repositoryPath, answer)) {
+      return null;
+    }
+    throw new Error(
+      `cannot read the upstream of ${branch}: ${answer.stderr.trim() || `exit ${answer.exitCode}`}`
+    );
   }
   const [remote = "", ref = "", ...extra] = answer.stdout
     .slice(0, -1)
@@ -373,8 +416,9 @@ const providerBranchName = (ref: string | null): string | null =>
  * `branch.<name>.remote` value that is the target or unknown holds every
  * `branch.<name>.merge` value, so an older Git, a merge value Git does not
  * use, or one it cannot map to a remote-tracking branch holds too many
- * branches, never too few. An answer that cannot be read throws, so an
- * unknown upstream never reads as none.
+ * branches, never too few. A read that fails, unless a Git older than 2.16
+ * refuses the atoms, and an answer that cannot be read throw, so an unknown
+ * upstream never reads as none.
  */
 const trackedProviderBranches = (
   repositoryPath: string,

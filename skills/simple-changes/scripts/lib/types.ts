@@ -182,6 +182,12 @@ export interface BranchInventory {
   ahead: number;
   behind: number;
   current: boolean;
+  /**
+   * The branch's name in `refs/heads/<name>`, as the worktree listing and
+   * claims give it. `name` is Git's display name, which differs when a tag
+   * or another ref shares the name (`heads/<name>`); leases record `name`.
+   */
+  exactName: string;
   name: string;
   sha: string;
   upstream: string | null;

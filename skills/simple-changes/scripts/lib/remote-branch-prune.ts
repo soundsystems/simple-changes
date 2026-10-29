@@ -168,7 +168,7 @@ const nameHolds = (
   for (const branch of inventory.branches) {
     const path = branch.worktreePath && checkoutPath(branch.worktreePath);
     if (path && !bare.has(path)) {
-      checkedOut(branch.name, path);
+      checkedOut(branch.exactName, path);
     }
   }
   for (const claim of claims) {
@@ -234,6 +234,8 @@ const branchExists = (repositoryPath: string, branch: string): boolean => {
  * claim's branch not created or already deleted). A claim may name a
  * checkout not made yet or already removed, so its path alone is not
  * compared. Both listings losing the same checkout cannot be seen here.
+ * Branches are compared by `exactName`, the name the other two sources use;
+ * the display name reads `heads/<name>` when a tag shares the name.
  */
 const checkoutDisagreements = (input: RemoteBranchHoldInput): string[] => {
   const { claims, inventory } = input;
@@ -253,17 +255,17 @@ const checkoutDisagreements = (input: RemoteBranchHoldInput): string[] => {
   }
   const bare = bareCheckouts(inventory);
   const branches = new Map(
-    inventory.branches.map((branch) => [branch.name, branch])
+    inventory.branches.map((branch) => [branch.exactName, branch])
   );
   const leftOut = (name: string): boolean =>
     !branches.has(name) && branchExists(primaryCheckout, name);
   return [
     ...inventory.branches.flatMap((branch) => {
       const path = branch.worktreePath && checkoutPath(branch.worktreePath);
-      const paths = listed.get(branch.name) ?? [];
+      const paths = listed.get(branch.exactName) ?? [];
       return path && !bare.has(path) && !paths.includes(path)
         ? [
-            `the branch listing has ${branch.name} checked out in ${path}, but the worktree listing ${paths.length > 0 ? `has it in ${paths.join(", ")}` : "does not"}`,
+            `the branch listing has ${branch.exactName} checked out in ${path}, but the worktree listing ${paths.length > 0 ? `has it in ${paths.join(", ")}` : "does not"}`,
           ]
         : [];
     }),
@@ -547,7 +549,7 @@ export const remoteBranchHolds = (
     if (branch === targetBranch) {
       continue;
     }
-    const local = inventory.branches.find((item) => item.name === branch);
+    const local = inventory.branches.find((item) => item.exactName === branch);
     const head =
       local?.sha ??
       inventory.worktrees.find((worktree) => worktree.branch === branch)

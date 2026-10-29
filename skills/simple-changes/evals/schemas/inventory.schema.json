@@ -205,6 +205,7 @@
       ],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
+        "exactName": { "type": "string", "minLength": 1 },
         "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
         "upstream": {
           "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]

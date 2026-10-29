@@ -451,6 +451,46 @@ describe("simple-changes prune", () => {
       })
     ).toThrow(REASON_REQUIRED_PATTERN);
   });
+
+  test("keeps the branch a 0.33.0 lease recorded by its display name", () => {
+    // 0.33.0 recorded each opening branch by Git's display name, which reads
+    // heads/parked while a tag is also named parked.
+    const fixture = repository();
+    const { root } = fixture;
+    git(root, ["branch", "parked"]);
+    git(root, ["tag", "parked"]);
+    const head = git(root, ["rev-parse", "HEAD"]);
+    startLoop(root, "controller", "integrate");
+    const recorded = readLeaseFile(root).openingBranches;
+    const legacy = [
+      { name: "heads/parked", sha: head },
+      { name: "main", sha: head },
+    ];
+    writeLeaseFile(root, { ...readLeaseFile(root), openingBranches: legacy });
+    const prune = () =>
+      pruneRepository({
+        approvedBy: "the-user",
+        dryRun: false,
+        reason: "Clean up around a run 0.33.0 opened.",
+        repositoryPath: root,
+      });
+
+    // The recorded name protects the branch it named, as in 0.33.0.
+    const first = prune();
+    expect(first.lease?.protectedBranches).toContain("heads/parked");
+    expect(first.removedBranches).toEqual([]);
+    expect(branchExists(root, "parked")).toBe(true);
+
+    // Another agent's later branch literally named heads/parked, at the
+    // same commit, is no opening branch either.
+    git(root, ["branch", "heads/parked", head]);
+    const second = prune();
+    expect(second.removedBranches).toEqual([]);
+    expect(branchExists(root, "parked")).toBe(true);
+    expect(branchExists(root, "heads/parked")).toBe(true);
+    // A lease this version opens records the same names 0.33.0 did.
+    expect(recorded).toEqual(legacy);
+  });
 });
 
 describe("simple-changes prune command surface", () => {

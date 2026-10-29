@@ -2024,12 +2024,15 @@ describe("holds come from every source of checkouts, which must agree", () => {
       ],
       proposed: ["done"],
     });
-    // The branch listing names each branch exactly, and finalize reports
-    // from the same holds: fix/live held, done pending.
+    // The branch listing keeps Git's display names, which leases record,
+    // and names each branch exactly beside them; finalize reports from the
+    // same holds: fix/live held, done pending.
     const inventory = captureInventory(root, { skipWorktreeStatus: true });
-    expect(inventory.branches.map((branch) => branch.name)).toEqual([
-      "fix/live",
-      "main",
+    expect(
+      inventory.branches.map(({ exactName, name }) => [name, exactName])
+    ).toEqual([
+      ["heads/fix/live", "fix/live"],
+      ["heads/main", "main"],
     ]);
     const report = remoteBranchCleanupReport({
       claims: [],

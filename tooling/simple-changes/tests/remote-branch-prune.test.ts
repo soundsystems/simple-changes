@@ -1609,7 +1609,7 @@ const libraryPath = (name: string): string =>
 
 // Git's own upstream of a branch, which an older Git refuses.
 const UPSTREAM_FORMAT =
-  "--format=%(upstream:remotename)%00%(upstream:remoteref)";
+  "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)";
 
 const outcome = (built: ReturnType<typeof buildRemoteInventory>) => ({
   held: built.summary.heldBranches.map((branch) => [
@@ -1687,6 +1687,61 @@ describe("an upstream is read the way Git resolves it", () => {
       held: [["kept", `upstream of main, checked out in ${root}`]],
       proposed: ["other"],
     });
+  });
+
+  test("an unborn branch's upstream is its own, never that of a branch named below it", () => {
+    // planned is checked out with no commit yet, so Git has no ref for it,
+    // and it tracks origin/kept. The existing planned/child tracks
+    // origin/other. Asking Git for refs/heads/planned also matches
+    // refs/heads/planned/child, whose one line was read as planned's
+    // upstream, so other was held and kept proposed.
+    const fixture = repository();
+    const { root } = fixture;
+    git(root, ["remote", "add", "origin", "git@gitlab.com:group/project.git"]);
+    const heads = {
+      kept: providerOnlyBranch(root, "kept"),
+      other: providerOnlyBranch(root, "other"),
+    };
+    const head = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["branch", "planned/child"]);
+    git(root, ["config", "branch.planned/child.remote", "origin"]);
+    git(root, ["config", "branch.planned/child.merge", "refs/heads/other"]);
+    const path = join(fixture.base, "planned");
+    git(root, ["worktree", "add", "--quiet", "--detach", path]);
+    git(path, ["symbolic-ref", "HEAD", "refs/heads/planned"]);
+    git(root, ["config", "branch.planned.remote", "origin"]);
+    git(root, ["config", "branch.planned.merge", "refs/heads/kept"]);
+    expect(
+      git(root, ["for-each-ref", "--format=%(refname)", "refs/heads/planned"])
+    ).toBe("refs/heads/planned/child");
+    const reason = `upstream of planned, checked out in ${path}`;
+    const expectKeptHeld = (): void => {
+      const built = mergedHeads(head, heads, localHolds(root));
+      expect(outcome(built)).toEqual({
+        held: [["kept", reason]],
+        proposed: ["other"],
+      });
+      // Finalize reports from the same holds: kept is held, other pending.
+      const report = remoteBranchCleanupReport({
+        claims: [],
+        inventory: captureInventory(root, { skipWorktreeStatus: true }),
+        openTargets: [],
+        receipt: built.receipt,
+      });
+      expect(report.errors).toEqual([]);
+      expect(
+        report.held.map((branch) => [branch.name, branch.reasons])
+      ).toEqual([["kept", [reason]]]);
+      expect(report.pending.map((branch) => branch.name)).toEqual(["other"]);
+    };
+    expectKeptHeld();
+    // `rev-parse refs/heads/planned` falls back to a tag of that name when
+    // the branch has no ref, so asking it whether planned exists said yes.
+    git(root, ["tag", "refs/heads/planned", head]);
+    expect(
+      git(root, ["rev-parse", "--verify", "--quiet", "refs/heads/planned"])
+    ).toBe(head);
+    expectKeptHeld();
   });
 
   test("a Git older than 2.16, which refuses the upstream atoms, holds every merge value", () => {

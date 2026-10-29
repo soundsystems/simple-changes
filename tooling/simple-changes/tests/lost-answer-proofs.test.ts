@@ -1126,7 +1126,7 @@ console.log(JSON.stringify({ errors: result.errors, pending: result.pending }));
 // Git's own upstream of a live branch, fix/live: its remote and the
 // remote's ref.
 const UPSTREAM_FORMAT =
-  "--format=%(upstream:remotename)%00%(upstream:remoteref)";
+  "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)";
 const LIVE_UPSTREAM = `${UPSTREAM_FORMAT} refs/heads/fix/live`;
 
 describe("an upstream hold read from a lost upstream line", () => {
@@ -1477,7 +1477,7 @@ try {
   // refusing the atoms.
   const reads: [string, string, FakeGitLoss | "before-merge", string][] = [
     ["the upstream line", LIVE_UPSTREAM, "bytes:3", ""],
-    ["the upstream line without its line break", LIVE_UPSTREAM, "bytes:22", ""],
+    ["the upstream line without its line break", LIVE_UPSTREAM, "bytes:42", ""],
     ["the configuration", "--list", "before-merge", UPSTREAM_FORMAT],
   ];
 

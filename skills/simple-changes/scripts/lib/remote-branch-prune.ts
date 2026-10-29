@@ -206,17 +206,20 @@ const bareCheckouts = (
   );
 
 /**
- * Whether a local branch exists, by `rev-parse`'s exit code, which a lost
- * answer cannot fake. Any failure other than "no such branch" throws.
+ * Whether a local branch exists, by `show-ref --verify`'s exit code, which a
+ * lost answer cannot fake. It names exactly `refs/heads/<name>`, where
+ * `rev-parse` would fall back to another ref when the branch has none, such
+ * as a tag named `refs/heads/<name>`. Any failure other than "no such
+ * branch", a branch whose commit is missing included, throws.
  */
 const branchExists = (repositoryPath: string, branch: string): boolean => {
-  const answer = completeLine(
+  const answer = runGit(
     repositoryPath,
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
-    HEAD_PATTERN
+    ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+    true
   );
-  if (answer.line !== null || answer.exitCode === 1) {
-    return answer.line !== null;
+  if (answer.exitCode === 0 || answer.exitCode === 1) {
+    return answer.exitCode === 0;
   }
   throw new Error(
     `cannot tell whether ${branch} exists: ${answer.stderr.trim() || `exit ${answer.exitCode}`}`
@@ -306,10 +309,11 @@ export const mayBeShallow = (repositoryPath: string): boolean =>
 const SHALLOW_ADVICE =
   "the clone is shallow, so Git cannot prove what the target does or does not contain; run `git fetch --unshallow` and try again";
 
-const ONE_LINE = /^[^\n]*\n$/u;
-
+// Each line names its local ref first, because a pattern also matches the
+// refs below it: `refs/heads/planned` lists `refs/heads/planned/child`, and
+// only that, while planned has no commit yet.
 const UPSTREAM_FORMAT =
-  "--format=%(upstream:remotename)%00%(upstream:remoteref)";
+  "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)";
 
 // The first Git whose `for-each-ref` knows `%(upstream:remotename)` and
 // `%(upstream:remoteref)`.
@@ -356,11 +360,13 @@ const refusesUpstreamAtoms = (
  * out, or a merge value without `refs/heads/`), the branch has no commit
  * yet, or a Git older than 2.16 refuses the atoms. Any other failure
  * throws, so a read that failed never reads as no upstream. Git prints one
- * whole line for a branch that exists and nothing for one that does not.
- * An answer cut short (no line break) is asked once more and then refused,
- * so a cut name never names another remote or branch. Nothing at all,
- * twice, is settled by whether the branch exists: a branch that exists
- * makes it a lost answer, which throws rather than read as no upstream.
+ * whole line per ref the pattern matches, the branch's own and any below
+ * it, and only the line naming exactly `refs/heads/<name>` answers. An
+ * answer cut short (no line break at its end) is asked once more and then
+ * refused, so a cut name never names another remote or branch. An answer
+ * without the branch's own line is settled by whether the branch exists: a
+ * branch that exists makes it a lost answer, which throws rather than read
+ * as no upstream, and one that does not has no upstream of its own.
  */
 const canonicalUpstream = (
   repositoryPath: string,
@@ -373,21 +379,13 @@ const canonicalUpstream = (
       true
     );
   const whole = (reply: { exitCode: number; stdout: string }): boolean =>
-    reply.exitCode !== 0 || ONE_LINE.test(reply.stdout);
+    reply.exitCode !== 0 || reply.stdout.endsWith("\n");
   const first = ask();
   const answer = whole(first) ? first : ask();
-  if (!whole(answer)) {
-    if (first.stdout !== "" || answer.stdout !== "") {
-      throw new LostGitAnswerError(
-        `cannot read the upstream of ${branch}: Git twice printed an upstream line cut short, so its answer was lost.`
-      );
-    }
-    if (branchExists(repositoryPath, branch)) {
-      throw new Error(
-        `cannot read the upstream of ${branch}: Git printed nothing twice for a branch that exists, so its answer was lost; retry the command`
-      );
-    }
-    return null;
+  if (!whole(answer) && (first.stdout !== "" || answer.stdout !== "")) {
+    throw new LostGitAnswerError(
+      `cannot read the upstream of ${branch}: Git twice printed an upstream line cut short, so its answer was lost.`
+    );
   }
   if (answer.exitCode !== 0) {
     if (refusesUpstreamAtoms(repositoryPath, answer)) {
@@ -397,9 +395,17 @@ const canonicalUpstream = (
       `cannot read the upstream of ${branch}: ${answer.stderr.trim() || `exit ${answer.exitCode}`}`
     );
   }
-  const [remote = "", ref = "", ...extra] = answer.stdout
-    .slice(0, -1)
-    .split("\0");
+  const own = `refs/heads/${branch}\0`;
+  const line = answer.stdout.split("\n").find((each) => each.startsWith(own));
+  if (line === undefined) {
+    if (branchExists(repositoryPath, branch)) {
+      throw new Error(
+        `cannot read the upstream of ${branch}: Git's answer left out a branch that exists, so its answer was lost; retry the command`
+      );
+    }
+    return null;
+  }
+  const [remote = "", ref = "", ...extra] = line.slice(own.length).split("\0");
   return remote && ref && extra.length === 0 ? { ref, remote } : null;
 };
 

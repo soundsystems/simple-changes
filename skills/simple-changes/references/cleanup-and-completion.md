@@ -294,7 +294,9 @@ path, or held by an unreleased claim. Every source names the branch as in
 `refs/heads/<name>`, so a tag that shares its name changes nothing. Its
 upstream is the one Git uses (`%(upstream:remotename)` and
 `%(upstream:remoteref)`, which follow the first `branch.<name>.merge`
-value). When Git names none, such as a Git older than 2.16 refusing those
+value), read only from Git's line for exactly `refs/heads/<name>`, never
+from a branch below it such as `<name>/child`. When Git names none, such as
+for a branch with no commit yet, a Git older than 2.16 refusing those
 fields or a fetch refspec that leaves the branch out, every
 `branch.<name>.merge` value counts while any `branch.<name>.remote` value is
 the target remote or not a configured remote. Any other failed upstream read

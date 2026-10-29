@@ -1208,6 +1208,82 @@ describe("reviewed replacement lineage cleanup", () => {
     expectNothingWritten(lineage);
   });
 
+  // Filter driver names the command line cannot override exactly, written
+  // into the shared configuration as raw bytes (issue #20).
+  const oddDriverNames: Array<{
+    driver: Buffer;
+    name: string;
+    reason: string;
+  }> = [
+    { driver: Buffer.alloc(0), name: "an empty name", reason: "is empty" },
+    {
+      driver: Buffer.from("watch\u2028name"),
+      name: "a name with U+2028",
+      reason: "contains a line break",
+    },
+    {
+      driver: Buffer.from("watch\u2029name"),
+      name: "a name with U+2029",
+      reason: "contains a line break",
+    },
+    {
+      driver: Buffer.concat([Buffer.from("watch"), Buffer.from([0xff])]),
+      name: "a name with the raw byte 0xFF",
+      reason: "is not valid UTF-8",
+    },
+  ];
+
+  // An acting clean filter under `driver`, which the attributes select for
+  // a stat-dirty file, so any status in the source would run it.
+  const configureDriver = (lineage: LineageFixture, driver: Buffer): string => {
+    const { marker, script } = actingScript(
+      lineage,
+      "clean-filter",
+      "exec cat"
+    );
+    const common = commonDirectory(lineage.fixture.root);
+    appendFileSync(
+      join(common, "config"),
+      Buffer.concat([
+        Buffer.from('[filter "'),
+        driver,
+        Buffer.from(`"]\n\tclean = ${script}\n`),
+      ])
+    );
+    mkdirSync(join(common, "info"), { recursive: true });
+    writeFileSync(
+      join(common, "info", "attributes"),
+      Buffer.concat([Buffer.from("a.ts filter="), driver, Buffer.from("\n")])
+    );
+    keepRehashing(lineage);
+    return marker;
+  };
+
+  for (const odd of oddDriverNames) {
+    test(`a filter driver with ${odd.name} is refused before anything is written`, () => {
+      const lineage = lineageFixture(false);
+      const marker = configureDriver(lineage, odd.driver);
+      expectRefusal(
+        () => prune(lineage, receiptFor(lineage)),
+        new RegExp(
+          `names a driver that ${odd.reason}, so it cannot be overridden on the command line`,
+          "u"
+        )
+      );
+      expect(existsSync(marker)).toBe(false);
+      expectNothingWritten(lineage);
+    });
+  }
+
+  test("a filter driver whose name is other UTF-8 is emptied, confirmed and kept from running (control)", () => {
+    const lineage = lineageFixture(false);
+    const marker = configureDriver(lineage, Buffer.from("wätch näme"));
+    const report = prune(lineage, receiptFor(lineage));
+    expect(report.errors).toEqual([]);
+    expect(report.reviewedReplacement?.worktreeRemoved).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("no hook of any name runs from the pin through branch deletion", () => {
     const lineage = lineageFixture(false);
     const hooks = join(lineage.fixture.base, "all-hooks");

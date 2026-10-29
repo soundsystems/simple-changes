@@ -165,10 +165,16 @@ private directory larger than the 1 MiB the object scan reads (such as a
 it names could not all be pinned. It also refuses, and keeps the checkout,
 when its reflogs keep more than 2,000 commits that no ref reaches, rather
 than archive it with part of that history; put the work still needed on a
-branch first. These settings are hardening, not a
-guarantee. As on the other removal paths, programs that the repository or
-the user configures are trusted (a filter driver whose name the command
-cannot read back exactly is a known case, tracked as issue #20). A run with
+branch first. The command reads the configuration as raw bytes and
+confirms every override by its exact key bytes. It refuses, writing
+nothing, any `filter.*` key whose driver name is empty, is not valid
+UTF-8, or contains a line break (`\n`, `\r`, U+2028 or U+2029) or `=`,
+because a `-c` override could not name exactly that driver; rename or
+remove such a driver to proceed. These settings are hardening, not a
+guarantee: they close the filter driver names known to slip past the
+overrides, not every way a configured program could run. As on the other
+removal paths, programs that the repository or the user configures are
+trusted. A run with
 a receipt also keeps `git status` from refreshing any index, so a refusal
 that says nothing was written is exact.
 

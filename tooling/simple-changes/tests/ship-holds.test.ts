@@ -37,6 +37,7 @@ import {
   claimWorktree,
   readWorktreeCoordination,
 } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import { runWithFakeGit } from "./fake-git.ts";
 import {
   createTestRepository,
   git,
@@ -46,12 +47,20 @@ import {
 
 setDefaultTimeout(60_000);
 const decoder = new TextDecoder();
+const libraryPath = (name: string): string =>
+  fileURLToPath(
+    new URL(
+      `../../../skills/simple-changes/scripts/lib/${name}`,
+      import.meta.url
+    )
+  );
 const cliPath = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../../skills/simple-changes/scripts/simple-changes.ts"
 );
 
 let repositories: TestRepository[] = [];
+let cleanups: (() => void)[] = [];
 
 const repository = (): TestRepository => {
   const fixture = createTestRepository();
@@ -60,6 +69,10 @@ const repository = (): TestRepository => {
 };
 
 afterEach(() => {
+  for (const cleanup of cleanups.reverse()) {
+    cleanup();
+  }
+  cleanups = [];
   for (const fixture of repositories) {
     fixture.cleanup();
   }
@@ -866,6 +879,176 @@ exit 1
     expect(retried.withdrawal).toMatchObject({ attempted: true, ok: true });
     expect(retried.hold.publication?.withdrawnAt).not.toBeNull();
     expect(listed()).toBe("");
+  });
+
+  test("keep a rejected delete pending when the remote's answer is lost or cut short", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const hold = addShipHold(fixture.root, {
+      adapter: "claude-code",
+      agentId: "owner",
+      reason: "Still listed.",
+      scope: "ship",
+      severity: "delay",
+    });
+    publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+    const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
+    // Decline every delete and keep the ref, so only a lost answer about it
+    // could make it look withdrawn.
+    writeFileSync(join(origin, "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n", {
+      mode: 0o755,
+    });
+    git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+    const body = `import { releaseShipHold } from ${JSON.stringify(libraryPath("ship-holds.ts"))};
+const released = releaseShipHold(${JSON.stringify(fixture.root)}, {
+  agentId: "owner",
+  holdId: ${JSON.stringify(hold.holdId)},
+});
+console.log(JSON.stringify({
+  ok: released.withdrawal.ok,
+  withdrawnAt: released.hold.publication?.withdrawnAt ?? null,
+}));
+`;
+    // Lose the reading of this exact ref: no output, only its object ID,
+    // or its name without the last character, each with exit 0.
+    for (const mode of [
+      "empty",
+      "bytes:40",
+      `bytes:${40 + 1 + ref.length - 1}`,
+    ] as const) {
+      const { remaining, reply } = runWithFakeGit(
+        { body, flag: ref, lost: 1, mode },
+        (cleanup) => cleanups.push(cleanup)
+      );
+      expect(remaining).toBe(0);
+      expect(reply).toEqual({ ok: false, withdrawnAt: null });
+    }
+    expect(git(fixture.root, ["ls-remote", "origin", ref])).toContain(ref);
+  });
+
+  test("keep a rejected delete pending when the remote pushes to another destination", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const mirror = join(fixture.base, "mirror.git");
+    git(fixture.base, ["init", "--bare", mirror]);
+    // Fetch from origin, push to origin and the mirror.
+    git(fixture.root, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      origin,
+    ]);
+    git(fixture.root, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      mirror,
+    ]);
+    const publish = (reason: string) => {
+      const hold = addShipHold(fixture.root, {
+        adapter: "claude-code",
+        agentId: "owner",
+        reason,
+        scope: "ship",
+        severity: "delay",
+      });
+      publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+      return hold;
+    };
+    const hold = publish("Published twice.");
+    const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
+    expect(git(fixture.root, ["ls-remote", mirror, ref])).toContain(ref);
+    // The mirror declines the delete and keeps the ref; origin deletes it,
+    // so origin's listing alone would read as withdrawn.
+    writeFileSync(join(mirror, "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n", {
+      mode: 0o755,
+    });
+    git(mirror, ["config", "core.hooksPath", join(mirror, "hooks")]);
+    const partial = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    expect(partial.withdrawal.ok).toBe(false);
+    expect(partial.withdrawal.error).toContain(
+      "may push to more than the one destination it lists"
+    );
+    expect(partial.hold.publication?.withdrawnAt).toBeNull();
+    expect(git(fixture.root, ["ls-remote", "origin", ref])).toBe("");
+    expect(git(fixture.root, ["ls-remote", mirror, ref])).toContain(ref);
+    expect(
+      checkShipHolds(fixture.root).pendingWithdrawals.map((item) => item.holdId)
+    ).toEqual([hold.holdId]);
+
+    // A push URL that is the fetch URL is still one destination, so a lost
+    // delete race there counts as withdrawn.
+    git(fixture.root, [
+      "remote",
+      "set-url",
+      "--delete",
+      "--push",
+      "origin",
+      mirror,
+    ]);
+    const raced = publish("Pushed once.");
+    writeFileSync(
+      join(origin, "hooks", "pre-receive"),
+      `#!/bin/sh
+while read old new ref; do
+  git update-ref -d "$ref"
+done
+exit 1
+`,
+      { mode: 0o755 }
+    );
+    git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+    const released = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: raced.holdId,
+    });
+    expect(released.withdrawal).toEqual({
+      attempted: true,
+      error: null,
+      ok: true,
+    });
+    expect(released.hold.publication?.withdrawnAt).not.toBeNull();
+  });
+
+  test("keep a hidden hold ref's rejected delete pending", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const hold = addShipHold(fixture.root, {
+      adapter: "claude-code",
+      agentId: "owner",
+      reason: "Hidden later.",
+      scope: "ship",
+      severity: "delay",
+    });
+    publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+    const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
+    // A host that hides the refs from every listing and refuses to delete
+    // them; the ref stays, though no listing shows it.
+    git(origin, ["config", "transfer.hideRefs", "refs/simple-changes"]);
+    expect(git(fixture.root, ["ls-remote", "origin", ref])).toBe("");
+    const hidden = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    expect(hidden.withdrawal.ok).toBe(false);
+    expect(hidden.withdrawal.error).toContain("hidden ref");
+    expect(hidden.hold.publication?.withdrawnAt).toBeNull();
+    expect(git(origin, ["show-ref", ref])).toContain(ref);
+
+    git(origin, ["config", "--unset", "transfer.hideRefs"]);
+    const retried = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    expect(retried.withdrawal).toMatchObject({ attempted: true, ok: true });
+    expect(retried.hold.publication?.withdrawnAt).not.toBeNull();
   });
 
   test("republish a hold whose ref was withdrawn elsewhere", () => {

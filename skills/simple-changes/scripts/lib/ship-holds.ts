@@ -6,6 +6,7 @@ import {
   type TargetContainmentMethod,
 } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { completeLine } from "./git-complete.ts";
 import { ensureStateDirectory } from "./git-location.ts";
 import { sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
@@ -38,6 +39,7 @@ const HOLD_PAYLOAD_PATH = "hold.json";
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const HOLD_ID_PATTERN = /^hold-[a-z0-9-]+$/u;
 const UNRESOLVED_REFERENCE = /unable to resolve reference '([^']+)'(:?)/giu;
+const REGEX_SPECIAL = /[\\^$.|?*+()[\]{}]/gu;
 const WHITESPACE = /\s+/u;
 const SENTENCE_END = /[.!?]$/u;
 // Pushes may run the user's pre-push hooks, so they get more time than reads.
@@ -1091,21 +1093,79 @@ const pushAuthorizationNever = (inventory: RepositoryInventory): boolean =>
   inventory.policy.value.gitPushAuthorization === "never";
 
 /**
- * True when Git reports this exact ref as unreadable on the remote, as in
- * "unable to resolve reference '<ref>': reference broken". The bare form
- * without the suffix is a lost delete race, not a broken ref.
+ * True when Git says the remote still has this exact ref but will not delete
+ * it: unreadable, as in "unable to resolve reference '<ref>': reference
+ * broken" (the bare form without the suffix is a lost delete race), or
+ * hidden from this client by `transfer.hideRefs`, which also hides it from
+ * every listing.
  */
-const refUnreadable = (detail: string, ref: string): boolean =>
+const refKept = (detail: string, ref: string): boolean =>
+  detail.includes(`${ref} (deny deleting a hidden ref)`) ||
   [...detail.matchAll(UNRESOLVED_REFERENCE)].some(
     ([, name, suffix]) => name === ref && suffix === ":"
   );
 
+// A configuration value as an extended regular expression matching only it.
+const exactValuePattern = (value: string): string =>
+  `^${value.replace(REGEX_SPECIAL, "\\$&")}$`;
+
 /**
- * Delete a hold ref. A failed delete still counts as withdrawn when a fresh
- * listing shows the remote no longer has the ref, as after a lost delete
+ * Whether every `key` set in configuration equals `value`, from the exit
+ * code of `config --get-all <key> '!<value>'`: 1 when no other value is set,
+ * 0 when one is. A listing can lose an entry; a lost answer cannot fake an
+ * exit code.
+ */
+const onlyConfigValue = (root: string, key: string, value: string): boolean =>
+  runGit(
+    root,
+    ["config", "--get-all", key, `!${exactValuePattern(value)}`],
+    true
+  ).exitCode === 1;
+
+/**
+ * Why `remote` may push somewhere other than the one place `ls-remote`
+ * reads, or null when it cannot. Git pushes to every push URL, but lists
+ * only the first fetch URL, so a delete one destination rejected can look
+ * withdrawn from another. One destination means every configured URL is
+ * the same, every push URL is the same or none is set, and the first of each
+ * resolves to the same place; each "no other URL" is proven by an exit code,
+ * never by a listing.
+ */
+const pushDestinationProblem = (
+  root: string,
+  remote: string
+): string | null => {
+  const multiple = `Remote ${remote} may push to more than the one destination it lists, so a rejected delete is not taken as withdrawn; check each push URL (git remote get-url --push --all ${remote}).`;
+  try {
+    const fetchUrl = completeLine(root, ["remote", "get-url", remote]);
+    const pushUrl = completeLine(root, ["remote", "get-url", "--push", remote]);
+    if (fetchUrl.line === null || pushUrl.line !== fetchUrl.line) {
+      return multiple;
+    }
+    const urlKey = `remote.${remote}.url`;
+    const pushUrlKey = `remote.${remote}.pushurl`;
+    const url = completeLine(root, ["config", "--get", urlKey]);
+    const configuredPush = completeLine(root, ["config", "--get", pushUrlKey]);
+    const single =
+      url.line !== null &&
+      onlyConfigValue(root, urlKey, url.line) &&
+      (configuredPush.exitCode === 1 ||
+        (configuredPush.line !== null &&
+          onlyConfigValue(root, pushUrlKey, configuredPush.line)));
+    return single ? null : multiple;
+  } catch (error) {
+    return `Reading the push destinations of ${remote} failed: ${(error as Error).message}`;
+  }
+};
+
+/**
+ * Delete a hold ref. A failed delete still counts as withdrawn when the
+ * remote's one destination no longer has the ref, as after a lost delete
  * race: Git words that differently across versions (2.53 says "reference
- * does not exist"), so the outcome comes from the listing, not the message.
- * A ref Git reports as unreadable stays a failure even if listings hide it.
+ * does not exist"), so the outcome comes from the remote, not the message.
+ * Absence is proven only by `ls-remote --exit-code` exiting 2 for this exact
+ * ref; an answer that exits 0 but was lost or cut short could otherwise
+ * read as absent. A ref Git reports as unreadable or hidden stays a failure.
  */
 const deleteRemoteRef = (
   root: string,
@@ -1121,21 +1181,27 @@ const deleteRemoteRef = (
     return { attempted: true, error: null, ok: true };
   }
   const detail = (pushed.stderr || pushed.stdout).trim();
-  const listed = refUnreadable(detail, ref)
-    ? null
-    : listRemoteHoldRefs(root, remote, ref);
-  if (Array.isArray(listed) && !listed.some((item) => item.ref === ref)) {
-    return { attempted: true, error: null, ok: true };
-  }
-  const error =
-    typeof listed === "string"
-      ? `${detail} Listing ${ref} on ${remote} also failed: ${listed.trim()}`
-      : detail;
-  return {
+  const failure = (error: string): ShipHoldWithdrawal => ({
     attempted: true,
     error: redactSecrets(error.trim()) || "push failed",
     ok: false,
-  };
+  });
+  if (refKept(detail, ref)) {
+    return failure(detail);
+  }
+  const problem = pushDestinationProblem(root, remote);
+  if (problem) {
+    return failure(`${detail} ${problem}`);
+  }
+  const probe = runGitRemote(root, ["ls-remote", "--exit-code", remote, ref]);
+  if (probe.exitCode === 2 && probe.stdout === "") {
+    return { attempted: true, error: null, ok: true };
+  }
+  return failure(
+    probe.exitCode === 0
+      ? detail
+      : `${detail} Listing ${ref} on ${remote} also failed: ${(probe.stderr || probe.stdout || `exit ${probe.exitCode}`).trim()}`
+  );
 };
 
 const withdrawPublication = (

@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import {
   localBranchForTargetRef,
   PATCH_EQUIVALENCE_MAX_COMMITS,
@@ -1260,12 +1262,72 @@ const PSEUDO_REFS = [
 const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const EXTENDED_REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/gu;
 
+// The names of everything under `relative` in `root` that is not a folder,
+// as paths from `root`, never following a link; none when it is absent.
+const filesUnder = (root: string, relative: string): string[] => {
+  const absolute = join(root, relative);
+  const stats = lstatSync(absolute, { throwIfNoEntry: false });
+  if (!stats) {
+    return [];
+  }
+  if (!stats.isDirectory()) {
+    return [relative];
+  }
+  return readdirSync(absolute).flatMap((name) =>
+    filesUnder(root, `${relative}/${name}`)
+  );
+};
+
+// Why Git's listing of the checkout's own refs is not confirmed, or null
+// when it is. Git gives no count for that listing, and a listing lost
+// entirely reads as "no refs", which would leave a ref's older commits,
+// kept only by its reflog, unpinned when the removal deletes that reflog.
+// Git keeps those refs, never packed, as files under `refs/` in the
+// private Git directory and their reflogs under `logs/refs/`, so the
+// listing must name exactly the ref files there and every reflog file. A
+// ref store that keeps no such files (reftable) cannot be confirmed.
+const unconfirmedOwnRefs = (
+  privateGitDirectory: string,
+  listed: ReadonlySet<string>
+): string | null => {
+  if (existsSync(join(privateGitDirectory, "reftable"))) {
+    return "its refs are kept in Git's reftable format, so they cannot be checked against files on disk";
+  }
+  let refFiles: string[];
+  let logFiles: string[];
+  try {
+    refFiles = filesUnder(privateGitDirectory, "refs");
+    logFiles = filesUnder(privateGitDirectory, "logs/refs").map((name) =>
+      name.slice("logs/".length)
+    );
+  } catch (error) {
+    return `its private Git directory could not be read (${error instanceof Error ? error.message : String(error)})`;
+  }
+  const onDisk = new Set(refFiles);
+  const byName = (left: string, right: string) => left.localeCompare(right);
+  const unlisted = [...new Set([...refFiles, ...logFiles])]
+    .filter((name) => !listed.has(name))
+    .sort(byName);
+  const missing = [...listed].filter((name) => !onDisk.has(name)).sort(byName);
+  const problems = [
+    unlisted.length > 0
+      ? `${unlisted.join(", ")} on disk but not in Git's listing`
+      : "",
+    missing.length > 0
+      ? `${missing.join(", ")} in Git's listing but not on disk`
+      : "",
+  ].filter(Boolean);
+  return problems.length > 0 ? problems.join("; ") : null;
+};
+
 // A read that Git could not complete refuses: an object these refs name
 // that went unpinned could be lost to a later gc. A listing or an ID cut
 // short, which would drop the object as unparsable, is asked once more and
-// then refused.
+// then refused, and so is a listing the private Git directory does not
+// confirm.
 const namedObjectsOf = (
   path: string,
+  privateGitDirectory: string,
   overrides: readonly string[]
 ): ReviewedSourceState["namedObjects"] => {
   const found: ReviewedSourceState["namedObjects"] = [];
@@ -1290,6 +1352,16 @@ const namedObjectsOf = (
     if (name && object && OBJECT_ID_PATTERN.test(object)) {
       found.push({ name, object });
     }
+  }
+  const unconfirmed = unconfirmedOwnRefs(
+    privateGitDirectory,
+    new Set(found.map((entry) => entry.name))
+  );
+  if (unconfirmed !== null) {
+    throw boundaryRefusal(
+      path,
+      `the checkout's own refs could not be confirmed: ${unconfirmed}. A ref Git did not list would lose the older commits only its reflog keeps, so the checkout was kept. Run the command again; if it refuses again, look at those refs before removing the checkout yourself.`
+    );
   }
   for (const name of PSEUDO_REFS) {
     const resolved = completeLine(
@@ -1465,7 +1537,11 @@ export const assertReviewedReplacementUnchanged = (
     );
   }
   const { branch, headSha, path } = verified.worktree;
-  const namedObjects = namedObjectsOf(path, overrides);
+  const namedObjects = namedObjectsOf(
+    path,
+    verified.archive.privateGitDirectory,
+    overrides
+  );
   const reflogCommits = reflogOnlyCommitsOf(
     path,
     branch,

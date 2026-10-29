@@ -137,7 +137,14 @@ branch's reflog or its own refs' reflogs name and that no ref reaches
 (Simple Changes' own expiring pins do not count; each listing must match
 Git's own count of it, or the removal refuses), because the removal
 deletes those reflogs and an amended-away or reset-away commit would
-otherwise be left to `git gc`; writes an intent record; compares the live
+otherwise be left to `git gc`. Git lists the checkout's own refs without
+a count, so that listing must name exactly the ref files under `refs/` and
+every reflog file under `logs/refs/` in its private Git directory; when
+they disagree (a listing lost or cut short, or a reflog left without its
+ref), the removal refuses and keeps the checkout. A checkout whose refs
+Git keeps in the reftable format has no such files to check, so it is
+always kept; remove it yourself once its work is safe. It then writes an
+intent record; compares the live
 files with the manifest once more, with no Git command in the checkout in
 between, and checks that Git still registers the reviewed head and branch
 there; when

@@ -39,13 +39,16 @@ export interface TestRepository {
   root: string;
 }
 
-export const createTestRepository = (): TestRepository => {
+/** `initArguments` go to `git init`, such as `--ref-format=reftable`. */
+export const createTestRepository = (
+  initArguments: readonly string[] = []
+): TestRepository => {
   const temporaryBase = mkdtempSync(join(tmpdir(), "simple-changes-test-"));
   const base = realpathSync(temporaryBase);
   const repositoryPath = join(base, "repo");
   mkdirSync(repositoryPath);
   const root = realpathSync(repositoryPath);
-  git(root, ["init", "-b", "main"]);
+  git(root, ["init", "-b", "main", ...initArguments]);
   git(root, ["config", "user.name", "Simple Changes Tests"]);
   git(root, ["config", "user.email", "tests@simple-changes.invalid"]);
   writeFileSync(join(root, "README.md"), "# Fixture\n");

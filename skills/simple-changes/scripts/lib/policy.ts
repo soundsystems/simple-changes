@@ -262,6 +262,20 @@ const parsePolicyText = (text: string): RepoPolicy => {
   };
 };
 
+/**
+ * Whether anything is at a policy path, a dangling symbolic link included.
+ * `existsSync` follows links, so it reports such a link as absent and a
+ * rename would then replace it.
+ */
+export const policyEntryExists = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+};
+
 const parsePolicyFile = (path: string): RepoPolicy => {
   assertReadablePolicyFile(path);
   return parsePolicyText(readFileSync(path, "utf8"));

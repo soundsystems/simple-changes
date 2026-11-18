@@ -164,6 +164,26 @@ export const resolveCommunication = (
   };
 };
 
+const replaceableCommunication = (path: string): FileState => {
+  const current = readCommunicationFile(path);
+  if (current.state === "malformed") {
+    throw new SimpleChangesError(
+      `Refusing to replace a communication setting that cannot be read (${current.error}); repair or remove it, then run setup again.`,
+      EXIT_CODES.unsafe
+    );
+  }
+  return current;
+};
+
+/**
+ * Refuses, before anything else is written, when `writeCommunication` would
+ * refuse this path: a setup that also saves the style checks every
+ * destination first, so it never stops half saved.
+ */
+export const assertCommunicationWritable = (path: string): void => {
+  replaceableCommunication(path);
+};
+
 /**
  * Records the style in one sidecar and nothing else. A file that is not a
  * regular file, or that this copy cannot read, is never replaced: the owner
@@ -174,13 +194,7 @@ export const writeCommunication = (
   style: CommunicationStyle,
   privateFile: boolean
 ): { changed: boolean; path: string } => {
-  const current = readCommunicationFile(path);
-  if (current.state === "malformed") {
-    throw new SimpleChangesError(
-      `Refusing to replace a communication setting that cannot be read (${current.error}); repair or remove it, then run setup again.`,
-      EXIT_CODES.unsafe
-    );
-  }
+  const current = replaceableCommunication(path);
   if (current.state === "valid" && current.style === style) {
     return { changed: false, path };
   }

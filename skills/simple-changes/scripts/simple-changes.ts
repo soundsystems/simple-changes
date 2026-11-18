@@ -40,6 +40,7 @@ import {
 import { auditBranchReplacements } from "./lib/branch-audit.ts";
 import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
 import {
+  assertCommunicationWritable,
   COMMUNICATION_STYLES,
   type CommunicationStyle,
   communicationPaths,
@@ -160,6 +161,7 @@ import {
   loadPersonalPolicy,
   type PolicyRequestReport,
   parsePolicyRequest,
+  policyEntryExists,
   resolvePersonalPolicyPath,
   withSavedExecGuard,
   writeGuidanceAcknowledgement,
@@ -407,8 +409,6 @@ Usage:
     --confirm [--agent-id ID] [--json] [--repo PATH]
   simple-changes setup --communication ultra-simple|standard
     --scope repository|personal --confirm [--agent-id ID] [--json] [--repo PATH]
-  simple-changes setup --quick-start [--finish review|integrate|ship]
-    [--scope user|repository|run] [--yes] [--agent-id ID] [--json] [--repo PATH]
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
     [--agent-id ID] [--json] [--repo PATH]
   simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
@@ -745,7 +745,6 @@ interface CliOptions {
   providerReceiptPath?: string;
   purpose?: string;
   questions?: RepoPolicy["questions"];
-  quickStart: boolean;
   // loop hold-unit --readiness-evidence: each failed-readiness citation.
   readinessEvidence: string[];
   ready: boolean;
@@ -905,7 +904,6 @@ const BOOLEAN_OPTIONS = new Set([
   "--all",
   "--already-live",
   "--production-authorized",
-  "--quick-start",
   "--version-authorized",
   "--acknowledge-push-scope",
   "--changelog-required",
@@ -1645,10 +1643,6 @@ const applyTurnGuardBooleanOption = (
     options.write = true;
     return true;
   }
-  if (option === "--quick-start") {
-    options.quickStart = true;
-    return true;
-  }
   return false;
 };
 
@@ -1718,7 +1712,6 @@ const parseOptions = (args: string[]): CliOptions => {
     overrideHalt: false,
     positional: [],
     productionAuthorized: false,
-    quickStart: false,
     readinessEvidence: [],
     ready: false,
     releaseClaim: false,
@@ -2089,6 +2082,8 @@ const describeChangelogCapability = (
     : "not available";
 };
 
+const NOT_A_REPOSITORY_PATTERN = /not a git repository/iu;
+
 const setupContext = (
   repositoryPath: string
 ): {
@@ -2108,7 +2103,11 @@ const setupContext = (
       changelog: inspectChangelogCoordination(null),
       existingPersonalDefaults:
         personalPolicy.source === "user" ? personalPolicy.value : null,
-      firstUse: personalPolicy.source === "default",
+      // First use only when Git confirms there is no repository here. Any
+      // other failure could be hiding a project that already has a setup.
+      firstUse:
+        personalPolicy.source === "default" &&
+        NOT_A_REPOSITORY_PATTERN.test(probe.stderr),
       forgeProvider: null,
       policy: personalPolicy.value,
       primaryCheckout: null,
@@ -2310,7 +2309,6 @@ const runCommunicationSetup = async (
     ),
     ...(options.migrationTargets.length > 0 ? ["migrationTargets"] : []),
     ...(options.authoring === undefined ? [] : ["authoring"]),
-    ...(options.quickStart ? ["quickStart"] : []),
   ];
   if (mixed.length > 0) {
     throw new SimpleChangesError(
@@ -2358,7 +2356,7 @@ const runCommunicationSetup = async (
   const effective = resolveCommunication(repository?.primaryCheckout ?? null);
   const summary = [
     `${COMMUNICATION_SAVED[scope][style]} ${recorded.changed ? "Saved in" : "Already saved in"} ${recorded.path}.`,
-    effective.style === style
+    effective.style === style || effective.path === recorded.path
       ? null
       : `For you it stays ${effective.style === "ultra-simple" ? "on" : "off"}: ${effective.path} outranks it.`,
   ]
@@ -2478,39 +2476,26 @@ const setupCommunicationTarget = (
   return selection.scope === "repository" ? paths.repository : paths.personal;
 };
 
-// `setup --quick-start` is the first screen's "Use this setup" for an agent
-// that already showed it in chat: the safe default setup plus Ultra-Simple
-// Mode. Without --yes it writes nothing and returns the receipt to show.
-const assertQuickStartRequest = (
-  options: CliOptions,
-  firstUse: boolean
+// "Use this setup" is offered only when nothing is saved. Checked again
+// here, under the setup lock and before the first write: a setup saved
+// while this one was open is never replaced, and a style file this copy
+// could not replace stops the save before anything lands. `policyPath` is
+// where this setup would write its policy, null for run-only.
+const assertQuickStartStillSafe = (
+  policyPath: string | null,
+  communicationTarget: string | null
 ): void => {
-  if (!firstUse) {
+  if (!communicationTarget) {
+    return;
+  }
+  if (policyPath && policyEntryExists(policyPath)) {
     throw new SimpleChangesError(
-      "setup --quick-start is for first use, and a setup is already saved here. Use setup --communication to change how Simple Changes talks, or the full setup to change anything else.",
-      EXIT_CODES.usage
+      `A setup was saved at ${policyPath} while this one was open, so nothing was written. Run setup again to review it.`,
+      EXIT_CODES.unsafe
     );
   }
-  const mixed = [
-    ...SETUP_INPUT_KEYS.filter(
-      (key) =>
-        key !== "scope" && key !== "defaultFinish" && options[key] !== undefined
-    ),
-    ...(options.migrationTargets.length > 0 ? ["migrationTargets"] : []),
-    ...(options.uiArtifacts ? ["uiArtifacts"] : []),
-  ];
-  if (mixed.length > 0) {
-    throw new SimpleChangesError(
-      `setup --quick-start takes only --finish and --scope; choose ${mixed.join(", ")} in the full setup.`,
-      EXIT_CODES.usage
-    );
-  }
+  assertCommunicationWritable(communicationTarget);
 };
-
-const quickStartInputs = (options: CliOptions): OnboardingInputs => ({
-  ...(options.defaultFinish ? { defaultFinish: options.defaultFinish } : {}),
-  ...(options.scope ? { scope: options.scope } : {}),
-});
 
 const writeSetupCommunication = (
   target: string | null,
@@ -2528,18 +2513,13 @@ const writeSetupCommunication = (
     : null;
 
 // The setup answers this invocation supplies, after refusing a combination
-// that cannot run: a quick start outside first use or with other choices, an
-// incomplete non-interactive setup, or automatic pushes without their
-// acknowledgement.
+// that cannot run: an incomplete non-interactive setup, or automatic pushes
+// without their acknowledgement.
 const resolveSetupInputs = (
   options: CliOptions,
   context: ReturnType<typeof setupContext>,
   instructionTargetCount: number
 ): OnboardingInputs => {
-  if (options.quickStart) {
-    assertQuickStartRequest(options, context.firstUse);
-    return quickStartInputs(options);
-  }
   const needsPrompt = setupNeedsPrompt(
     options,
     context.changelog.relevant,
@@ -2580,16 +2560,11 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
     instructionTargets.length
   );
   const interactive = createCliPrompter(options);
-  // A quick start is confirmed in chat: without --yes it previews the
-  // receipt and writes nothing, and it never waits on a terminal.
-  const prompter: OnboardingPrompter = options.quickStart
-    ? { ...interactive.prompter, confirm: () => Promise.resolve(options.yes) }
-    : interactive.prompter;
   try {
     const selection = await collectOnboardingSelection(
       context.policy,
       inputs,
-      prompter,
+      interactive.prompter,
       context.changelog,
       context.primaryCheckout,
       options.uiArtifacts,
@@ -2604,8 +2579,12 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
           communication: communicationPaths(null).personal,
           policy: resolvePersonalPolicyPath(),
         },
-        quickStart: options.quickStart,
-        showFirstScreen: process.stdin.isTTY && !options.quickStart,
+        // Someone who already chose full detail for themselves is not
+        // offered a setup whose receipt promises them the plain wording.
+        personalStandardStyle:
+          resolveCommunication(null).source === "personal" &&
+          resolveCommunication(null).style === "standard",
+        showFirstScreen: process.stdin.isTTY,
       }
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
@@ -2644,6 +2623,7 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
       scratchFileRuleChanged: boolean;
       scratchFileRuleWritten: boolean;
     } => {
+      assertQuickStartStillSafe(path, communicationTarget);
       if (authoringTarget && selection.authoring) {
         authoringWrite = writeAuthoringSidecar(
           authoringTarget,
@@ -2692,10 +2672,6 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
         reviewLoopRuleWritten = ruleResult.written;
         reviewLoopRuleChanged = ruleResult.changed;
       }
-      communicationWrite = writeSetupCommunication(
-        communicationTarget,
-        selection
-      );
       if (written && path) {
         writePolicyFile(path, policy, selection.scope === "user");
         if (selection.scope === "repository" && context.primaryCheckout) {
@@ -2708,6 +2684,12 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
           );
         }
       }
+      // Last, after the setup itself is saved: its destination was checked
+      // before the first write, so this cannot leave a setup half saved.
+      communicationWrite = writeSetupCommunication(
+        communicationTarget,
+        selection
+      );
       return {
         instructionPointerChanged,
         instructionPointerWritten,

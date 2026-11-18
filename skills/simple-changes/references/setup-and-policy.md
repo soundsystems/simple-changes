@@ -490,10 +490,10 @@ ignore it and keep the standard voice.
 refuses any other setup option in the same command, so changing how Simple
 Changes talks can never change the policy, its trust receipt, or anything
 Simple Changes is allowed to do. It never replaces a file it cannot read or
-that is not a regular file. At first use, `setup --quick-start` records it
-with the recommended setup, for the same storage; that command takes only
-`--finish` and `--scope`, previews its receipt without `--yes`, and refuses
-to run once a policy is saved.
+that is not a regular file. At first use, **Use this setup** runs it right
+after the recommended setup, for the same storage; interactive setup offers
+that choice only when no policy is saved, checks again before its first
+write, and saves the style last.
 
 `initialize` reports the effective `communication.style`, its `source`, and
 the `path` it came from. Precedence, highest first: the current request, the

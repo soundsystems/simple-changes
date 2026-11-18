@@ -109,16 +109,9 @@ Simple Changes says to the person, not what it writes for reviewers and tools.
 
 When setup is needed and nothing is saved yet, the first screen is one
 sentence and two choices; see
-[the first screen](onboarding.md#first-screen). After **Use this setup**, get
-the receipt and save it with one command:
-
-```sh
-simple-changes setup --quick-start --finish <review|integrate|ship> --json
-```
-
-Without `--yes` it writes nothing and returns the receipt as `summary`, with
-the real paths. Show it, ask **OK to save?**, and run the same command with
-`--yes` only after a yes:
+[the first screen](onboarding.md#first-screen). **Use this setup** is the
+recommended setup with its answers fixed, plus this mode. Show what will be
+remembered and where, with the real paths, and save only after a yes:
 
 > Here's what I'll remember for this project:
 >
@@ -128,16 +121,34 @@ the real paths. Show it, ask **OK to save?**, and run the same command with
 >
 > I'll save that in `<path>/.simple-changes.json` and
 > `<path>/.simple-changes-communication.json`, so anyone working on this
-> project gets the same setup.
+> project gets the same setup. OK to save?
 
-Then carry on with the original request without another setup step.
+Change the first line to match the request's finish: "I add your change to
+the project once it's approved" for merge, and "I take your change live
+after I ask you" for ship. Then save it with the two existing commands, the
+setup first, so every line above is what was saved:
 
-That command saves the recommended setup and the mode, and nothing else. It
-takes the finish from the request, saves to the project when there is one and
-to personal preferences otherwise, and leaves instruction files and the
-Simple Changelogs install offer as they are. It works only at first use and
-takes no other setup choice, so every line of its receipt is true: anything
-more, [Autopilot](#autopilot) included, is chosen under **Show options**.
+```sh
+simple-changes setup --finish <review|integrate|ship> \
+  --questions blocking-only --scope repository \
+  --git-push-authorization ask --production ask --shipping-mode standard \
+  --migration-handling ask-after-review --changelog <handling> \
+  --instruction-pointer leave --yes
+simple-changes setup --communication ultra-simple --scope repository --confirm
+```
+
+Outside a Git repository use `--scope personal` for both and say so in the
+receipt. `<handling>` is `delegate-if-available` when `initialize` reports a
+compatible changelog workflow and `preserve-and-report` otherwise; when the
+project has release notes, add a line for it: "I hand release notes to
+Simple Changelogs" or "I leave release notes alone and tell you what still
+needs writing". When `initialize` reports a pending Simple Changelogs
+install offer, make that offer first, in one line, and pass the answer as
+`--changelog-install`; never record an answer the person did not give.
+
+This path changes no answer above and adds none. A different stopping
+point, automatic pushes, [Autopilot](#autopilot), or anything else is chosen
+under **Show options**. Carry on with the original request once it is saved.
 
 ## Questions
 
@@ -159,8 +170,10 @@ before the run changes anything:
   agents are detected ("Who should give your changes a second look? A
   different AI tool is the safer choice.");
 - an [update notice](guidance-updates.md): its required answers first, then
-  what matters in a line and its one question ("Simple Changes was updated:
-  `<what matters>`. Your settings are the same. Carry on?");
+  any recommended change with the current and the proposed setting, then
+  what matters in a line and the same choices the standard notice offers, in
+  short form ("Simple Changes was updated: `<what matters>`. Your settings
+  are the same. Carry on, hear more, or decide later?");
 - a one-time offer, such as the turn-end guard or a refreshed instruction
   rule, in one line the person can decline.
 
@@ -184,13 +197,18 @@ changed: "Checking your change." "Checks passed. Getting it a second look."
 
 **Before a merge or a go-live.** The brief keeps its standard timing and
 content: it is sent before the first step that changes anything shared, it
-presents the recorded scope, and it says who gives the second look. Only the
-words change. Name each change by what it does, say how far it will go, name
-anything left out, and name the reviewer:
+presents the recorded scope, and it names the reviewer as the standard brief
+does: the agent, its model and effort, whether it must differ from the
+author, and which setting chose it. Only the opening changes. Lead with each
+change by what it does, how far it will go, and anything left out, then give
+the recorded scope and the reviewer:
 
 > I'm adding two changes to the project: the new pricing table and the footer
-> fix. Sam's gallery work stays as it is. Codex gives them a second look.
-> Nothing goes live.
+> fix. Sam's gallery work stays as it is. Nothing goes live.
+>
+> A second look comes from Codex (gpt-6.1-sol, high effort), a different
+> agent from the one that wrote these, as this project's review setting asks.
+> `<the recorded scope, as the standard brief lists it>`
 
 It is a chance to interrupt, not a request for permission that already
 exists.
@@ -215,8 +233,8 @@ and what was actually checked:
 
 - **Ready for review:** "Ready for review: the new pricing table. `<link>`.
   Checks passed. Nothing is live."
-- **Added to the project:** "Approved and added to the project: the new
-  pricing table. `<link>`. Nothing is live yet."
+- **Added to the project:** "Added to the project: the new pricing table,
+  approved at `<link>`. Nothing is live yet."
 - **Live:** "Live: the new pricing table, at `<address>`. `<the check that
   ran>` confirms it."
 
@@ -224,7 +242,7 @@ Name the check that really ran, such as opening the live page or a request to
 the live service; never claim one that did not. A run that finished only part
 of the request never uses a finished label for all of it. Say exactly what
 did and did not happen: "The headline change is ready for review: `<link>`.
-The new contact form is not; it needs a database update nobody has approved."
+The new contact form is not: one of its checks fails, and I'm fixing it."
 
 When the host built a preview for this exact change, add it: "Preview:
 `<link>`." Report a preview that exists; never create one or promise one.
@@ -267,20 +285,21 @@ When a checked, low-risk database update is waiting, saved setup says to ask
 (`ask-after-review`), and the request reaches that step, ask once, naming the
 exact target:
 
-> Your change needs a small database update on **`<project>` /
+> Your change needs a small database update on **`<provider>`: `<project>` /
 > `<environment>`**: `<what it does, in one line>`. It's been checked and can
 > be undone. Should I handle checked, low-risk updates like this on
-> `<project>` / `<environment>` from now on?
+> `<provider>`: `<project>` / `<environment>` from now on?
 
-1. **Yes, handle them on `<project>` / `<environment>`**: this update and
-   later checked, low-risk, undoable ones on this one target run without a
-   question, and I tell you each time one ran. Anything bigger still asks.
-   Say "stop automatic database updates" to turn it off.
+1. **Yes, handle them on `<provider>`: `<project>` / `<environment>`**: this
+   update and later checked, low-risk, undoable ones on this one target run
+   without a question, and I tell you each time one ran. Anything bigger
+   still asks. Say "stop automatic database updates" to turn it off.
 2. **No, leave the database alone**: keep the rest of the change moving and
    report the update as not applied.
 
-Offer it only when the audit classed this update as routine, the exact
-target was observed, and saved setup is not `never`. A yes saves the existing
+Name all three parts of the target, because the saved permission is bound
+to all three. Offer it only when the audit classed this update as routine,
+the exact target was observed, and saved setup is not `never`. A yes saves the existing
 `auto-apply-reviewed-routine` setting for that one
 `provider:project:environment` target through `setup`, with its trust
 receipt, and the update then runs through `migration decision` and
@@ -290,8 +309,8 @@ part of this question: the guarded apply runs only under a saved setting.
 
 From then on a qualifying update on that target runs without a question, is
 verified, and is reported in the delivery line: "I also applied a database
-update on `<project>` / `<environment>` and confirmed it worked." The same
-update on any other target asks.
+update on `<provider>`: `<project>` / `<environment>` and confirmed it
+worked." The same update on any other target asks.
 
 - A request that stops at review applies nothing and offers nothing.
 - A stricter saved setting or an earlier "no" wins; do not offer again in the
@@ -306,9 +325,11 @@ update on any other target asks.
 ## Autopilot
 
 Autopilot is the plain name for two settings Simple Changes already has:
-the **Ship when approved** finish with **Deploy automatically**. With it,
-every finished change is checked, given a second look, added to the project,
-put live, and confirmed live without a question.
+the **Ship when approved** finish with **Deploy automatically**. With both
+saved, a request to ship, or finished work handed over with no other
+instruction, is checked, given a second look, added to the project, put
+live, and confirmed live without a question about going live. A request
+that asks for less, such as "put this up", still stops where it says.
 
 It is a permission, not a way of talking, so it is separate from this mode
 and never part of it. Nothing turns it on by implication: not Ultra-Simple
@@ -316,10 +337,11 @@ Mode, not **Use this setup**, not "ship it", not urgency. Offer it only when
 the owner asks for it by name or asks for changes to go live without being
 asked, and say first what it means:
 
-> With Autopilot, I put every finished change live once checks and a second
-> look pass, without asking you first. I still ask before any database
-> change, before removing work, and when something looks wrong. Each person
-> turns it on for their own computer. Turn it on for this project?
+> With Autopilot, when you ask me to ship, or hand me finished work without
+> saying how far to take it, I put it live once checks and a second look
+> pass, without asking about going live. Database changes, removing work,
+> and anything that looks wrong keep their own rules. Each person turns it
+> on for their own computer. Turn it on for this project?
 
 On yes, save those two answers through the standard `setup`, with
 [the choices and confirmations](onboarding.md#customized-questions) it
@@ -329,10 +351,12 @@ the saved setup there through `setup`, because a project file alone never
 grants permission to deploy; until then that person's agent asks before going
 live, as before. "Turn off Autopilot" saves **Ask me first** again.
 
-Autopilot covers going live and nothing else. Database changes follow the
-section above, and secrets, domains, store releases, and removing work keep
-their own questions. Break-glass shipping is a different, advanced choice
-and is never offered under this name.
+Autopilot removes one question, the one about going live, and nothing else.
+A saved **At major steps** setting still confirms each major step. Database
+changes follow the saved database setting and the section above. Secrets,
+domains, store releases, and removing work keep their own questions.
+Break-glass shipping is a different, advanced choice and is never offered
+under this name.
 
 ## What never changes
 

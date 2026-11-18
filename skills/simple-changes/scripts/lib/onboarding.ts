@@ -117,10 +117,11 @@ export interface OnboardingConversationOptions {
   /** The private files a personal-scope setup writes, for its receipt. */
   personalPaths?: { communication: string; policy: string };
   /**
-   * Take "Use this setup" without asking, for an agent that already showed
-   * the first screen in chat and got that answer.
+   * True when this person saved the standard style for themselves. "Use
+   * this setup" is then not offered: its receipt promises them the plain
+   * wording, and their own setting would still outrank it.
    */
-  quickStart?: boolean;
+  personalStandardStyle?: boolean;
   showFirstScreen?: boolean;
 }
 
@@ -725,15 +726,20 @@ const QUICK_START_INPUTS = new Set<keyof OnboardingInputs>([
 ]);
 
 /**
- * Whether "Use this setup" may be offered: only at first use, and only when
- * no other setup choice was supplied. Then its policy is the safe default
- * plus the request's finish, and every line of its receipt is true.
+ * Whether "Use this setup" may be offered: only at first use, only when no
+ * other setup choice was supplied, and not to someone who chose the standard
+ * style for themselves. Then its policy is the safe default plus the
+ * request's finish, and every line of its receipt is true.
  */
 export const quickStartAvailable = (
   inputs: OnboardingInputs,
-  conversation: Pick<OnboardingConversationOptions, "firstUse">
+  conversation: Pick<
+    OnboardingConversationOptions,
+    "firstUse" | "personalStandardStyle"
+  >
 ): boolean =>
   conversation.firstUse === true &&
+  conversation.personalStandardStyle !== true &&
   (Object.keys(inputs) as (keyof OnboardingInputs)[]).every(
     (key) =>
       QUICK_START_INPUTS.has(key) ||
@@ -761,9 +767,8 @@ const quickStartReleaseNotes = (
   if (!context.relevant) {
     return null;
   }
-  return policy.changelogHandling === "delegate-if-available" &&
-    context.capabilityAvailable
-    ? "- I hand release notes to Simple Changelogs, which is set up here."
+  return policy.changelogHandling === "delegate-if-available"
+    ? "- I hand release notes to Simple Changelogs when it can take them here, and otherwise leave them alone and tell you what still needs writing."
     : "- I leave release notes alone and tell you what still needs writing.";
 };
 
@@ -857,13 +862,9 @@ const selectQuickStart = async (
   prompter: OnboardingPrompter,
   conversation: OnboardingConversationOptions
 ): Promise<boolean> => {
-  if (!quickStartAvailable(inputs, conversation)) {
-    return false;
-  }
-  if (conversation.quickStart) {
-    return true;
-  }
-  if (!conversation.showFirstScreen) {
+  if (
+    !(conversation.showFirstScreen && quickStartAvailable(inputs, conversation))
+  ) {
     return false;
   }
   const finish = inputs.defaultFinish ?? preferredFinish(defaults);

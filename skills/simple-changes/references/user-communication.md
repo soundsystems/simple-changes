@@ -110,8 +110,9 @@ authority and report it at the end. Under **Only when blocked**, the default:
   whether to continue. Continue.
 - Do not ask the same thing twice while nothing has changed. A valid approval
   stays valid, and a declined offer is not made again in the same run.
-- Ask everything already known in one message instead of one question per
-  turn.
+- Ask independent decisions that are already known together, instead of one
+  per turn. A guided setup or walkthrough still asks
+  [one question at a time](onboarding.md#question-presentation-contract).
 
 For a blocker, say what is safe, what cannot happen yet, and what resolves it.
 Avoid narrating every failed internal attempt. If nothing is lost, say so.

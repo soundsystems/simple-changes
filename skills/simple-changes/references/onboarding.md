@@ -94,22 +94,22 @@ change, get it a second look, and add it to the project once it's approved.
 Nothing will go live." For ship: "I'll check your change, get it a second
 look, add it to the project, and ask you before anything goes live."
 
-**Use this setup** is one command, `setup --quick-start --finish <finish>`:
-without `--yes` it returns the plain receipt and writes nothing, and with
-`--yes`, after the person confirms that receipt, it saves the recommended
-setup and the mode together; see
-[first use](ultra-simple-mode.md#first-use). It asks no setup preference and
-leaves instruction files and the Simple Changelogs install offer alone. A
-question `initialize` reports as required is still asked, once and in plain
-words, such as the pending review question when two or more agents are
-detected. Choosing it grants nothing the recommended setup does not: the mode
-is a display preference, never a permission.
+**Use this setup** is the recommended setup with its answers fixed to the
+safe defaults, followed by `setup --communication ultra-simple` for the same
+storage. Show the plain receipt in
+[first use](ultra-simple-mode.md#first-use) and save, with the two commands
+it gives, only after the person confirms it. It asks no setup preference and
+leaves instruction files alone. Whatever `initialize` reports as required is
+still asked, once and in plain words: the pending review question when two
+or more agents are detected, and a pending Simple Changelogs install offer.
+Choosing it grants nothing the recommended setup does not: the mode is a
+display preference, never a permission.
 
-The command refuses any other setup choice and refuses to run once a policy
-is saved, so it can never replace settings someone already chose or save a
-permission its receipt does not state. When a policy is already saved, or the
-request names a setup choice, skip this screen and go to
-[Show options](#show-options).
+Offer this screen only at first use. When a policy is already saved, the
+request names a setup choice, or the person saved the standard style for
+themselves, skip it and go to [Show options](#show-options), so it can never
+replace settings someone already chose or promise what a saved setting does
+not do.
 
 ### Show options
 

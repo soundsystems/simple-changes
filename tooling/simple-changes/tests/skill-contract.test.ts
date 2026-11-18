@@ -1592,7 +1592,9 @@ describe("Simple Changes skill contract", () => {
       "Do not ask what the request, saved policy, or repository evidence already answers",
       "Do not ask permission for work that is already authorized, and do not ask whether to continue",
       "Do not ask the same thing twice while nothing has changed",
-      "Ask everything already known in one message instead of one question per turn",
+      "Ask independent decisions that are already known together, instead of one per turn",
+      // Batching never overrides a guided setup's one question at a time.
+      "A guided setup or walkthrough still asks [one question at a time](onboarding.md#question-presentation-contract)",
       "A decision one unit is waiting on blocks that unit and nothing else",
       "Only work that needs the answer, or that the answer could undo, waits",
       "End a turn on a question only when nothing else can proceed",
@@ -1671,9 +1673,10 @@ describe("Simple Changes skill contract", () => {
       "**Show options**",
       "I'll check your change, get it a second look, and add it to the project once it's approved. Nothing will go live.",
       "I'll check your change, get it a second look, add it to the project, and ask you before anything goes live.",
-      "**Use this setup** is one command, `setup --quick-start --finish <finish>`",
-      "A question `initialize` reports as required is still asked, once and in plain words",
-      "The command refuses any other setup choice and refuses to run once a policy is saved",
+      "**Use this setup** is the recommended setup with its answers fixed to the safe defaults, followed by `setup --communication ultra-simple` for the same storage",
+      "Whatever `initialize` reports as required is still asked, once and in plain words",
+      "Offer this screen only at first use.",
+      "so it can never replace settings someone already chose or promise what a saved setting does not do",
       "the mode is a display preference, never a permission",
       "### Show options",
       // Reviews are a required question in every setup style.
@@ -1684,12 +1687,15 @@ describe("Simple Changes skill contract", () => {
     }
     // The plain receipt names what is saved and where, before saving.
     for (const copy of [
-      "Without `--yes` it writes nothing and returns the receipt as `summary`, with the real paths.",
-      "run the same command with `--yes` only after a yes",
+      "Show what will be remembered and where, with the real paths, and save only after a yes",
       "I stop at a review link unless you ask for more.",
       "I ask before anything goes live, and before any database change.",
       "`<path>/.simple-changes.json` and > `<path>/.simple-changes-communication.json`",
-      "It works only at first use and takes no other setup choice, so every line of its receipt is true",
+      // The save is two existing commands whose flags are the receipt.
+      "--git-push-authorization ask --production ask --shipping-mode standard \\ --migration-handling ask-after-review --changelog <handling> \\ --instruction-pointer leave --yes",
+      "simple-changes setup --communication ultra-simple --scope repository --confirm",
+      "never record an answer the person did not give",
+      "This path changes no answer above and adds none.",
     ]) {
       expect(mode).toContain(copy);
     }
@@ -1704,15 +1710,15 @@ describe("Simple Changes skill contract", () => {
       // The saved questions preference and required stops still govern.
       "**At major steps** keeps its confirmations, and **Don't interrupt me** means work that lacks permission is skipped and reported, not asked about",
       "Everything `initialize` requires is still presented, in plain words and before the run changes anything",
-      "its required answers first, then what matters in a line and its one question",
+      "its required answers first, then any recommended change with the current and the proposed setting, then what matters in a line and the same choices the standard notice offers, in short form",
       "a one-time offer, such as the turn-end guard or a refreshed instruction rule, in one line the person can decline",
       "Never ask twice for the same thing while nothing has changed",
       // The brief keeps its timing, its scope, and the reviewer.
-      "it is sent before the first step that changes anything shared, it presents the recorded scope, and it says who gives the second look",
+      "it is sent before the first step that changes anything shared, it presents the recorded scope, and it names the reviewer as the standard brief does: the agent, its model and effort, whether it must differ from the author, and which setting chose it",
       // The three finished states, and honesty about what was checked.
       "Open with one of these labels and no other",
       "Ready for review: the new pricing table. `<link>`. Checks passed. Nothing is live.",
-      "Approved and added to the project: the new pricing table. `<link>`. Nothing is live yet.",
+      "Added to the project: the new pricing table, approved at `<link>`. Nothing is live yet.",
       "Live: the new pricing table, at `<address>`. `<the check that ran>` confirms it.",
       "Name the check that really ran, such as opening the live page or a request to the live service; never claim one that did not.",
       "A run that finished only part of the request never uses a finished label for all of it.",
@@ -1722,7 +1728,9 @@ describe("Simple Changes skill contract", () => {
       "> I couldn't confirm the live database backup, so I didn't change the > database. Your review link is ready.",
       // Database authority stays exactly where it was.
       'The mode itself, "ship it", "handle it", and "do whatever it takes" are never database permission.',
+      "Name all three parts of the target, because the saved permission is bound to all three.",
       "Offer it only when the audit classed this update as routine, the exact target was observed, and saved setup is not `never`.",
+      "Should I handle checked, low-risk updates like this on > `<provider>`: `<project>` / `<environment>` from now on?",
       "It never selects the wider `auto-apply-reviewed` tier",
       "A single one-time apply is not part of this question: the guarded apply runs only under a saved setting.",
       "The same update on any other target asks.",
@@ -1740,10 +1748,14 @@ describe("Simple Changes skill contract", () => {
     // Autopilot is a name for existing settings, and a permission of its own.
     for (const rule of [
       "Autopilot is the plain name for two settings Simple Changes already has: the **Ship when approved** finish with **Deploy automatically**.",
+      // It reaches only work that reaches Ship, and removes one question.
+      'A request that asks for less, such as "put this up", still stops where it says.',
       "It is a permission, not a way of talking, so it is separate from this mode and never part of it.",
       'Nothing turns it on by implication: not Ultra-Simple Mode, not **Use this setup**, not "ship it", not urgency.',
       "it takes effect on each computer only after that person confirms the saved setup there through `setup`, because a project file alone never grants permission to deploy",
-      "Autopilot covers going live and nothing else.",
+      "Autopilot removes one question, the one about going live, and nothing else.",
+      "A saved **At major steps** setting still confirms each major step.",
+      "Database changes follow the saved database setting and the section above.",
       "Break-glass shipping is a different, advanced choice and is never offered under this name.",
     ]) {
       expect(mode).toContain(rule);
@@ -1751,7 +1763,7 @@ describe("Simple Changes skill contract", () => {
 
     for (const rule of [
       "It writes that one file and refuses any other setup option in the same command",
-      "that command takes only `--finish` and `--scope`, previews its receipt without `--yes`, and refuses to run once a policy is saved",
+      "interactive setup offers that choice only when no policy is saved, checks again before its first write, and saves the style last",
       "The personal file outranks the repository's, unlike policy, because the style grants nothing",
       "in any layer, is listed in `communication.errors` and skipped",
       "no rule may read it to decide what is allowed",

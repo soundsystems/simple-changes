@@ -562,6 +562,11 @@ describe("onboarding conversation", () => {
       true
     );
     expect(quickStartAvailable({}, {})).toBe(false);
+    // Someone who chose full detail for themselves is not offered a setup
+    // whose receipt promises them the plain wording.
+    expect(
+      quickStartAvailable({}, { firstUse: true, personalStandardStyle: true })
+    ).toBe(false);
     for (const inputs of [
       { productionDeploy: "allow" },
       { migrationHandling: "auto-apply-reviewed-routine" },

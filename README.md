@@ -518,19 +518,18 @@ what Simple Changes may do: the command cannot write policy, checks and review
 run as before, and going live, database changes, and removing work still ask.
 
 On first use, the first screen offers it in one sentence: "I'll check your
-change and give you a link to review. Nothing will go live." Accepting it is
-one command, which previews its plain receipt without `--yes`, saves only the
-safe default setup with the mode, and refuses to run once a setup is saved:
-
-```sh
-bun run simple-changes setup --quick-start --finish review
-```
+change and give you a link to review. Nothing will go live." Accepting it
+saves the recommended setup with its answers fixed to the safe defaults, then
+the mode, through the two existing setup commands. It is offered only when
+nothing is saved yet.
 
 **Autopilot** is the plain name for the existing **Ship when approved** finish
-with **Deploy automatically**: every finished change goes live once checks and
-review pass, without a question. It is a permission, not part of Ultra-Simple
-Mode, it is never turned on by implication, and each person confirms it on
-their own computer before it takes effect there.
+with **Deploy automatically**: a request to ship goes live once checks and
+review pass, without a question about going live, while a request that asks
+for less still stops where it says. It is a permission, not part of
+Ultra-Simple Mode, it is never turned on by implication, each person confirms
+it on their own computer before it takes effect there, and database changes
+keep their own setting.
 
 On first use, it explains why onboarding appeared, shows the exact recommended
 workflow, and makes clear that nothing has been pushed, merged, deployed, or

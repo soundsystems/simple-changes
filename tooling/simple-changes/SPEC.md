@@ -254,11 +254,12 @@
   before completed-work handoff.
 - First-use onboarding leads with one sentence about the outcome and two
   choices, **Use this setup** and **Show options**; the walkthrough,
-  customization, and run-only setup stay available under the second.
-  `setup --quick-start` is the first choice as one command: it takes only a
-  finish and a scope, previews its receipt without `--yes`, saves the safe
-  default policy with the communication style, and refuses to run when a
-  policy is already saved.
+  customization, and run-only setup stay available under the second. The
+  first is the recommended setup with its answers fixed to the safe defaults
+  plus the communication style, saved through the existing setup
+  transactions; no command of its own exists. It is offered only when no
+  policy is saved, never with another setup choice, and never to someone who
+  saved the standard style for themselves.
 - The communication style (`ultra-simple` or `standard`) lives in its own
   sidecar and is reported by `initialize`. It changes wording and how often
   questions are asked. `setup --communication` writes only that sidecar, and
@@ -496,7 +497,9 @@
 - Turning on Autopilot by implication, offering it on the first screen, or
   treating it as database, secret, DNS, store-release, or cleanup authority.
 - Showing a plain setup receipt whose lines the saved policy does not make
-  true, or running a quick start over a saved policy.
+  true, or offering **Use this setup** over a saved policy.
+- Treating Autopilot as covering a request that asks for less than Ship, or
+  as removing any question but the one about going live.
 - Holding independent units, or other agents, while one unit waits for the
   user's answer.
 - Treating emotional urgency, active impact, or a tested claim as implicit

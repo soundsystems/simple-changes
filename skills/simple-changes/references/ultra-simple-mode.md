@@ -131,13 +131,15 @@ each choice.
 
 Not asked in this mode: which copy or base to use, agents, models, review
 effort and rounds, scheduling, signatures, artifact naming, instruction-file
-rules, the turn-end guard, and an update walkthrough. For each, use what is
-saved; where nothing is saved, use the default the runtime already applies to
-an unanswered question, and save nothing. An update notice with no required
-answers becomes one line ("Simple Changes was updated. Nothing changes for
-you.") and the run continues with current settings. List what was skipped
-once, under Details, as settings the project owner can change in the standard
-setup.
+rules, and the turn-end guard. For each, use what is saved; where nothing is
+saved, use the default the runtime already applies to an unanswered question,
+and save nothing. List what was skipped once, under Details, as settings the
+project owner can change in the standard setup.
+
+An [update notice](guidance-updates.md) still stops the run once, because
+the person decides whether to carry on. Shrink it to what matters and its one
+question, and offer the walkthrough only if they ask: "Simple Changes was
+updated: `<what matters, in a line>`. Your settings are the same. Carry on?"
 
 Always asked, whatever the mode:
 

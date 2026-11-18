@@ -1,5 +1,124 @@
 # Developer changelog
 
+## 0.34.0 - 2026-11-18
+
+- Scope and numbering (issue soundsystems/simple-changes#35): this release
+  ships from `main` ahead of the unmerged `release/0.34.0` branch, which
+  dates from 2026-10-29 and whose work continues as 0.40.0
+  (soundsystems/simple-changes#33). That branch's name, its "0.34.0"
+  changelog section, and the GitLab milestone are now stale and must be
+  renumbered when that work merges `main`. It also defines guidance 34;
+  guidance here stays 33.
+- Communication sidecar (new `lib/communication.ts`):
+  `.simple-changes-communication.json` at the primary checkout or a
+  personal `communication.json` beside `preferences.json`, holding
+  `{ "schemaVersion": 1, "style": "ultra-simple" | "standard" }`. It is
+  not a policy key because older copies enforce the policy file's closed
+  schema; they ignore the sidecar and keep the standard voice.
+  `readCommunicationFile` uses `lstat`, so a dangling symbolic link is an
+  unusable file, never an absent one, and reads only the two members, so a
+  later release can add one. `resolveCommunication` reads every layer,
+  takes the first usable one of personal, repository, then `companion`
+  (the repository's `.simple-changelogs-communication.json`), otherwise
+  `standard`, and reports every unusable file in `errors`. The personal
+  layer outranks the repository's, unlike policy, because the style grants
+  nothing.
+- Standalone setup (`runCommunicationSetup` in `simple-changes.ts`):
+  `setup --communication <style> --scope repository|personal --confirm`
+  refuses every other setup input, `--migration-target`, `--authoring`, a
+  run-only scope, and a missing `--confirm` with exit 2, then calls
+  `writeCommunication`: stage and rename, 0644 for the repository and 0600
+  for the personal file, no write when the style is already saved, and
+  exit 5 for a file it cannot read or that is not a regular file. A
+  repository write holds the same setup lock as `setup --authoring`; a
+  personal write touches no repository state and takes none. Its summary
+  says what was saved for the scope and, when another file decides, which
+  one.
+- `initialize` reports `communication` (`style`, `source`, `path`,
+  `errors`) in every mode, and `initialization.schema.json` gains the
+  property. Nothing else reads the style: a test asserts that only
+  `initialization.ts` (a type import) and `onboarding.ts` import
+  `lib/communication.ts`, so no rule can use it to decide what is allowed.
+- First screen (`lib/onboarding.ts`): `selectQuickStart` presents the
+  outcome sentence for the request's finish and asks
+  `ONBOARDING_QUESTIONS.quickStart`. It is offered only when
+  `quickStartAvailable` holds: no saved policy (`firstUse`, which is false
+  when Git failed for any reason other than "not a git repository"), no
+  setup input other than the finish and scope, and no personal `standard`
+  style. **Use this setup** is the existing recommended style with
+  `communication: "ultra-simple"` on the selection and the instruction
+  pointer, both instruction rules, and the Simple Changelogs install offer
+  left alone; the review questions are still asked when two agents are
+  detected. `renderUltraSimpleSummary` is the receipt, returned only when
+  `quickStartPromisesHold` (ask for production and migrations, no
+  automatic push, standard shipping, questions only when blocked);
+  otherwise the full summary is shown. `performSetup` checks again under
+  the setup lock (`assertQuickStartStillSafe`: `policyEntryExists` uses
+  `lstat`, so a policy saved meanwhile or a dangling policy link stops the
+  save, and an unusable style file stops it before the first write), then
+  writes the policy and its trust receipt, and the style last.
+- No quick-start command. Review round 1 asked for a non-interactive form
+  of **Use this setup**, and round 2 then found five defects in the
+  resulting `setup --quick-start` (a preview that took the write lock, an
+  `--authoring` mix that bypassed its refusal, terminal prompts under an
+  explicit flag, a first-use check outside the lock, a partial save). It
+  was removed: a chat agent runs the existing recommended setup with its
+  answers fixed to the safe defaults, then `setup --communication`, as
+  `references/ultra-simple-mode.md` spells out. A test runs exactly those
+  two commands for each finish.
+- Guidance text: new `references/ultra-simple-mode.md`.
+  `references/user-communication.md` gains Say less, Keep work moving, and
+  Messages to other agents, its questions rules defer to the saved
+  `questions` preference, and final responses report an existing preview
+  link and a before and after picture. `references/onboarding.md` leads
+  with the outcome screen at first use and moves the four setup styles
+  under `### Show options`. `references/setup-and-policy.md` gains
+  Communication preference, `change-requests.md` a default naming
+  paragraph, and `migrations-and-high-risk-actions.md`,
+  `ship-communication.md`, and `inventory-and-concurrency.md` one pointer
+  each. Autopilot is text only: a name for `defaultFinish: "ship"` with
+  `productionDeploy: "allow"`, saved through the existing setup and its
+  trust receipt. In the mode the database question saves the existing
+  `auto-apply-reviewed-routine` setting for one exact target; it offers no
+  one-time apply, because `migration apply` accepts only an `auto-apply`
+  decision. No decision or apply code changed.
+- `SKILL.md` budget: 17,495 of 17,500 bytes. The Communicate section
+  gained two sentences, paid for by shorter wording of the command alias
+  in the introduction, the two anchor links in workflow step 2, the
+  permission-checklist sentence, the onboarding sentence (which now says
+  to lead with the outcome), and by dropping "(see onboarding)" after the
+  run-only `--policy-request` rule. No pinned sentence changed.
+- Tests: new `communication.test.ts` covers resolution, unusable files,
+  writes, and the command line. With a trusted policy that allows
+  production and routine automatic migrations, turning the mode on leaves
+  the policy and its trust receipt byte-identical and every authority
+  field `initialize` reports unchanged; with the same policy untrusted, no
+  trust receipt appears and authority stays reduced. `onboarding.test.ts`
+  covers the first screen for all three finishes, its gating, and the
+  receipt's refusal of every setting it would misstate.
+  `skill-contract.test.ts` pins the new copy in two tests, and nine
+  journeys in `evals/cases.json` cover first and repeat use, a routine
+  database update on a saved and on an unapproved target, a partial run,
+  one unit waiting for approval, Autopilot reaching and not reaching Ship,
+  and a visible change with a preview.
+- Guidance stays 33. A bump would stop the next write-capable run in every
+  configured repository with an update notice for a mode that is off by
+  default and rules that need no decision.
+- Lifted from the unmerged 0.34.0 line, unchanged, with `cherry-pick -x`:
+  the Git 2.53 fixture and ship-hold fixes
+  (`fix/0-34-0-git-2-53-compat`: d83bd03, b03af77, f1c12b4), the lineage
+  fixes for soundsystems/simple-changes#20 and #26
+  (`fix/0-34-0-lineage-keeps-work`: 7143fbf, 5edd153), and the upstream
+  hold fixes for #19 and #27 (`fix/0-34-0-remote-prune-holds`: 76c46d3,
+  8770761, 98dbe3e, 5abf468, f04a224). All three branch from the same
+  `main` commit as this release. Each makes cleanup keep more, never
+  delete more. Without d83bd03, `bun run check` cannot pass on Git 2.53
+  or later.
+- Review: gpt-6.2-astra at high effort. Round 1 found 2 blocking and 10
+  should-fix defects. Round 2 found 1 blocking and 12 should-fix and
+  reopened five round 1 items. Each fix is described above.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-18T17:29:50-06:00" -->
+
 ## 0.33.0 - 2026-10-24
 
 - Git location guard (new `lib/git-location.ts`, proposal "Fail closed on

@@ -482,7 +482,7 @@ describes.
 It is `<primary-checkout>/.simple-changes-communication.json` for the
 repository, committed shared configuration like `.simple-changes.json`, or
 `communication.json` beside the personal `preferences.json`. Like the
-authoring sidecar it never joins the policy file, so copies before 0.33.1
+authoring sidecar it never joins the policy file, so copies before 0.34.0
 ignore it and keep the standard voice.
 
 `setup --communication <ultra-simple|standard> --scope <repository|personal>

@@ -27,6 +27,7 @@ import {
   type OnboardingChoice,
   PROPOSAL_SCHEDULING_CHOICES,
   pendingChangelogInstallOffer,
+  quickStartAvailable,
   renderOnboardingSummary,
   renderUltraSimpleSummary,
   resolveChangelogInstallCommand,
@@ -440,21 +441,7 @@ describe("onboarding conversation", () => {
         undefined,
         fixture.root,
         false,
-        {
-          // Two detected agents would ask the review questions in every
-          // setup style under "Show options"; this path asks none.
-          authoring: {
-            definitions: [],
-            detected: ["alpha-agent", "beta-agent"].map((id) => ({
-              evidence: ["harness root"],
-              id,
-              name: id,
-            })),
-            prefill: null,
-            runningHarness: "alpha-agent",
-          },
-          showFirstScreen: true,
-        }
+        { firstUse: true, showFirstScreen: true }
       );
       return { choicesByQuestion, confirmed, events, selection };
     };
@@ -521,26 +508,76 @@ describe("onboarding conversation", () => {
     });
   });
 
-  test("the plain receipt names personal storage outside a repository", () => {
-    const summary = renderUltraSimpleSummary(DEFAULT_POLICY, "user", null);
-    expect(summary).toContain("Here's what I'll remember for you:");
-    expect(summary).toContain(
-      "I'll save that in your private Simple Changes preferences on this computer"
+  test("offers the quick start only at first use and with no other setup choice", async () => {
+    const asked = async (
+      policy: RepoPolicy,
+      inputs: Parameters<typeof collectOnboardingSelection>[1],
+      firstUse: boolean
+    ) => {
+      const questions: string[] = [];
+      const selection = await collectOnboardingSelection(
+        policy,
+        inputs,
+        {
+          choose: (question, _choices, defaultValue) => {
+            questions.push(question);
+            return Promise.resolve(
+              question === ONBOARDING_QUESTIONS.start ? "run" : defaultValue
+            );
+          },
+          confirm: () => Promise.resolve(true),
+        },
+        undefined,
+        "/work/project",
+        false,
+        { firstUse, showFirstScreen: true }
+      );
+      return { questions, selection };
+    };
+
+    // A saved policy that deploys automatically: accepting a quick start
+    // here would copy that permission under a receipt that says "I ask".
+    const saved = await asked(
+      { ...DEFAULT_POLICY, defaultFinish: "ship", productionDeploy: "allow" },
+      {},
+      false
     );
-    expect(summary).not.toContain(".simple-changes.json");
+    expect(saved.questions).not.toContain(ONBOARDING_QUESTIONS.quickStart);
+    expect(saved.questions[0]).toBe(ONBOARDING_QUESTIONS.start);
+    expect(saved.selection.communication).toBeNull();
+
+    // A setup choice the receipt does not describe goes to the full setup.
+    const chosen = await asked(
+      DEFAULT_POLICY,
+      { defaultFinish: "ship", productionDeploy: "allow" },
+      true
+    );
+    expect(chosen.questions).not.toContain(ONBOARDING_QUESTIONS.quickStart);
+    expect(chosen.selection.communication).toBeNull();
+
+    expect(
+      quickStartAvailable({ defaultFinish: "ship" }, { firstUse: true })
+    ).toBe(true);
+    expect(quickStartAvailable({ scope: "user" }, { firstUse: true })).toBe(
+      true
+    );
+    expect(quickStartAvailable({}, {})).toBe(false);
+    for (const inputs of [
+      { productionDeploy: "allow" },
+      { migrationHandling: "auto-apply-reviewed-routine" },
+      { gitPushAuthorization: "configure-harness" },
+      { questions: "never" },
+      { instructionPointer: "add" },
+    ] as const) {
+      expect(quickStartAvailable(inputs, { firstUse: true })).toBe(false);
+    }
   });
 
-  test("honors an explicit scheduling input without prompting in non-interactive flows", async () => {
+  test("still asks who reviews when two agents are detected", async () => {
     const questions: string[] = [];
     const selection = await collectOnboardingSelection(
       DEFAULT_POLICY,
-      {
-        defaultFinish: "open-change-request",
-        gitPushAuthorization: "ask",
-        proposalScheduling: "parallel",
-        questions: "blocking-only",
-        scope: "run",
-      },
+      { defaultFinish: "open-change-request" },
       {
         choose: (question, _choices, defaultValue) => {
           questions.push(question);
@@ -551,14 +588,76 @@ describe("onboarding conversation", () => {
       undefined,
       "/work/project",
       false,
-      { forgeProvider: "github", showFirstScreen: false }
+      {
+        authoring: {
+          definitions: [],
+          detected: ["alpha-agent", "beta-agent"].map((id) => ({
+            evidence: ["harness root"],
+            id,
+            name: id,
+          })),
+          prefill: null,
+          runningHarness: "alpha-agent",
+        },
+        firstUse: true,
+        showFirstScreen: true,
+      }
     );
+    // The quick start skips setup preferences, never a required question.
+    expect(questions[0]).toBe(ONBOARDING_QUESTIONS.quickStart);
+    expect(questions.length).toBeGreaterThan(1);
+    expect(selection.communication).toBe("ultra-simple");
+    expect(selection.authoring?.roles.review).toBeDefined();
+    expect(selection.summary).toContain(
+      "Here's what I'll remember for this project:"
+    );
+  });
 
-    expect(questions).not.toContain(
-      "When there are multiple independent PRs, what should I optimize for?"
+  test("the plain receipt is shown only when every line of it is true", () => {
+    const personalPaths = {
+      communication: "/home/sam/.config/simple-changes/communication.json",
+      policy: "/home/sam/.config/simple-changes/preferences.json",
+    };
+    const personal = renderUltraSimpleSummary(
+      DEFAULT_POLICY,
+      "user",
+      null,
+      personalPaths
     );
-    expect(selection.policy.proposalScheduling).toBe("parallel");
-    expect(selection.summary).toContain("Multiple PRs");
+    expect(personal).toContain("Here's what I'll remember for you:");
+    expect(personal).toContain(
+      "I'll save the setup in /home/sam/.config/simple-changes/preferences.json, for projects that have none of their own, and the plain wording in /home/sam/.config/simple-changes/communication.json, for you in every project."
+    );
+    const runOnly = renderUltraSimpleSummary(DEFAULT_POLICY, "run", "/work");
+    expect(runOnly).toContain("Here's how I'll work for this request:");
+    expect(runOnly).toContain(
+      "This is for this request only. Nothing is saved, so I'll ask again next time."
+    );
+    expect(runOnly).not.toContain(".simple-changes.json");
+
+    // Any setting the receipt's lines would misstate withholds it.
+    for (const change of [
+      { productionDeploy: "allow" },
+      { migrationHandling: "never" },
+      {
+        migrationHandling: "auto-apply-reviewed-routine",
+        migrationTargets: [
+          { environment: "production", project: "shop", provider: "supabase" },
+        ],
+      },
+      { gitPushAuthorization: "configure-harness" },
+      { shippingMode: "expedited" },
+      { questions: "always" },
+      { changelogHandling: "ask" },
+    ] as Partial<RepoPolicy>[]) {
+      expect(
+        renderUltraSimpleSummary(
+          { ...DEFAULT_POLICY, ...change },
+          "repository",
+          "/work"
+        )
+      ).toBeNull();
+    }
   });
 
   test("uses provider-specific terms and neutral change proposals for scheduling", async () => {
@@ -1182,7 +1281,7 @@ describe("onboarding conversation", () => {
       undefined,
       "/work/project",
       false,
-      { showFirstScreen: true }
+      { firstUse: true, showFirstScreen: true }
     );
 
     // The first screen is the outcome alone; "Show options" explains.

@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  type Stats,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -88,10 +89,18 @@ type FileState =
 // Only `schemaVersion` and `style` are read. Other members are ignored, so a
 // later release can add one without this copy refusing the whole file.
 const readCommunicationFile = (path: string): FileState => {
-  if (!existsSync(path)) {
-    return { state: "absent" };
+  // lstat, not existsSync: a dangling symbolic link is a directory entry
+  // that is not a regular file, never an absent sidecar a write may replace.
+  let status: Stats;
+  try {
+    status = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { state: "absent" };
+    }
+    return { error: `${path} cannot be inspected`, state: "malformed" };
   }
-  if (!lstatSync(path).isFile()) {
+  if (!status.isFile()) {
     return { error: `${path} is not a regular file`, state: "malformed" };
   }
   let value: unknown;
@@ -121,7 +130,7 @@ const readCommunicationFile = (path: string): FileState => {
  * project's, then the project's Simple Changelogs setting. A personal setting
  * outranks the project's because the style grants nothing. A file that cannot
  * be used is reported and skipped, never guessed at, so the worst outcome of
- * a broken sidecar is the standard voice.
+ * a broken sidecar is the next layer's style or the standard voice.
  */
 export const resolveCommunication = (
   primaryCheckout: string | null,
@@ -133,20 +142,26 @@ export const resolveCommunication = (
     ["repository", paths.repository],
     ["companion", paths.companion],
   ];
+  // Every layer is read, so a broken sidecar is reported even when a higher
+  // layer already decides the style: a person's own setting must not hide
+  // the project file their teammates depend on.
   const errors: string[] = [];
+  let chosen: Omit<CommunicationReport, "errors"> | null = null;
   for (const [source, path] of layers) {
     if (!path) {
       continue;
     }
     const file = readCommunicationFile(path);
-    if (file.state === "valid") {
-      return { errors, path, source, style: file.style };
-    }
     if (file.state === "malformed") {
       errors.push(file.error);
+    } else if (file.state === "valid" && chosen === null) {
+      chosen = { path, source, style: file.style };
     }
   }
-  return { errors, path: null, source: "default", style: "standard" };
+  return {
+    ...(chosen ?? { path: null, source: "default", style: "standard" }),
+    errors,
+  };
 };
 
 /**

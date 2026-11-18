@@ -490,8 +490,10 @@ ignore it and keep the standard voice.
 refuses any other setup option in the same command, so changing how Simple
 Changes talks can never change the policy, its trust receipt, or anything
 Simple Changes is allowed to do. It never replaces a file it cannot read or
-that is not a regular file. On the first screen, **Use this setup** records
-it with the recommended setup, for the same storage.
+that is not a regular file. At first use, `setup --quick-start` records it
+with the recommended setup, for the same storage; that command takes only
+`--finish` and `--scope`, previews its receipt without `--yes`, and refuses
+to run once a policy is saved.
 
 `initialize` reports the effective `communication.style`, its `source`, and
 the `path` it came from. Precedence, highest first: the current request, the
@@ -500,8 +502,8 @@ sidecar (`.simple-changelogs-communication.json`, reported as `companion`),
 then `standard`. The personal file outranks the repository's, unlike policy,
 because the style grants nothing: an owner can choose Ultra-Simple Mode for a
 team and keep full detail personally. A sidecar that exists but cannot be
-used is listed in `communication.errors` and skipped; tell the owner, and
-never overwrite it.
+used, in any layer, is listed in `communication.errors` and skipped; tell the
+owner, and never overwrite it.
 
 The style is a display preference, never authority. It grants no push,
 merge, deployment, migration, cleanup, or credential authority, and no rule

@@ -107,7 +107,20 @@ export interface OnboardingConversationOptions {
   // this is supplied (the interactive setup does; agents use setup --authoring).
   authoring?: Omit<AuthoringOnboardingContext, "setupStyle"> | null;
   existingPersonalDefaults?: RepoPolicy | null;
+  /**
+   * True when no repository or personal policy is saved. Only then is "Use
+   * this setup" offered: it builds a setup from the safe defaults, so it
+   * must never run over settings someone already chose.
+   */
+  firstUse?: boolean;
   forgeProvider?: string | null;
+  /** The private files a personal-scope setup writes, for its receipt. */
+  personalPaths?: { communication: string; policy: string };
+  /**
+   * Take "Use this setup" without asking, for an agent that already showed
+   * the first screen in chat and got that answer.
+   */
+  quickStart?: boolean;
   showFirstScreen?: boolean;
 }
 
@@ -704,38 +717,120 @@ const QUICK_START_CHOICES = [
   },
 ] as const satisfies readonly OnboardingChoice[];
 
+// The setup inputs "Use this setup" accepts. Anything else is a choice the
+// plain receipt does not describe, so it belongs under "Show options".
+const QUICK_START_INPUTS = new Set<keyof OnboardingInputs>([
+  "defaultFinish",
+  "scope",
+]);
+
+/**
+ * Whether "Use this setup" may be offered: only at first use, and only when
+ * no other setup choice was supplied. Then its policy is the safe default
+ * plus the request's finish, and every line of its receipt is true.
+ */
+export const quickStartAvailable = (
+  inputs: OnboardingInputs,
+  conversation: Pick<OnboardingConversationOptions, "firstUse">
+): boolean =>
+  conversation.firstUse === true &&
+  (Object.keys(inputs) as (keyof OnboardingInputs)[]).every(
+    (key) =>
+      QUICK_START_INPUTS.has(key) ||
+      inputs[key] === undefined ||
+      (key === "migrationTargets" && inputs.migrationTargets?.length === 0)
+  );
+
+// What the plain receipt promises. A policy that does not match is never
+// described by it; the full summary is shown instead.
+const quickStartPromisesHold = (policy: RepoPolicy): boolean =>
+  policy.productionDeploy === "ask" &&
+  policy.migrationHandling === "ask-after-review" &&
+  policy.migrationTargets.length === 0 &&
+  policy.gitPushAuthorization !== "configure-harness" &&
+  policy.shippingMode === "standard" &&
+  policy.questions === "blocking-only" &&
+  policy.changelogHandling !== "ask";
+
+// Release notes are named only where the project has them, and by what the
+// saved setting does with them.
+const quickStartReleaseNotes = (
+  policy: RepoPolicy,
+  context: ChangelogCoordination
+): string | null => {
+  if (!context.relevant) {
+    return null;
+  }
+  return policy.changelogHandling === "delegate-if-available" &&
+    context.capabilityAvailable
+    ? "- I hand release notes to Simple Changelogs, which is set up here."
+    : "- I leave release notes alone and tell you what still needs writing.";
+};
+
+const quickStartStorage = (
+  scope: SetupScope,
+  primaryCheckout: string | null,
+  personalPaths: OnboardingConversationOptions["personalPaths"]
+): { heading: string; saved: string } => {
+  if (scope === "run") {
+    return {
+      heading: "Here's how I'll work for this request:",
+      saved:
+        "This is for this request only. Nothing is saved, so I'll ask again next time.",
+    };
+  }
+  if (scope === "repository" && primaryCheckout) {
+    return {
+      heading: "Here's what I'll remember for this project:",
+      saved: `I'll save that in ${primaryCheckout}/.simple-changes.json and ${primaryCheckout}/${REPOSITORY_COMMUNICATION_FILENAME}, so anyone working on this project gets the same setup.`,
+    };
+  }
+  return {
+    heading: "Here's what I'll remember for you:",
+    saved: personalPaths
+      ? `I'll save the setup in ${personalPaths.policy}, for projects that have none of their own, and the plain wording in ${personalPaths.communication}, for you in every project.`
+      : "I'll save the setup in your private Simple Changes preferences, for projects that have none of their own, and the plain wording beside it, for you in every project.",
+  };
+};
+
 /**
  * The plain receipt "Use this setup" confirms: what is remembered, in the
- * mode's own words, and the exact files it is saved in.
+ * mode's own words, and the exact files it is saved in. Null when the policy
+ * holds anything the receipt's lines would misstate.
  */
 export const renderUltraSimpleSummary = (
   policy: RepoPolicy,
   scope: SetupScope,
-  primaryCheckout: string | null
-): string => {
+  primaryCheckout: string | null,
+  personalPaths?: OnboardingConversationOptions["personalPaths"],
+  context: ChangelogCoordination = DEFAULT_CHANGELOG_CONTEXT
+): string | null => {
+  if (!quickStartPromisesHold(policy)) {
+    return null;
+  }
   const finish =
     policy.defaultFinish === "preview"
       ? "open-change-request"
       : policy.defaultFinish;
-  const repository = scope === "repository" && primaryCheckout;
+  const storage = quickStartStorage(scope, primaryCheckout, personalPaths);
   return [
-    repository
-      ? "Here's what I'll remember for this project:"
-      : "Here's what I'll remember for you:",
+    storage.heading,
     "",
     `- ${QUICK_START_OUTCOMES[finish].remember}`,
     "- I ask before anything goes live, and before any database change.",
+    quickStartReleaseNotes(policy, context),
     '- I keep updates short and skip the technical terms. Say "details" any time.',
     "",
-    repository
-      ? `I'll save that in ${primaryCheckout}/.simple-changes.json and ${primaryCheckout}/${REPOSITORY_COMMUNICATION_FILENAME}, so anyone working on this project gets the same setup.`
-      : "I'll save that in your private Simple Changes preferences on this computer, for projects that have no setup of their own.",
-  ].join("\n");
+    storage.saved,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
 };
 
-// "Use this setup" is the recommended setup plus the mode. It asks nothing
-// else: instruction files, the Simple Changelogs install offer, and the
-// agent, model, and review questions are left exactly as they are.
+// "Use this setup" is the recommended setup plus the mode. It leaves
+// instruction files and the Simple Changelogs install offer exactly as they
+// are; a required question, such as who reviews when two agents are
+// detected, is still asked.
 const ultraSimpleInputs = (inputs: OnboardingInputs): OnboardingInputs => ({
   ...inputs,
   instructionPointer: inputs.instructionPointer ?? "leave",
@@ -760,9 +855,15 @@ const selectQuickStart = async (
   defaults: RepoPolicy,
   inputs: OnboardingInputs,
   prompter: OnboardingPrompter,
-  showFirstScreen: boolean
+  conversation: OnboardingConversationOptions
 ): Promise<boolean> => {
-  if (!showFirstScreen) {
+  if (!quickStartAvailable(inputs, conversation)) {
+    return false;
+  }
+  if (conversation.quickStart) {
+    return true;
+  }
+  if (!conversation.showFirstScreen) {
     return false;
   }
   const finish = inputs.defaultFinish ?? preferredFinish(defaults);
@@ -1816,7 +1917,7 @@ export const collectOnboardingSelection = async (
     defaults,
     initialInputs,
     prompter,
-    conversation.showFirstScreen ?? false
+    conversation
   );
   const inputs = ultraSimple ? ultraSimpleInputs(initialInputs) : initialInputs;
   const setupStyle: SetupStyle = ultraSimple
@@ -1831,9 +1932,6 @@ export const collectOnboardingSelection = async (
         conversation.forgeProvider
       );
   const customize = setupStyle === "customize" || setupStyle === "walkthrough";
-  // The agent, model, and review questions stay pending under "Use this
-  // setup", whatever was detected.
-  const authoringContext = ultraSimple ? null : conversation.authoring;
   const defaultFinish = await selectDefaultFinish(
     defaults,
     inputs,
@@ -1858,9 +1956,9 @@ export const collectOnboardingSelection = async (
     customize && (conversation.showFirstScreen ?? false),
     conversation.forgeProvider
   );
-  const authoring = authoringContext
+  const authoring = conversation.authoring
     ? await collectAuthoringAnswers(
-        { ...authoringContext, setupStyle },
+        { ...conversation.authoring, setupStyle },
         prompter
       )
     : null;
@@ -1957,24 +2055,34 @@ export const collectOnboardingSelection = async (
     shippingMode,
     uiArtifactVersioning,
   };
-  const summary = ultraSimple
-    ? renderUltraSimpleSummary(policy, scope, primaryCheckout)
-    : [
-        renderOnboardingSummary(
-          policy,
-          scope,
-          context,
-          instructionPointer,
-          uiArtifactsRelevant,
-          conversation.forgeProvider,
-          changelogInstall,
-          scratchFileRule,
-          reviewLoopRule
-        ),
-        authoringSummary(authoring, conversation),
-      ]
-        .filter((part): part is string => part !== null)
-        .join("\n\n");
+  // The plain receipt is used only when every line of it is true for this
+  // policy; otherwise the full summary says exactly what is being saved.
+  const plainReceipt = ultraSimple
+    ? renderUltraSimpleSummary(
+        policy,
+        scope,
+        primaryCheckout,
+        conversation.personalPaths,
+        context
+      )
+    : null;
+  const summary = [
+    plainReceipt ??
+      renderOnboardingSummary(
+        policy,
+        scope,
+        context,
+        instructionPointer,
+        uiArtifactsRelevant,
+        conversation.forgeProvider,
+        changelogInstall,
+        scratchFileRule,
+        reviewLoopRule
+      ),
+    authoringSummary(authoring, conversation),
+  ]
+    .filter((part): part is string => part !== null)
+    .join("\n\n");
   return {
     authoring,
     changelogInstall,

@@ -98,7 +98,11 @@ ordinary language, then give each option's practical consequence, the
 recommended one first. Include exact technical targets only where they prevent
 ambiguity. Do not make the user decode the workflow before they can answer.
 
-A question costs the user attention, so ask only what is theirs to decide:
+A question costs the user attention, so ask only what is theirs to decide.
+The saved `questions` preference decides how much that is, and these rules
+never loosen it: under **At major steps** confirm each consequential step
+even when it is authorized, and under **Don't interrupt me** skip what lacks
+authority and report it at the end. Under **Only when blocked**, the default:
 
 - Do not ask what the request, saved policy, or repository evidence already
   answers, and do not ask the user to confirm what they just said.
@@ -219,19 +223,24 @@ Prefer:
 
 Avoid, when one of three changes needs a decision:
 
-> The checkout change needs a database update, so I've paused the run. Should
-> I apply it?
+> Two changes set different prices for the same plan, so I've paused the run.
+> Which one do you want?
 
 Prefer:
 
-> The header and footer changes are up for review. The checkout change needs
-> a database update on the live store before it can go up: apply it, or send
-> it for review without the update?
+> The header and footer changes are up for review. The pricing change is not
+> yet: it and an earlier change set different prices for the Team plan. Which
+> should the site show, $29 or $35?
 
 ## Final responses
 
 Lead with the outcome. Report shipped, preserved, and blocked work using plain
-names and practical consequences. Include proposal URLs, exact revisions,
+names and practical consequences. When the host built a preview deployment
+for the exact proposed revision, give its link beside the proposal's; report
+one that exists, and never create or promise one. When the change is visible
+and a browser or device tool is available, show a before and after picture
+of it, and say so briefly when one could not be taken. Neither ever delays
+the report. Include proposal URLs, exact revisions,
 deployment identities, decision digests, or receipt IDs only when the workflow
 contract requires them or they help the user verify the result. Put dense audit
 details last, under a clearly optional technical section, or omit them until the

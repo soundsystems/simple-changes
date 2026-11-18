@@ -16,9 +16,10 @@ and next action before internal workflow terms or exact audit evidence. Both
 messages follow [say less](user-communication.md#say-less), and a decision
 one unit is waiting on never stops the rest of the shipment; see
 [keep work moving](user-communication.md#keep-work-moving). In
-[Ultra-Simple Mode](ultra-simple-mode.md#messages) the brief names each
-change by what it does and the receipt is its delivery line; the recorded
-scope is the same, and exact branches and revisions stay under Details.
+[Ultra-Simple Mode](ultra-simple-mode.md#messages) the brief keeps this
+timing and content, the recorded scope and the reviewer included, and names
+each change by what it does; the receipt opens with its delivery label, and
+exact branches and revisions stay under Details.
 
 ## Before the first consequential mutation
 

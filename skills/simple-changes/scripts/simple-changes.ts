@@ -407,6 +407,8 @@ Usage:
     --confirm [--agent-id ID] [--json] [--repo PATH]
   simple-changes setup --communication ultra-simple|standard
     --scope repository|personal --confirm [--agent-id ID] [--json] [--repo PATH]
+  simple-changes setup --quick-start [--finish review|integrate|ship]
+    [--scope user|repository|run] [--yes] [--agent-id ID] [--json] [--repo PATH]
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
     [--agent-id ID] [--json] [--repo PATH]
   simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
@@ -743,6 +745,7 @@ interface CliOptions {
   providerReceiptPath?: string;
   purpose?: string;
   questions?: RepoPolicy["questions"];
+  quickStart: boolean;
   // loop hold-unit --readiness-evidence: each failed-readiness citation.
   readinessEvidence: string[];
   ready: boolean;
@@ -902,6 +905,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--all",
   "--already-live",
   "--production-authorized",
+  "--quick-start",
   "--version-authorized",
   "--acknowledge-push-scope",
   "--changelog-required",
@@ -1641,6 +1645,10 @@ const applyTurnGuardBooleanOption = (
     options.write = true;
     return true;
   }
+  if (option === "--quick-start") {
+    options.quickStart = true;
+    return true;
+  }
   return false;
 };
 
@@ -1710,6 +1718,7 @@ const parseOptions = (args: string[]): CliOptions => {
     overrideHalt: false,
     positional: [],
     productionAuthorized: false,
+    quickStart: false,
     readinessEvidence: [],
     ready: false,
     releaseClaim: false,
@@ -2085,6 +2094,9 @@ const setupContext = (
 ): {
   changelog: ReturnType<typeof inspectChangelogCoordination>;
   existingPersonalDefaults: RepoPolicy | null;
+  // No repository or personal policy is saved: the effective one is the
+  // built-in default.
+  firstUse: boolean;
   forgeProvider: string | null;
   policy: RepoPolicy;
   primaryCheckout: string | null;
@@ -2096,6 +2108,7 @@ const setupContext = (
       changelog: inspectChangelogCoordination(null),
       existingPersonalDefaults:
         personalPolicy.source === "user" ? personalPolicy.value : null,
+      firstUse: personalPolicy.source === "default",
       forgeProvider: null,
       policy: personalPolicy.value,
       primaryCheckout: null,
@@ -2111,6 +2124,7 @@ const setupContext = (
     ),
     existingPersonalDefaults:
       personalPolicy.source === "user" ? personalPolicy.value : null,
+    firstUse: inventory.policy.source === "default",
     forgeProvider: targetBinding?.provider ?? null,
     policy: inventory.policy.value,
     primaryCheckout: inventory.repository.primaryCheckout,
@@ -2260,11 +2274,24 @@ const COMMUNICATION_EXCLUSIVE_INPUTS = SETUP_INPUT_KEYS.filter(
   (key) => key !== "scope"
 );
 
-const COMMUNICATION_SUMMARIES: Record<CommunicationStyle, string> = {
-  standard:
-    "Ultra-Simple Mode is off: Simple Changes uses its standard voice and asks its usual setup questions.",
-  "ultra-simple":
-    "Ultra-Simple Mode is on: Simple Changes keeps messages short, skips tool terms, and asks only when the answer changes what happens.",
+// What a write records, by scope: a project's setting is its default, and a
+// person's own setting can still outrank it.
+const COMMUNICATION_SAVED: Record<
+  "personal" | "repository",
+  Record<CommunicationStyle, string>
+> = {
+  personal: {
+    standard:
+      "Ultra-Simple Mode is off for you in every project: Simple Changes uses its standard voice.",
+    "ultra-simple":
+      "Ultra-Simple Mode is on for you in every project: Simple Changes keeps messages short, skips tool terms, and asks only when the answer changes what happens.",
+  },
+  repository: {
+    standard:
+      "Ultra-Simple Mode is off for this project by default: Simple Changes uses its standard voice.",
+    "ultra-simple":
+      "Ultra-Simple Mode is on for this project by default: Simple Changes keeps messages short, skips tool terms, and asks only when the answer changes what happens.",
+  },
 };
 
 /**
@@ -2283,6 +2310,7 @@ const runCommunicationSetup = async (
     ),
     ...(options.migrationTargets.length > 0 ? ["migrationTargets"] : []),
     ...(options.authoring === undefined ? [] : ["authoring"]),
+    ...(options.quickStart ? ["quickStart"] : []),
   ];
   if (mixed.length > 0) {
     throw new SimpleChangesError(
@@ -2325,10 +2353,21 @@ const runCommunicationSetup = async (
         write
       )
     : write();
-  const summary = `${COMMUNICATION_SUMMARIES[style]} ${recorded.changed ? "Saved in" : "Already saved in"} ${recorded.path}.`;
+  // What was saved is this scope's setting. What applies to this person
+  // may differ, because their own setting outranks the project's.
+  const effective = resolveCommunication(repository?.primaryCheckout ?? null);
+  const summary = [
+    `${COMMUNICATION_SAVED[scope][style]} ${recorded.changed ? "Saved in" : "Already saved in"} ${recorded.path}.`,
+    effective.style === style
+      ? null
+      : `For you it stays ${effective.style === "ultra-simple" ? "on" : "off"}: ${effective.path} outranks it.`,
+  ]
+    .filter((line): line is string => line !== null)
+    .join(" ");
   writeOutput(
     {
       communication: {
+        effective,
         path: recorded.path,
         scope,
         style,
@@ -2439,6 +2478,40 @@ const setupCommunicationTarget = (
   return selection.scope === "repository" ? paths.repository : paths.personal;
 };
 
+// `setup --quick-start` is the first screen's "Use this setup" for an agent
+// that already showed it in chat: the safe default setup plus Ultra-Simple
+// Mode. Without --yes it writes nothing and returns the receipt to show.
+const assertQuickStartRequest = (
+  options: CliOptions,
+  firstUse: boolean
+): void => {
+  if (!firstUse) {
+    throw new SimpleChangesError(
+      "setup --quick-start is for first use, and a setup is already saved here. Use setup --communication to change how Simple Changes talks, or the full setup to change anything else.",
+      EXIT_CODES.usage
+    );
+  }
+  const mixed = [
+    ...SETUP_INPUT_KEYS.filter(
+      (key) =>
+        key !== "scope" && key !== "defaultFinish" && options[key] !== undefined
+    ),
+    ...(options.migrationTargets.length > 0 ? ["migrationTargets"] : []),
+    ...(options.uiArtifacts ? ["uiArtifacts"] : []),
+  ];
+  if (mixed.length > 0) {
+    throw new SimpleChangesError(
+      `setup --quick-start takes only --finish and --scope; choose ${mixed.join(", ")} in the full setup.`,
+      EXIT_CODES.usage
+    );
+  }
+};
+
+const quickStartInputs = (options: CliOptions): OnboardingInputs => ({
+  ...(options.defaultFinish ? { defaultFinish: options.defaultFinish } : {}),
+  ...(options.scope ? { scope: options.scope } : {}),
+});
+
 const writeSetupCommunication = (
   target: string | null,
   selection: Pick<
@@ -2454,19 +2527,23 @@ const writeSetupCommunication = (
       )
     : null;
 
-const performSetup = async (options: CliOptions): Promise<SetupRun> => {
-  const context = setupContext(options.repo);
-  const instructionTargets = options.scope
-    ? discoverInstructionTargets(
-        options.scope,
-        context.primaryCheckout,
-        options.instructionFile
-      )
-    : [];
+// The setup answers this invocation supplies, after refusing a combination
+// that cannot run: a quick start outside first use or with other choices, an
+// incomplete non-interactive setup, or automatic pushes without their
+// acknowledgement.
+const resolveSetupInputs = (
+  options: CliOptions,
+  context: ReturnType<typeof setupContext>,
+  instructionTargetCount: number
+): OnboardingInputs => {
+  if (options.quickStart) {
+    assertQuickStartRequest(options, context.firstUse);
+    return quickStartInputs(options);
+  }
   const needsPrompt = setupNeedsPrompt(
     options,
     context.changelog.relevant,
-    instructionTargets.length,
+    instructionTargetCount,
     changelogInstallOfferApplies(context.changelog)
   );
   if (needsPrompt && !process.stdin.isTTY) {
@@ -2485,13 +2562,34 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
       EXIT_CODES.usage
     );
   }
-  const inputs = buildOnboardingInputs(options, needsPrompt);
+  return buildOnboardingInputs(options, needsPrompt);
+};
+
+const performSetup = async (options: CliOptions): Promise<SetupRun> => {
+  const context = setupContext(options.repo);
+  const instructionTargets = options.scope
+    ? discoverInstructionTargets(
+        options.scope,
+        context.primaryCheckout,
+        options.instructionFile
+      )
+    : [];
+  const inputs = resolveSetupInputs(
+    options,
+    context,
+    instructionTargets.length
+  );
   const interactive = createCliPrompter(options);
+  // A quick start is confirmed in chat: without --yes it previews the
+  // receipt and writes nothing, and it never waits on a terminal.
+  const prompter: OnboardingPrompter = options.quickStart
+    ? { ...interactive.prompter, confirm: () => Promise.resolve(options.yes) }
+    : interactive.prompter;
   try {
     const selection = await collectOnboardingSelection(
       context.policy,
       inputs,
-      interactive.prompter,
+      prompter,
       context.changelog,
       context.primaryCheckout,
       options.uiArtifacts,
@@ -2500,8 +2598,14 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
           ? interactiveAuthoringContext(context.primaryCheckout)
           : null,
         existingPersonalDefaults: context.existingPersonalDefaults,
+        firstUse: context.firstUse,
         forgeProvider: context.forgeProvider,
-        showFirstScreen: process.stdin.isTTY,
+        personalPaths: {
+          communication: communicationPaths(null).personal,
+          policy: resolvePersonalPolicyPath(),
+        },
+        quickStart: options.quickStart,
+        showFirstScreen: process.stdin.isTTY && !options.quickStart,
       }
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);

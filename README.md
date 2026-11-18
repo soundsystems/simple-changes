@@ -516,8 +516,21 @@ can set a project to Ultra-Simple for a team and keep full detail personally.
 The mode changes the words and how often Simple Changes asks. It never changes
 what Simple Changes may do: the command cannot write policy, checks and review
 run as before, and going live, database changes, and removing work still ask.
-On first use, the first screen now offers it in one sentence: "I'll check your
-change and give you a link to review. Nothing will go live."
+
+On first use, the first screen offers it in one sentence: "I'll check your
+change and give you a link to review. Nothing will go live." Accepting it is
+one command, which previews its plain receipt without `--yes`, saves only the
+safe default setup with the mode, and refuses to run once a setup is saved:
+
+```sh
+bun run simple-changes setup --quick-start --finish review
+```
+
+**Autopilot** is the plain name for the existing **Ship when approved** finish
+with **Deploy automatically**: every finished change goes live once checks and
+review pass, without a question. It is a permission, not part of Ultra-Simple
+Mode, it is never turned on by implication, and each person confirms it on
+their own computer before it takes effect there.
 
 On first use, it explains why onboarding appeared, shows the exact recommended
 workflow, and makes clear that nothing has been pushed, merged, deployed, or

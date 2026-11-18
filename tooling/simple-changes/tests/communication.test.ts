@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -187,6 +188,32 @@ describe("communication style resolution", () => {
     const linked = resolveCommunication(fixture.root, { environment });
     expect(linked.style).toBe("standard");
     expect(linked.errors[0]).toContain("is not a regular file");
+
+    // Nor is a dangling link an absent sidecar a later write may replace.
+    rmSync(target);
+    const dangling = resolveCommunication(fixture.root, { environment });
+    expect(dangling.style).toBe("standard");
+    expect(dangling.errors).toEqual([`${own} is not a regular file`]);
+  });
+
+  test("reports a broken project sidecar even when a personal setting decides", () => {
+    const fixture = repository();
+    const config = temporary("config");
+    const environment = { SIMPLE_CHANGES_CONFIG_DIR: config };
+    const paths = communicationPaths(fixture.root, { environment });
+    mkdirSync(join(config, "simple-changes"), { recursive: true });
+    writeFileSync(paths.personal, sidecar("ultra-simple"));
+    writeFileSync(paths.repository as string, "{ not json");
+    writeFileSync(paths.companion as string, "[]");
+    expect(resolveCommunication(fixture.root, { environment })).toEqual({
+      errors: [
+        `${paths.repository} is not valid JSON`,
+        `${paths.companion} must hold a JSON object`,
+      ],
+      path: paths.personal,
+      source: "personal",
+      style: "ultra-simple",
+    });
   });
 
   test("ignores members a later release may add", () => {
@@ -243,6 +270,14 @@ describe("communication sidecar writes", () => {
       "is not a regular file"
     );
     expect(readFileSync(target, "utf8")).toBe(sidecar("standard"));
+
+    // A dangling link is refused too, and stays a link.
+    rmSync(target);
+    expect(() => writeCommunication(path, "ultra-simple", false)).toThrow(
+      "is not a regular file"
+    );
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
+    expect(existsSync(target)).toBe(false);
   });
 });
 
@@ -384,6 +419,76 @@ describe("setup --communication and initialize", () => {
     });
   });
 
+  test("turning the mode on never creates the trust receipt a consequential policy lacks", () => {
+    const fixture = repository();
+    const env = { SIMPLE_CHANGES_CONFIG_DIR: temporary("config") };
+    // The same consequential policy, committed by someone else: this person
+    // never confirmed it, so no trust receipt exists here.
+    writeFileSync(
+      join(fixture.root, ".simple-changes.json"),
+      `${JSON.stringify(
+        {
+          ...DEFAULT_POLICY,
+          defaultFinish: "ship",
+          migrationHandling: "auto-apply-reviewed-routine",
+          migrationTargets: [
+            {
+              environment: "production",
+              project: "storefront",
+              provider: "supabase",
+            },
+          ],
+          productionDeploy: "allow",
+        },
+        null,
+        2
+      )}\n`
+    );
+    const trustPath = resolve(
+      fixture.root,
+      git(fixture.root, ["rev-parse", "--git-common-dir"]),
+      "simple-changes",
+      "policy-trust.json"
+    );
+    const reduced = {
+      migrationHandling: "ask-after-review",
+      policyTrust: "untrusted",
+      productionDeploy: "ask",
+    };
+    const initialize = (): Record<string, unknown> =>
+      JSON.parse(
+        runCli(
+          ["initialize", "--mode", "ship", "--repo", fixture.root, "--json"],
+          env
+        ).stdout
+      ) as Record<string, unknown>;
+    expect(initialize()).toMatchObject(reduced);
+    expect(existsSync(trustPath)).toBe(false);
+
+    for (const style of ["ultra-simple", "standard", "ultra-simple"]) {
+      const set = runCli(
+        [
+          "setup",
+          "--communication",
+          style,
+          "--scope",
+          "repository",
+          "--confirm",
+          "--repo",
+          fixture.root,
+        ],
+        env
+      );
+      expect(set.stderr).toBe("");
+      expect(set.exitCode).toBe(0);
+      expect(existsSync(trustPath)).toBe(false);
+      expect(initialize()).toMatchObject({
+        ...reduced,
+        communication: { source: "repository", style },
+      });
+    }
+  });
+
   test("a personal setting applies in every project and outranks the project's", () => {
     const fixture = repository();
     const config = temporary("config");
@@ -422,6 +527,25 @@ describe("setup --communication and initialize", () => {
       source: "personal",
       style: "standard",
     });
+
+    // Saving the project's default says what was saved, and that this
+    // person's own setting still decides what they get.
+    const repeated = set("ultra-simple", "repository");
+    const output = JSON.parse(repeated.stdout) as {
+      communication: { effective: unknown; style: string; written: boolean };
+      summary: string;
+    };
+    expect(output.communication).toMatchObject({
+      effective: { path: personalPath, source: "personal", style: "standard" },
+      style: "ultra-simple",
+      written: false,
+    });
+    expect(output.summary).toContain(
+      "Ultra-Simple Mode is on for this project by default"
+    );
+    expect(output.summary).toContain(
+      `For you it stays off: ${personalPath} outranks it.`
+    );
   });
 
   test("refuses anything but one confirmed, saved style", () => {
@@ -492,6 +616,200 @@ describe("setup --communication and initialize", () => {
       existsSync(join(fixture.root, REPOSITORY_COMMUNICATION_FILENAME))
     ).toBe(false);
     expect(existsSync(join(fixture.root, ".simple-changes.json"))).toBe(false);
+  });
+});
+
+describe("setup --quick-start", () => {
+  const quickStart = (
+    fixture: TestRepository,
+    env: Record<string, string>,
+    ...args: string[]
+  ) =>
+    runCli(
+      ["setup", "--quick-start", ...args, "--json", "--repo", fixture.root],
+      env
+    );
+
+  test("previews the receipt without --yes, then saves the safe setup and the mode", () => {
+    const fixture = repository();
+    // Changelog work with no compatible provider: the full setup would have
+    // to ask about installing one.
+    writeFileSync(
+      join(fixture.root, ".simple-changelogs.json"),
+      '{"schemaVersion":1,"distribution":"web","guidance":{"version":8}}\n'
+    );
+    const env = {
+      SIMPLE_CHANGES_CONFIG_DIR: temporary("config"),
+      SIMPLE_CHANGES_SKILL_ROOTS: "",
+    };
+    const policyPath = join(fixture.root, ".simple-changes.json");
+    const sidecarPath = join(fixture.root, REPOSITORY_COMMUNICATION_FILENAME);
+
+    const preview = quickStart(fixture, env, "--finish", "review");
+    expect(preview.stderr).toBe("");
+    expect(preview.exitCode).toBe(0);
+    const previewed = JSON.parse(preview.stdout) as Record<string, unknown>;
+    expect(previewed).toMatchObject({ confirmed: false, written: false });
+    expect(previewed.summary).toBe(
+      [
+        "Here's what I'll remember for this project:",
+        "",
+        "- I stop at a review link unless you ask for more.",
+        "- I ask before anything goes live, and before any database change.",
+        "- I leave release notes alone and tell you what still needs writing.",
+        '- I keep updates short and skip the technical terms. Say "details" any time.',
+        "",
+        `I'll save that in ${policyPath} and ${sidecarPath}, so anyone working on this project gets the same setup.`,
+      ].join("\n")
+    );
+    expect(existsSync(policyPath)).toBe(false);
+    expect(existsSync(sidecarPath)).toBe(false);
+
+    const saved = quickStart(fixture, env, "--finish", "review", "--yes");
+    expect(saved.stderr).toBe("");
+    const result = JSON.parse(saved.stdout) as {
+      changelogInstall: unknown;
+      communication: unknown;
+      policy: Record<string, unknown>;
+      summary: string;
+    };
+    expect(result).toMatchObject({
+      communication: { changed: true, path: sidecarPath },
+      confirmed: true,
+      scope: "repository",
+      written: true,
+    });
+    expect(result.summary).toBe(previewed.summary as string);
+    // The install offer was never made, so no decision is recorded for it.
+    expect(result.changelogInstall).toMatchObject({
+      decision: null,
+      offered: false,
+    });
+    // Exactly the safe defaults: nothing here can go live or touch a
+    // database without a question.
+    expect(result.policy).toMatchObject({
+      defaultFinish: "open-change-request",
+      gitPushAuthorization: "ask",
+      migrationHandling: "ask-after-review",
+      migrationTargets: [],
+      productionDeploy: "ask",
+      questions: "blocking-only",
+      shippingMode: "standard",
+    });
+    expect(readFileSync(sidecarPath, "utf8")).toBe(sidecar("ultra-simple"));
+    const status = JSON.parse(
+      runCli(
+        ["initialize", "--mode", "queue", "--repo", fixture.root, "--json"],
+        env
+      ).stdout
+    ) as Record<string, unknown>;
+    expect(status).toMatchObject({
+      communication: { source: "repository", style: "ultra-simple" },
+      onboardingRequired: false,
+      policySource: "repository",
+    });
+  });
+
+  test("runs only at first use, and takes no other setup choice", () => {
+    const fixture = repository();
+    const env = { SIMPLE_CHANGES_CONFIG_DIR: temporary("config") };
+    const mixed = quickStart(fixture, env, "--production", "allow", "--yes");
+    expect(mixed.exitCode).toBe(2);
+    expect(mixed.stderr).toContain(
+      "setup --quick-start takes only --finish and --scope"
+    );
+    const withStyle = runCli(
+      [
+        "setup",
+        "--quick-start",
+        "--communication",
+        "ultra-simple",
+        "--scope",
+        "repository",
+        "--confirm",
+        "--repo",
+        fixture.root,
+      ],
+      env
+    );
+    expect(withStyle.exitCode).toBe(2);
+    expect(existsSync(join(fixture.root, ".simple-changes.json"))).toBe(false);
+
+    // A saved policy that deploys automatically, with a retention setting
+    // setup never asks about: a quick start must not run over either.
+    const policyPath = join(fixture.root, ".simple-changes.json");
+    const policyText = `${JSON.stringify(
+      {
+        ...DEFAULT_POLICY,
+        archiveRetention: { days: 180 },
+        defaultFinish: "ship",
+        productionDeploy: "allow",
+      },
+      null,
+      2
+    )}\n`;
+    writeFileSync(policyPath, policyText);
+    writeRepositoryPolicyTrustReceipt(
+      fixture.root,
+      resolve(fixture.root, ".git"),
+      "test-user",
+      "Authorize this exact test policy"
+    );
+    for (const scope of ["repository", "personal", "run"]) {
+      const refused = quickStart(fixture, env, "--scope", scope, "--yes");
+      expect(refused.exitCode).toBe(2);
+      expect(refused.stderr).toContain("setup --quick-start is for first use");
+    }
+    expect(readFileSync(policyPath, "utf8")).toBe(policyText);
+    expect(
+      existsSync(join(fixture.root, REPOSITORY_COMMUNICATION_FILENAME))
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(
+          env.SIMPLE_CHANGES_CONFIG_DIR,
+          "simple-changes",
+          "preferences.json"
+        )
+      )
+    ).toBe(false);
+  });
+
+  test("names the real files for personal storage and saves nothing for one run", () => {
+    const fixture = repository();
+    const config = temporary("config");
+    const env = { SIMPLE_CHANGES_CONFIG_DIR: config };
+    const personal = JSON.parse(
+      quickStart(fixture, env, "--finish", "ship", "--scope", "personal").stdout
+    ) as { summary: string };
+    expect(personal.summary).toContain("Here's what I'll remember for you:");
+    expect(personal.summary).toContain(
+      "- I take your change live after I ask you."
+    );
+    expect(personal.summary).toContain(
+      `I'll save the setup in ${join(config, "simple-changes", "preferences.json")}, for projects that have none of their own, and the plain wording in ${join(config, "simple-changes", "communication.json")}, for you in every project.`
+    );
+
+    const run = JSON.parse(
+      quickStart(
+        fixture,
+        env,
+        "--finish",
+        "integrate",
+        "--scope",
+        "run",
+        "--yes"
+      ).stdout
+    ) as { communication: unknown; summary: string; written: boolean };
+    expect(run.summary).toContain("Here's how I'll work for this request:");
+    expect(run.summary).toContain(
+      "This is for this request only. Nothing is saved, so I'll ask again next time."
+    );
+    expect(run).toMatchObject({ communication: null, written: false });
+    expect(existsSync(join(config, "simple-changes"))).toBe(false);
+    expect(
+      existsSync(join(fixture.root, REPOSITORY_COMMUNICATION_FILENAME))
+    ).toBe(false);
   });
 });
 

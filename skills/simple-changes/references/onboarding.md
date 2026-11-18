@@ -75,8 +75,9 @@ when one sentence is clearer.
 
 ## First screen
 
-Lead with the outcome, not the workflow. Say in one sentence what will happen
-to the current request and what will not, then offer two choices:
+At first use, when no repository or personal policy is saved, lead with the
+outcome, not the workflow. Say in one sentence what will happen to the
+current request and what will not, then offer two choices:
 
 > I'll check your change and give you a link to review. Nothing will go live.
 
@@ -93,12 +94,22 @@ change, get it a second look, and add it to the project once it's approved.
 Nothing will go live." For ship: "I'll check your change, get it a second
 look, add it to the project, and ask you before anything goes live."
 
-**Use this setup** asks nothing more. It records the recommended setup, then
-the mode with `setup --communication ultra-simple` for the same storage, after
-the plain receipt in [first use](ultra-simple-mode.md#first-use) is confirmed.
-It leaves instruction files alone and the agent, model, and review questions
-pending. Choosing it grants nothing the recommended setup does not: the mode
+**Use this setup** is one command, `setup --quick-start --finish <finish>`:
+without `--yes` it returns the plain receipt and writes nothing, and with
+`--yes`, after the person confirms that receipt, it saves the recommended
+setup and the mode together; see
+[first use](ultra-simple-mode.md#first-use). It asks no setup preference and
+leaves instruction files and the Simple Changelogs install offer alone. A
+question `initialize` reports as required is still asked, once and in plain
+words, such as the pending review question when two or more agents are
+detected. Choosing it grants nothing the recommended setup does not: the mode
 is a display preference, never a permission.
+
+The command refuses any other setup choice and refuses to run once a policy
+is saved, so it can never replace settings someone already chose or save a
+permission its receipt does not state. When a policy is already saved, or the
+request names a setup choice, skip this screen and go to
+[Show options](#show-options).
 
 ### Show options
 
@@ -198,6 +209,11 @@ run? Choose one:**
 Offer option 3 only when **Deploy automatically** was selected in the
 production question; otherwise mention in one sentence that an advanced
 break-glass mode exists and requires automatic production deployment.
+
+**Ship when approved** with **Deploy automatically** is what
+[Ultra-Simple Mode calls Autopilot](ultra-simple-mode.md#autopilot). It is
+chosen here, with these questions and their confirmations, and never by the
+first screen.
 
 Then, only when this run will actually produce more than one independent
 change proposal, ask **When there are multiple independent change proposals,
@@ -360,10 +376,9 @@ only with its cost, the slowest and most expensive setting), or **Do not guide
 this** (`null`).
 
 **Reviews.** With two or more detected agents, ask the review questions in
-every setup style under **Show options**, run-only included, whatever the
+every setup style, **Use this setup** and run-only included, whatever the
 agent list selected; otherwise ask them in Customize and the walkthrough, or
-when a second model name was recorded. **Use this setup** asks none of them
-and records nothing, so they stay pending for the owner. Explain that a review from a different agent catches what
+when a second model name was recorded. Explain that a review from a different agent catches what
 the author's model tends to miss, and self-review never counts. Ask **Who
 should perform independent reviews?**
 

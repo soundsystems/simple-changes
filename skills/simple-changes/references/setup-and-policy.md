@@ -8,6 +8,7 @@ Contents:
 - Completed-work handoff checkpoint
 - Capability status
 - Authoring preferences
+- Communication preference
 
 ## Discovery order
 
@@ -467,3 +468,41 @@ instead, and why. Signatures always name the writer the runtime reported. The
 sidecar is a preference, never authority or identity: it grants no merge,
 push, deployment, migration, publication, release, or credential authority and
 stores no credentials or launch commands.
+
+## Communication preference
+
+An optional sidecar records how Simple Changes talks to people: `style` is
+`ultra-simple` or `standard`, as [Ultra-Simple Mode](ultra-simple-mode.md)
+describes.
+
+```json
+{ "schemaVersion": 1, "style": "ultra-simple" }
+```
+
+It is `<primary-checkout>/.simple-changes-communication.json` for the
+repository, committed shared configuration like `.simple-changes.json`, or
+`communication.json` beside the personal `preferences.json`. Like the
+authoring sidecar it never joins the policy file, so copies before 0.33.1
+ignore it and keep the standard voice.
+
+`setup --communication <ultra-simple|standard> --scope <repository|personal>
+--confirm` records it as a transaction of its own. It writes that one file and
+refuses any other setup option in the same command, so changing how Simple
+Changes talks can never change the policy, its trust receipt, or anything
+Simple Changes is allowed to do. It never replaces a file it cannot read or
+that is not a regular file. On the first screen, **Use this setup** records
+it with the recommended setup, for the same storage.
+
+`initialize` reports the effective `communication.style`, its `source`, and
+the `path` it came from. Precedence, highest first: the current request, the
+personal sidecar, the repository sidecar, the repository's Simple Changelogs
+sidecar (`.simple-changelogs-communication.json`, reported as `companion`),
+then `standard`. The personal file outranks the repository's, unlike policy,
+because the style grants nothing: an owner can choose Ultra-Simple Mode for a
+team and keep full detail personally. A sidecar that exists but cannot be
+used is listed in `communication.errors` and skipped; tell the owner, and
+never overwrite it.
+
+The style is a display preference, never authority. It grants no push,
+merge, deployment, migration, cleanup, or credential authority, and no rule
+may read it to decide what is allowed.

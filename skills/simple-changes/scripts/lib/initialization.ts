@@ -7,6 +7,7 @@ import type {
   ResolvedAuthoringRole,
   ResolvedReviewRole,
 } from "./authoring.ts";
+import type { CommunicationReport } from "./communication.ts";
 import {
   type GuidanceUpdateContext,
   type GuidanceUpdateNotice,
@@ -72,6 +73,11 @@ export interface InitializationStatus {
   // false until onboarding asks). Absent or null when no offer applies.
   changelogInstall?: ChangelogInstallOffer | null;
   changelogRequired: boolean;
+  /**
+   * How to talk to this person (references/ultra-simple-mode.md): the
+   * effective style and where it came from. Never authority.
+   */
+  communication?: CommunicationReport;
   detectedHarnesses?: DetectedHarness[];
   firstUseWalkthroughAvailable: boolean;
   gitPushAuthorization: RepoPolicy["gitPushAuthorization"];

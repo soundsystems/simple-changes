@@ -95,7 +95,10 @@ or command-changed plans require new review or authority. Do not apply a
 migration while installed-client compatibility is `incompatible` or
 `unverified`.
 
-- `ask-after-review`: request exact apply authority after the audit.
+- `ask-after-review`: request exact apply authority after the audit. In
+  [Ultra-Simple Mode](ultra-simple-mode.md#database-updates) that one
+  question may also offer to save the routine tier for the exact target; the
+  mode itself authorizes nothing.
 - `auto-apply-reviewed-routine`: proceed without another prompt only when the
   reviewed migration is routine and the target exactly matches a saved
   `migrationTargets` entry.

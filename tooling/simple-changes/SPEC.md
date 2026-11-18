@@ -252,6 +252,16 @@
   request, which is built only for the active run.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
+- First-use onboarding leads with one sentence about the outcome and two
+  choices, **Use this setup** and **Show options**; the walkthrough,
+  customization, and run-only setup stay available under the second.
+- The communication style (`ultra-simple` or `standard`) lives in its own
+  sidecar and is reported by `initialize`. It changes wording and how often
+  questions are asked. `setup --communication` writes only that sidecar, and
+  no rule reads the style to decide what is allowed.
+- A decision one unit is waiting on blocks only that unit: independent work
+  continues, and a turn ends on a question only when nothing else can
+  proceed.
 - A meaningful guidance-version change blocks the next write-capable mutation
   until the user reviews, accepts, or defers it. The recorded disposition
   suppresses repeat prompting for that version without granting changelog
@@ -475,6 +485,12 @@
 - Leading routine user updates with controller, lease, ledger, digest, or other
   internal bookkeeping when a short plain-language explanation would preserve
   the same accuracy.
+- Treating Ultra-Simple Mode, or choosing **Use this setup**, as push, merge,
+  production, migration, or cleanup authority; skipping a required safety or
+  cleanup question because the mode is on; or reporting a partial run with a
+  finished delivery line.
+- Holding independent units, or other agents, while one unit waits for the
+  user's answer.
 - Treating emotional urgency, active impact, or a tested claim as implicit
   authority to deploy before review; treating break-glass policy without
   production authority as deploy permission; or marking `live-unreviewed` or

@@ -5,6 +5,10 @@ import {
   collectAuthoringAnswers,
   renderAuthoringSummary,
 } from "./authoring-onboarding.ts";
+import {
+  type CommunicationStyle,
+  REPOSITORY_COMMUNICATION_FILENAME,
+} from "./communication.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import {
   discoverInstructionTargets,
@@ -75,6 +79,11 @@ export interface OnboardingSelection {
   // scope. Null when the authoring questions did not run.
   authoring: AuthoringSidecar | null;
   changelogInstall: ChangelogInstallOffer;
+  /**
+   * The communication style the first screen's "Use this setup" selects,
+   * saved beside the policy for the same scope; null leaves it as it is.
+   */
+  communication: CommunicationStyle | null;
   confirmed: boolean;
   instructionPointer: InstructionBlockSelection;
   policy: RepoPolicy;
@@ -127,6 +136,7 @@ export const ONBOARDING_QUESTIONS = {
     "When there are multiple independent change proposals, what should I optimize for?",
   proposalSignatures:
     "Should agents sign the change proposals they author, review, or merge?",
+  quickStart: "How would you like to start?",
   reviewLoopRule: (path: string) =>
     `Should I also add a rule to \`${path}\` that tells agents how to run review rounds in Simple Changes runs?`,
   scope: "Where should these preferences live?",
@@ -656,6 +666,121 @@ const onboardingStyleChoices = (
       value: "run",
     },
   ];
+};
+
+const QUICK_START_OUTCOMES: Record<
+  "open-change-request" | "integrate" | "ship",
+  { remember: string; sentence: string }
+> = {
+  integrate: {
+    remember: "I add your change to the project once it's approved.",
+    sentence:
+      "I'll check your change, get it a second look, and add it to the project once it's approved. Nothing will go live.",
+  },
+  "open-change-request": {
+    remember: "I stop at a review link unless you ask for more.",
+    sentence:
+      "I'll check your change and give you a link to review. Nothing will go live.",
+  },
+  ship: {
+    remember: "I take your change live after I ask you.",
+    sentence:
+      "I'll check your change, get it a second look, add it to the project, and ask you before anything goes live.",
+  },
+};
+
+const QUICK_START_CHOICES = [
+  {
+    description:
+      "Work this way from now on: ask only when blocked, keep going live and database changes behind confirmation, and keep messages short and free of tool terms (Ultra-Simple Mode). You will see what is saved, and where, before anything is written.",
+    label: "Use this setup",
+    value: "use",
+  },
+  {
+    description:
+      "Explain the workflow and offer the full setup choices, including a walkthrough and setup for this run only.",
+    label: "Show options",
+    value: "options",
+  },
+] as const satisfies readonly OnboardingChoice[];
+
+/**
+ * The plain receipt "Use this setup" confirms: what is remembered, in the
+ * mode's own words, and the exact files it is saved in.
+ */
+export const renderUltraSimpleSummary = (
+  policy: RepoPolicy,
+  scope: SetupScope,
+  primaryCheckout: string | null
+): string => {
+  const finish =
+    policy.defaultFinish === "preview"
+      ? "open-change-request"
+      : policy.defaultFinish;
+  const repository = scope === "repository" && primaryCheckout;
+  return [
+    repository
+      ? "Here's what I'll remember for this project:"
+      : "Here's what I'll remember for you:",
+    "",
+    `- ${QUICK_START_OUTCOMES[finish].remember}`,
+    "- I ask before anything goes live, and before any database change.",
+    '- I keep updates short and skip the technical terms. Say "details" any time.',
+    "",
+    repository
+      ? `I'll save that in ${primaryCheckout}/.simple-changes.json and ${primaryCheckout}/${REPOSITORY_COMMUNICATION_FILENAME}, so anyone working on this project gets the same setup.`
+      : "I'll save that in your private Simple Changes preferences on this computer, for projects that have no setup of their own.",
+  ].join("\n");
+};
+
+// "Use this setup" is the recommended setup plus the mode. It asks nothing
+// else: instruction files, the Simple Changelogs install offer, and the
+// agent, model, and review questions are left exactly as they are.
+const ultraSimpleInputs = (inputs: OnboardingInputs): OnboardingInputs => ({
+  ...inputs,
+  instructionPointer: inputs.instructionPointer ?? "leave",
+  reviewLoopRule: inputs.reviewLoopRule ?? "leave",
+  scratchFileRule: inputs.scratchFileRule ?? "leave",
+});
+
+const authoringSummary = (
+  authoring: AuthoringSidecar | null,
+  conversation: OnboardingConversationOptions
+): string | null =>
+  authoring
+    ? renderAuthoringSummary(
+        authoring,
+        conversation.authoring?.definitions ?? []
+      )
+    : null;
+
+// The first screen: one sentence about the outcome and two choices. Returns
+// true for "Use this setup"; "Show options" continues to the setup styles.
+const selectQuickStart = async (
+  defaults: RepoPolicy,
+  inputs: OnboardingInputs,
+  prompter: OnboardingPrompter,
+  showFirstScreen: boolean
+): Promise<boolean> => {
+  if (!showFirstScreen) {
+    return false;
+  }
+  const finish = inputs.defaultFinish ?? preferredFinish(defaults);
+  prompter.present?.(
+    QUICK_START_OUTCOMES[finish === "preview" ? "open-change-request" : finish]
+      .sentence
+  );
+  return (
+    choiceValue<"use" | "options">(
+      await prompter.choose(
+        ONBOARDING_QUESTIONS.quickStart,
+        QUICK_START_CHOICES,
+        "use"
+      ),
+      QUICK_START_CHOICES,
+      ONBOARDING_QUESTIONS.quickStart
+    ) === "use"
+  );
 };
 
 const INSTRUCTION_POINTER_CHOICES = [
@@ -1497,7 +1622,8 @@ const CHANGELOG_INSTALL_EXPLANATION = [
 const selectChangelogInstall = async (
   inputs: OnboardingInputs,
   prompter: OnboardingPrompter,
-  context: ChangelogCoordination
+  context: ChangelogCoordination,
+  offer = true
 ): Promise<ChangelogInstallOffer> => {
   if (!changelogInstallOfferApplies(context)) {
     return NO_CHANGELOG_INSTALL_OFFER;
@@ -1505,6 +1631,10 @@ const selectChangelogInstall = async (
   const resolved = resolveChangelogInstallCommand(context);
   if (inputs.changelogInstall) {
     return { ...resolved, decision: inputs.changelogInstall, offered: true };
+  }
+  if (!offer) {
+    // Left pending, exactly as a status report shows it before any question.
+    return { ...NO_CHANGELOG_INSTALL_OFFER, ...resolved };
   }
   prompter.present?.(CHANGELOG_INSTALL_EXPLANATION);
   const consent = choiceValue<"install" | "decline">(
@@ -1648,6 +1778,7 @@ const reuseExistingPersonalDefaults = async (
     return {
       authoring,
       changelogInstall: NO_CHANGELOG_INSTALL_OFFER,
+      communication: null,
       confirmed: await prompter.confirm(summary),
       instructionPointer,
       policy: existingPersonalDefaults,
@@ -1663,7 +1794,7 @@ const reuseExistingPersonalDefaults = async (
 
 export const collectOnboardingSelection = async (
   defaults: RepoPolicy,
-  inputs: OnboardingInputs,
+  initialInputs: OnboardingInputs,
   prompter: OnboardingPrompter,
   context: ChangelogCoordination = DEFAULT_CHANGELOG_CONTEXT,
   primaryCheckout: string | null = null,
@@ -1681,16 +1812,28 @@ export const collectOnboardingSelection = async (
   if (reused) {
     return reused;
   }
-  const setupStyle = await selectSetupStyle(
+  const ultraSimple = await selectQuickStart(
     defaults,
-    inputs,
+    initialInputs,
     prompter,
-    context,
-    primaryCheckout,
-    conversation.showFirstScreen ?? false,
-    conversation.forgeProvider
+    conversation.showFirstScreen ?? false
   );
+  const inputs = ultraSimple ? ultraSimpleInputs(initialInputs) : initialInputs;
+  const setupStyle: SetupStyle = ultraSimple
+    ? "recommended"
+    : await selectSetupStyle(
+        defaults,
+        inputs,
+        prompter,
+        context,
+        primaryCheckout,
+        conversation.showFirstScreen ?? false,
+        conversation.forgeProvider
+      );
   const customize = setupStyle === "customize" || setupStyle === "walkthrough";
+  // The agent, model, and review questions stay pending under "Use this
+  // setup", whatever was detected.
+  const authoringContext = ultraSimple ? null : conversation.authoring;
   const defaultFinish = await selectDefaultFinish(
     defaults,
     inputs,
@@ -1715,9 +1858,9 @@ export const collectOnboardingSelection = async (
     customize && (conversation.showFirstScreen ?? false),
     conversation.forgeProvider
   );
-  const authoring = conversation.authoring
+  const authoring = authoringContext
     ? await collectAuthoringAnswers(
-        { ...conversation.authoring, setupStyle },
+        { ...authoringContext, setupStyle },
         prompter
       )
     : null;
@@ -1765,7 +1908,8 @@ export const collectOnboardingSelection = async (
   const changelogInstall = await selectChangelogInstall(
     inputs,
     prompter,
-    context
+    context,
+    !ultraSimple
   );
   const uiArtifactVersioning =
     customize || inputs.uiArtifactVersioning
@@ -1813,30 +1957,28 @@ export const collectOnboardingSelection = async (
     shippingMode,
     uiArtifactVersioning,
   };
-  const summary = [
-    renderOnboardingSummary(
-      policy,
-      scope,
-      context,
-      instructionPointer,
-      uiArtifactsRelevant,
-      conversation.forgeProvider,
-      changelogInstall,
-      scratchFileRule,
-      reviewLoopRule
-    ),
-    authoring
-      ? renderAuthoringSummary(
-          authoring,
-          conversation.authoring?.definitions ?? []
-        )
-      : null,
-  ]
-    .filter((part): part is string => part !== null)
-    .join("\n\n");
+  const summary = ultraSimple
+    ? renderUltraSimpleSummary(policy, scope, primaryCheckout)
+    : [
+        renderOnboardingSummary(
+          policy,
+          scope,
+          context,
+          instructionPointer,
+          uiArtifactsRelevant,
+          conversation.forgeProvider,
+          changelogInstall,
+          scratchFileRule,
+          reviewLoopRule
+        ),
+        authoringSummary(authoring, conversation),
+      ]
+        .filter((part): part is string => part !== null)
+        .join("\n\n");
   return {
     authoring,
     changelogInstall,
+    communication: ultraSimple ? "ultra-simple" : null,
     confirmed: await prompter.confirm(summary),
     instructionPointer,
     policy,

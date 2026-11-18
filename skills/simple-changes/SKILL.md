@@ -10,9 +10,8 @@ metadata:
 # Simple Changes
 
 Turn ready repository work into focused, verified proposals without disturbing
-active work. In commands below, `simple-changes` means
-`bun <skill-root>/scripts/simple-changes.ts` (or an installed `simple-changes`
-bin).
+active work. In commands, `simple-changes` means
+`bun <skill-root>/scripts/simple-changes.ts` or an installed bin.
 
 ## Classify the request
 
@@ -41,8 +40,8 @@ stable unit, including clean branches and separate worktrees.
 2. Initialize, resolve companion notices, capture the canonical primary
    checkout, capture the complete GitLab opening remote inventory when
    applicable, then start the required controller lease with that evidence.
-   See [Initialize before mutation](#initialize-before-mutation) and
-   [Hold one controller lease](#hold-one-controller-lease).
+   See [initialize](#initialize-before-mutation) and
+   [the lease](#hold-one-controller-lease).
 3. Refresh the intended target before diff-derived decisions. Preserve dirty,
    conflicted, detached, mid-operation, active, and unclaimed state.
 4. Group stable work by outcome, dependency, data boundary, ownership, and
@@ -154,10 +153,10 @@ binaries may remain installed.
 
 Run `simple-changes initialize --mode <mode> [--changelog-required] --json`
 before every write-capable mutation or controller lease. The JSON result is not
-user-facing onboarding copy. When onboarding is required, explain the workflow,
-then follow [onboarding](references/onboarding.md): ask one question at a time,
-show every option with its one-sentence consequence, and use that reference's
-exact option copy. When private global personal defaults already exist,
+user-facing onboarding copy. When onboarding is required, follow
+[onboarding](references/onboarding.md): lead with the outcome, ask one question
+at a time, show every option with its one-sentence consequence, and use that
+reference's exact option copy. When private global personal defaults already exist,
 disclose them before the main questions and ask whether to use them unchanged
 for this run.
 
@@ -183,28 +182,31 @@ update the checkout, before integrating or shipping. When it reports
 
 Default every user-facing message to plain language. Lead with what happened,
 what it means for the user, and what happens next. Keep most progress updates
-to one to three short sentences.
+to one to three short sentences. Say each thing once, ask only what the user
+must decide, and let a pending decision block only its own unit. Under
+`communication.style: ultra-simple`, follow
+[Ultra-Simple Mode](references/ultra-simple-mode.md).
 
 After initialization and planning, but before the first consequential Ship
 mutation, send a concise pre-ship brief in the same assistant turn. State scope,
 checks, proposal/merge/release/deploy path, consequential boundaries, and
 preserved work. Explain that this is an interruption window rather than a
-permission gate when existing authority already covers the run.
+permission gate when authority already covers the run.
 When a Ship run opens with any local changes, generate one non-mutating preview
 plan from the current inventory, record it with
 `loop record-scope --receipt <change-plan.json>`, and present the returned
 pre-ship scope before any `loop guard` or `loop exec`.
 When permission is still required, inventory every unresolved boundary already
 knowable from the validated plan and present them together in one exact-target
-checklist. Let the user approve all, decline all, or approve named items in one
-reply. Never stretch that bundle to unknown future actions; ask again only for
-a newly discovered boundary or invalidated target.
+checklist the user can approve whole, decline whole, or by named item. It
+never covers unknown future actions; ask again only for a newly discovered
+boundary or invalidated target.
 
 ## Hold one controller lease
 
 For Queue, Sweep, Integrate, Ship, Reconcile, and Resume, start one active loop
 only after initialization returns `preLoopActionRequired: false`; after
-run-only setup, pass its `policy` as `--policy-request` (see onboarding). Start the
+run-only setup, pass its `policy` as `--policy-request`. Start the
 loop before the first integration mutation and retain its run ID. A second
 controller is rejected; independent authors use distinct claimed worktrees.
 When the target is GitLab, first paginate the complete opening remote inventory

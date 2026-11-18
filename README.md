@@ -497,6 +497,28 @@ repository:
 bun run simple-changes setup --scope user
 ```
 
+### Ultra-Simple Mode
+
+For people who want the result and not the tooling: say what you want, get a
+review link and a short status, and answer a question only when your answer
+changes what happens. No Git terms unless you use them first.
+
+```sh
+bun run simple-changes setup --communication ultra-simple --scope repository --confirm
+```
+
+That writes one file, `.simple-changes-communication.json`. Commit it and
+everyone working in the project gets the mode with no setup of their own; use
+`--scope personal` for yourself in every project, and `--communication
+standard` to turn it off. Your own setting outranks the project's, so an owner
+can set a project to Ultra-Simple for a team and keep full detail personally.
+
+The mode changes the words and how often Simple Changes asks. It never changes
+what Simple Changes may do: the command cannot write policy, checks and review
+run as before, and going live, database changes, and removing work still ask.
+On first use, the first screen now offers it in one sentence: "I'll check your
+change and give you a link to review. Nothing will go live."
+
 On first use, it explains why onboarding appeared, shows the exact recommended
 workflow, and makes clear that nothing has been pushed, merged, deployed, or
 saved yet. The first choice is:

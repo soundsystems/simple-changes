@@ -63,6 +63,10 @@ const setupAndPolicyPath = new URL(
   "../../../skills/simple-changes/references/setup-and-policy.md",
   import.meta.url
 );
+const ultraSimpleModePath = new URL(
+  "../../../skills/simple-changes/references/ultra-simple-mode.md",
+  import.meta.url
+);
 const harnessPushPath = new URL(
   "../../../skills/simple-changes/references/harness-push-authorization.md",
   import.meta.url
@@ -1566,5 +1570,140 @@ describe("Simple Changes skill contract", () => {
     // Code disable-model-invocation.
     expect(parsed.policy).toBeUndefined();
     expect(skill).not.toContain("disable-model-invocation");
+  });
+
+  test("every message says less, asks less, and keeps unblocked work moving", async () => {
+    const [skill, communication, concurrency, shipCommunication] = (
+      await Promise.all([
+        readFile(skillPath, "utf8"),
+        readFile(userCommunicationPath, "utf8"),
+        readFile(inventoryConcurrencyPath, "utf8"),
+        readFile(shipCommunicationPath, "utf8"),
+      ])
+    ).map((text) => text.replace(/\s+/g, " "));
+
+    expect(skill).toContain(
+      "Say each thing once, ask only what the user must decide, and let a pending decision block only its own unit"
+    );
+    for (const rule of [
+      "Send a message only when the reader would do or think something different after reading it",
+      "what you are about to do, when you can do it and report the result",
+      "a caution or boundary already stated in this conversation",
+      "Do not ask what the request, saved policy, or repository evidence already answers",
+      "Do not ask permission for work that is already authorized, and do not ask whether to continue",
+      "Do not ask the same thing twice while nothing has changed",
+      "Ask everything already known in one message instead of one question per turn",
+      "A decision one unit is waiting on blocks that unit and nothing else",
+      "Only work that needs the answer, or that the answer could undo, waits",
+      "End a turn on a question only when nothing else can proceed",
+      "When the answer arrives, resume the waiting unit only",
+      // Keeping work moving never loosens how a run closes or a unit is held.
+      "The run still closes by the [turn-end rules](cleanup-and-completion.md#turn-end-guard), and a unit left out of a shipment is still [held](focused-units.md#held-unit) with the user's approval",
+    ]) {
+      expect(communication).toContain(rule);
+    }
+    // Agent-to-agent messages are briefs, and reviewers get no conclusions.
+    for (const rule of [
+      "is a brief for a reader who has none of your context",
+      "**Goal:**",
+      "**Scope:**",
+      "**Decided:**",
+      "**Boundary:**",
+      "**Return:**",
+      "never your conclusion: a reader handed a hypothesis tends to return it confirmed",
+      "Treat a returned report as evidence, not proof",
+      "Never pass on authority you were not given, and never reword an approval",
+    ]) {
+      expect(communication).toContain(rule);
+    }
+    expect(concurrency).toContain(
+      "[messages to other agents](user-communication.md#messages-to-other-agents)"
+    );
+    expect(shipCommunication).toContain(
+      "a decision one unit is waiting on never stops the rest of the shipment"
+    );
+  });
+
+  test("Ultra-Simple Mode changes the words and the questions, never the authority", async () => {
+    const [skill, mode, onboarding, setupAndPolicy, migrations] = (
+      await Promise.all([
+        readFile(skillPath, "utf8"),
+        readFile(ultraSimpleModePath, "utf8"),
+        readFile(onboardingPath, "utf8"),
+        readFile(setupAndPolicyPath, "utf8"),
+        readFile(
+          new URL(
+            "../../../skills/simple-changes/references/migrations-and-high-risk-actions.md",
+            import.meta.url
+          ),
+          "utf8"
+        ),
+      ])
+    ).map((text) => text.replace(/\s+/g, " "));
+
+    expect(skill).toContain(
+      "Under `communication.style: ultra-simple`, follow [Ultra-Simple Mode](references/ultra-simple-mode.md)"
+    );
+
+    // The first screen is an outcome and two choices, for every finish.
+    for (const copy of [
+      "> I'll check your change and give you a link to review. Nothing will go live.",
+      "**Use this setup (Recommended)**",
+      "**Show options**",
+      "I'll check your change, get it a second look, and add it to the project once it's approved. Nothing will go live.",
+      "I'll check your change, get it a second look, add it to the project, and ask you before anything goes live.",
+      "the mode is a display preference, never a permission",
+      "### Show options",
+    ]) {
+      expect(onboarding).toContain(copy);
+    }
+    // The plain receipt names what is saved and where, before saving.
+    for (const copy of [
+      "I stop at a review link unless you ask for more.",
+      "I ask before anything goes live, and before any database change.",
+      "`<path>/.simple-changes.json` and > `<path>/.simple-changes-communication.json`",
+      "OK to save?",
+    ]) {
+      expect(mode).toContain(copy);
+    }
+
+    for (const rule of [
+      "It is a display preference, never a permission.",
+      "Never introduce a tool term.",
+      "One answer in detail does not turn the mode off.",
+      "Ask only when the answer changes what happens and nothing saved or said already answers it.",
+      "Never ask twice for the same thing while nothing has changed",
+      // The three finished states, and honesty about a partial run.
+      "Ready for review: `<link>`. Checks passed. Nothing is live.",
+      "Approved and added to the project: `<link>`. Nothing is live yet.",
+      "Live: `<address>`. I opened the live site and it shows your change.",
+      "A run that finished only part of the request never uses those lines alone.",
+      "Report a preview that exists; never create one or promise one.",
+      "> This would remove saved addresses from the live store. I've left them alone. > Should I prepare a version that keeps them?",
+      "> I couldn't confirm the live database backup, so I didn't change the > database. Your review link is ready.",
+      // Database authority stays exactly where it was.
+      'The mode itself, "ship it", "handle it", and "do whatever it takes" are never database permission.',
+      "Offer choice 2 only when the audit classed this update as routine, the exact target was observed, and saved setup is not `never`.",
+      "It never selects the wider `auto-apply-reviewed` tier",
+      "The same update on any other target asks.",
+      "A request that stops at review applies nothing and offers nothing.",
+      'There is no "apply anyway".',
+      "Backfills and repairs keep their own separate permission.",
+      // What the mode can never do.
+      "grants no push, merge, go-live, database, or cleanup permission beyond what saved setup and the request already give",
+      "A quiet interface never skips a safety or cleanup question.",
+      "Blocked, partial, and failed work is named as such.",
+    ]) {
+      expect(mode).toContain(rule);
+    }
+
+    for (const rule of [
+      "It writes that one file and refuses any other setup option in the same command",
+      "The personal file outranks the repository's, unlike policy, because the style grants nothing",
+      "no rule may read it to decide what is allowed",
+    ]) {
+      expect(setupAndPolicy).toContain(rule);
+    }
+    expect(migrations).toContain("the mode itself authorizes nothing");
   });
 });

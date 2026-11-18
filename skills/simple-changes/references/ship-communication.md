@@ -12,7 +12,13 @@ Ship combines consequential operations that may take time and may change during
 review. Keep the user oriented with a pre-ship brief and a final delivery
 receipt in the same agent run. Apply
 [plain-language communication](user-communication.md): explain scope, meaning,
-and next action before internal workflow terms or exact audit evidence.
+and next action before internal workflow terms or exact audit evidence. Both
+messages follow [say less](user-communication.md#say-less), and a decision
+one unit is waiting on never stops the rest of the shipment; see
+[keep work moving](user-communication.md#keep-work-moving). In
+[Ultra-Simple Mode](ultra-simple-mode.md#messages) the brief names each
+change by what it does and the receipt is its delivery line; the recorded
+scope is the same, and exact branches and revisions stay under Details.
 
 ## Before the first consequential mutation
 

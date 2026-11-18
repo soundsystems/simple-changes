@@ -493,7 +493,9 @@ branch onto the updated target through `loop exec`.
    only when it reports `open`; otherwise choose another author model or
    harness, or ask the owner
    ([review identity](review-and-merge.md#review-identity-and-the-review-ledger)).
-2. Start the agents together. Give each one its exact prepared path, branch,
+2. Start the agents together, each with a brief written as
+   [messages to other agents](user-communication.md#messages-to-other-agents)
+   describes. Give each one its exact prepared path, branch,
    agent ID, and unit scope, and the `workDir` `prepare-agent` reported; the
    checks to run; and its boundary: edit, generate, format, check, stage, and
    commit only inside that worktree. A

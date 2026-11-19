@@ -29,6 +29,7 @@ import {
 } from "./loop-lease-core.ts";
 import { buildPreviewPlan } from "./planner.ts";
 import { runGit } from "./process.ts";
+import { pruneQueuedWorkRecords } from "./queued-completion.ts";
 import { validateOpeningRemoteInventory } from "./remote-branch-reconciliation.ts";
 import {
   heldLoopLock,
@@ -212,6 +213,9 @@ export const startLoop = (
             options.onStarted?.(resumed);
             return resumed;
           }
+          // A new run is a natural point to forget what earlier Queue and
+          // Sweep runs put up that has since merged or gone.
+          pruneQueuedWorkRecords(inventory);
           const now = new Date().toISOString();
           const currentPath = inventory.repository.currentCheckout;
           const concurrentWork =

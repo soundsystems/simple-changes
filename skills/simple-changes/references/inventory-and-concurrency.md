@@ -59,7 +59,10 @@ Once parallel authoring is selected, every author still requires a distinct
 claimed worktree. To hand independent units to separate agents, follow
 [parallel agents](#parallel-agents). After verified integration, ordinary
 finalization removes proven-safe completed worktrees, including their local
-dependencies and build artifacts. Never delete dependencies from an active,
+dependencies and build artifacts. A Queue or Sweep run's finalization removes
+its own clean, pushed worktrees the same way and keeps their branches; see
+[cleanup and completion](cleanup-and-completion.md#queue-and-sweep-end-queued-not-merged).
+Never delete dependencies from an active,
 retained, or uncertain worktree merely to reclaim space.
 
 Do not substitute a standalone clone for a claimed worktree. Its separate

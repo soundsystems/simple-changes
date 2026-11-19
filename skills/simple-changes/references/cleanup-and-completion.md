@@ -418,6 +418,83 @@ obsolete or generated entries. Report pending cleanup separately and use
 guarded `prune` when safe; do not keep a delivered shipment open solely for
 that housekeeping.
 
+### Queue and Sweep end queued, not merged
+
+A Queue or Sweep run never merges, so `loop finalize` does not hold it to a
+merged target or a clean primary checkout. A run that recorded no shipment
+scope closes when each worktree it created with `prepare-agent` is in one of
+two states:
+
+- **Queued.** The worktree is clean, its branch is pushed (the branch's
+  upstream, or its namesake on the target remote, contains the exact head by
+  Git's own remote-tracking ref), and the review ledger records a proposal at
+  that head: `proposal record-authors` for the pushed head, the step
+  [change proposals](change-requests.md#create-and-audit-proposals) already
+  requires.
+- **Nothing to queue.** The worktree is clean and the target already contains
+  its head.
+
+Where the remote has nowhere to open a proposal, finalize with `--no-proposal
+"<why>"`; the receipt then reports each such branch as pushed without a
+proposal. The flag is ignored when the target remote or the remote the branch
+was pushed to is GitHub, GitLab, or Codeberg: a missing proposal there is
+unfinished work.
+
+Everything else still relinquishes the run with its blockers, exits nonzero,
+and keeps every worktree:
+
+- uncommitted changes in a run-created worktree;
+- commits that are not pushed;
+- a pushed branch with no recorded proposal;
+- a target that moved since `loop start` so that the branch no longer merges
+  into it, checked with `git merge-tree`, which changes no checkout;
+- a manifest violation;
+- an `--awaiting-user` pause.
+
+Resume such a run with `loop start --mode resume`, fix what the blocker names,
+and finalize again. That also closes a Queue run an older runtime left
+relinquished, with no replan. A Queue or Sweep run that did record a shipment
+scope, the only kind that can hold a unit, keeps the scoped rules below.
+`loop end` keeps its stricter rule in every mode.
+
+The closed run's receipt has `shipmentStatus: closed`, `blocksNextShipment:
+false`, `deliveryStatus: unverified`, a null `targetRevision`, and `queued`:
+`status: queued-for-review-not-merged`, a plain `summary`, and one entry per
+unit with its `branch`, `headSha`, `remote`, `remoteBranch`, `proposalIds` or
+`withoutProposal`, and `primaryCopies`. Report it as queued for review, never
+as merged, delivered, or shipped.
+
+Finalization touches nothing else in a Queue or Sweep run:
+
+- **The primary checkout stays exactly as it is**, on its branch, with its
+  uncommitted and untracked work: never stashed, reset, normalized, switched,
+  or fast-forwarded, and never a blocker. `primaryCopies` names the
+  uncommitted paths whose bytes equal the queued head's, so the branch
+  carries a copy and the person keeps their own.
+- **Earlier branches and worktrees stay.** A clean worktree or local branch
+  the target already contains is not removed and does not block. Each is
+  named in the cleanup `notes`, and `cleanupStatus` is `pending` until an
+  Integrate, Ship, or Reconcile run, or `prune`, cleans it. Only those modes
+  run automatic cleanup, which is why earlier runtimes reported such a branch
+  as a Queue blocker instead of deleting it.
+- **The run's own clean, pushed worktrees are removed** after the receipt is
+  written and the run has closed, with Git's unforced `worktree remove`,
+  which refuses a checkout that holds changes or untracked files. The local
+  branch and the pushed branch keep the work. A worktree that changed, is
+  claimed, is the controller's own checkout, or that Git will not remove is
+  kept and named in the result's `queuedWorktrees.kept`; that never reopens
+  the run. A worktree that queued nothing is removed with its branch.
+
+A closed run that queued a branch also leaves `queued-work/<run-id>.json`
+beside the loop state (`evals/schemas/queued-work.schema.json`). While a
+queued head is still unmerged, `loop start` and `loop status` report
+`alreadyQueued`: each uncommitted primary path whose current bytes equal that
+head's, with the branch and proposal that carry it. Read it before planning
+units. Do not propose those paths again as new work: say they are already up,
+or update that branch and its proposal when the content should change. A path
+the person has edited since is new work and is no longer named. `loop start`
+forgets a record once its heads are merged or gone, or after 90 days.
+
 Before reporting completion:
 
 1. Refresh local worktree, branch, stash, and status inventory.

@@ -128,7 +128,10 @@ import {
   withLoopStateLock,
   withLoopStateLockWaiting,
 } from "./lib/loop-lease.ts";
-import type { LoopFinalizationResult } from "./lib/loop-lease-finalize.ts";
+import type {
+  LoopFinalizationQueued,
+  LoopFinalizationResult,
+} from "./lib/loop-lease-finalize.ts";
 import { auditMarkdown } from "./lib/markdown.ts";
 import {
   applyMigrationAuthorization,
@@ -172,6 +175,7 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
+import { queuedWorkNotices } from "./lib/queued-completion.ts";
 import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
@@ -481,7 +485,7 @@ Usage:
   simple-changes loop end --run-id ID --agent-id ID [--reason TEXT]
     [--json] [--repo PATH]
   simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
-    [--awaiting-user TEXT ...] [--json] [--repo PATH]
+    [--awaiting-user TEXT ...] [--no-proposal TEXT] [--json] [--repo PATH]
   simple-changes loop turn-check [--hook] [--harness ID] [--json]
   simple-changes harness stop-hook [--harness claude-code|codex] [--write]
     [--json]
@@ -720,6 +724,9 @@ interface CliOptions {
   migrationHandling?: RepoPolicy["migrationHandling"];
   migrationTargets: RepoPolicy["migrationTargets"];
   mode?: InitializationMode;
+  // loop finalize --no-proposal: why a Queue or Sweep run's pushed branches
+  // have no proposal, for a remote with nowhere to open one.
+  noProposal?: string;
   // loop hold-unit --observation-digest: the observation the user approved.
   observationDigest?: string;
   olderThanDays?: number;
@@ -836,6 +843,7 @@ const VALUED_OPTIONS = new Set([
   "--migration-handling",
   "--migration-target",
   "--mode",
+  "--no-proposal",
   "--observation-digest",
   "--owner-ref",
   "--opening-remote-inventory",
@@ -1319,6 +1327,7 @@ const applyLoopValuedOption = (
     "--hold-id": "holdId",
     "--manifest-digest": "manifestDigest",
     "--name": "forkName",
+    "--no-proposal": "noProposal",
     "--observation-digest": "observationDigest",
     "--opening-remote-inventory": "openingRemoteInventoryPath",
     "--output": "outputPath",
@@ -4311,6 +4320,34 @@ const renderHeldUnits = (
     )
     .join("");
 
+// A closed Queue or Sweep run, in its own terms: never "completed" work.
+const renderQueuedClose = (
+  runId: string,
+  queued: LoopFinalizationQueued,
+  result: Pick<LoopFinalizationResult, "queuedWorktrees">
+): string =>
+  [
+    `Closed ${runId}. ${queued.summary}\n`,
+    ...queued.units.map(
+      (unit) =>
+        `Queued, not merged: ${unit.branch} at ${unit.headSha} on ${unit.remote}, ${
+          unit.withoutProposal === null
+            ? `proposal ${unit.proposalIds.join(", ")}`
+            : `pushed without a proposal (${unit.withoutProposal})`
+        }${
+          unit.primaryCopies.length > 0
+            ? `; it carries a copy of the primary checkout's uncommitted ${unit.primaryCopies.join(", ")}`
+            : ""
+        }.\n`
+    ),
+    ...(result.queuedWorktrees?.removed ?? []).map(
+      (path) => `Removed its clean, pushed worktree ${path}.\n`
+    ),
+    ...(result.queuedWorktrees?.kept ?? []).map(
+      ({ path, reason }) => `Kept worktree ${path}: ${reason}\n`
+    ),
+  ].join("");
+
 // A cleanup's non-fatal notes, one per line.
 const renderCleanupNotes = (notes: readonly string[]): string =>
   notes.map((note) => `Note: ${note}\n`).join("");
@@ -4355,6 +4392,70 @@ export const renderExpiredExternalDeletionPins = (
     ),
     ...(expired?.errors ?? []).map((error) => `Pin expiry: ${error}\n`),
   ].join("");
+
+const runLoopFinalize = (
+  options: CliOptions,
+  runId: string,
+  agentId: string
+): void => {
+  const workRepository = locateWorkDirectoryRepository(options.repo);
+  let removedWorkDirectories: string[] = [];
+  const result = finalizeLoop(
+    options.repo,
+    runId,
+    agentId,
+    requireCliOption(options.reason, "--reason"),
+    {
+      awaitingUser: options.awaitingUser,
+      ...(options.noProposal === undefined
+        ? {}
+        : { noProposal: options.noProposal }),
+      onClosed: () => {
+        removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+          removeRunWorkDirectories(workRepository, runId)
+        );
+      },
+    }
+  );
+  if (result.outcome === "relinquished" && options.awaitingUser.length > 0) {
+    writeOutput(
+      {
+        ...result,
+        manifestDigest: result.lease ? loopManifestDigest(result.lease) : null,
+      },
+      options.json,
+      `Paused ${runId} until the user answers: ${options.awaitingUser.join(" | ")}\nWhen they answer, resume it with \`simple-changes loop start --mode resume --agent-id <you>\`; its scope and safety checks stay in force.\n`
+    );
+    return;
+  }
+  if (result.outcome === "relinquished") {
+    throw new SimpleChangesError(
+      `Relinquished ${runId} with durable state; the shipment is incomplete. Automatic cleanup normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es), pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s), and released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s). Remaining: ${result.blockers.join(" ")}`,
+      EXIT_CODES.unsafe
+    );
+  }
+  if (result.closedWithoutMutation) {
+    writeOutput(
+      { ...result, manifestDigest: null, removedWorkDirectories },
+      options.json,
+      `Closed ${runId} without changing the repository's work: it changed after the loop started, so the loop's shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+    );
+    return;
+  }
+  writeOutput(
+    {
+      ...result,
+      manifestDigest: result.lease ? loopManifestDigest(result.lease) : null,
+      removedWorkDirectories,
+    },
+    options.json,
+    `${
+      result.receipt.queued
+        ? renderQueuedClose(runId, result.receipt.queued, result)
+        : `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n`
+    }${renderHeldUnits(result.receipt.heldUnits)}${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
+  );
+};
 
 const runLoopFinalizationAction = (
   action: string,
@@ -4420,58 +4521,7 @@ const runLoopFinalizationAction = (
     return true;
   }
   if (action === "finalize") {
-    const workRepository = locateWorkDirectoryRepository(options.repo);
-    let removedWorkDirectories: string[] = [];
-    const result = finalizeLoop(
-      options.repo,
-      runId,
-      agentId,
-      requireCliOption(options.reason, "--reason"),
-      {
-        awaitingUser: options.awaitingUser,
-        onClosed: () => {
-          removedWorkDirectories = removeClosedRunWorkDirectories(() =>
-            removeRunWorkDirectories(workRepository, runId)
-          );
-        },
-      }
-    );
-    if (result.outcome === "relinquished" && options.awaitingUser.length > 0) {
-      writeOutput(
-        {
-          ...result,
-          manifestDigest: result.lease
-            ? loopManifestDigest(result.lease)
-            : null,
-        },
-        options.json,
-        `Paused ${runId} until the user answers: ${options.awaitingUser.join(" | ")}\nWhen they answer, resume it with \`simple-changes loop start --mode resume --agent-id <you>\`; its scope and safety checks stay in force.\n`
-      );
-      return true;
-    }
-    if (result.outcome === "relinquished") {
-      throw new SimpleChangesError(
-        `Relinquished ${runId} with durable state; the shipment is incomplete. Automatic cleanup normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es), pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s), and released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s). Remaining: ${result.blockers.join(" ")}`,
-        EXIT_CODES.unsafe
-      );
-    }
-    if (result.closedWithoutMutation) {
-      writeOutput(
-        { ...result, manifestDigest: null, removedWorkDirectories },
-        options.json,
-        `Closed ${runId} without changing the repository's work: it changed after the loop started, so the loop's shipment scope could not be recorded. Start a fresh loop for a new baseline.\nReceipt: ${result.closedWithoutMutation.receiptPath}\n${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
-      );
-      return true;
-    }
-    writeOutput(
-      {
-        ...result,
-        manifestDigest: result.lease ? loopManifestDigest(result.lease) : null,
-        removedWorkDirectories,
-      },
-      options.json,
-      `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n${renderHeldUnits(result.receipt.heldUnits)}${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
-    );
+    runLoopFinalize(options, runId, agentId);
     return true;
   }
   return false;
@@ -4674,8 +4724,10 @@ const runLoopStart = (options: CliOptions): void => {
   const holds = informationalHolds(options.repo);
   const freshness = leaseRuntimeFreshness(lease);
   const resumedQuestions = resumedAwaitingUser(lease);
+  const alreadyQueued = queuedWorkNotices(options.repo);
   writeOutput(
     {
+      ...(alreadyQueued.length > 0 ? { alreadyQueued } : {}),
       holds,
       inheritedAwaitingUser: resumedQuestions,
       lease,
@@ -4691,7 +4743,7 @@ const runLoopStart = (options: CliOptions): void => {
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
-    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
+    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}${alreadyQueued.map((notice) => `Note: ${notice.message}\n`).join("")}`
   );
 };
 

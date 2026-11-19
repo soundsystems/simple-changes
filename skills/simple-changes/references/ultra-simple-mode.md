@@ -169,7 +169,10 @@ may ask to allow an upload. That's me sending your change for review.").
 change can be saved and sent as its own copy, and no further: do not add it
 to the project, with or without [Autopilot](#autopilot), until a review
 link exists or the owner says to add it without one. Say what is missing
-and stop there.
+and stop there. End that run with `loop finalize --no-proposal "<what is
+missing>"`, which closes it as sent without a review link. Where the host
+can open review links, a change sent without one keeps the run open
+instead.
 
 ## Messages
 

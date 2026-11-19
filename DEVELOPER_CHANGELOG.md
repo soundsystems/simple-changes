@@ -19,9 +19,61 @@
   run stops at the pushed branch and never integrates, Autopilot or not,
   unless the owner says to. Text only; `skill-contract.test.ts` pins both
   and one eval journey gains a behavior.
+- Queue finalization, found the same day in a real repository (GitLab
+  remote, finish `open-change-request`): a correct Queue run pushed its
+  branch, opened its proposal, and then could not close. `loop finalize`
+  had no mode-specific rule: `loopCompletionBlockers` applied the
+  run-created-worktree blocker and `repositoryCleanupBlockers` in every
+  mode, while `automaticFinalizationCleanup` runs only in
+  `AUTOMATIC_CLEANUP_MODES` (integrate, ship, reconcile, resume). So the
+  run was told to remove its own pushed worktree, clean the person's dirty
+  primary, and delete a target-contained branch that finalization deletes
+  by itself in those modes. It relinquished, and every later `loop start
+  --mode queue` was refused until an approved `loop replan`.
+  New `lib/queued-completion.ts`: `closesAsQueued` (mode queue or sweep
+  with no shipment scope) selects the rule, and `assessQueuedWork` reads
+  each live run-created worktree as queued, as nothing to queue (clean and
+  target-contained), or as a blocker. Queued means clean, with its head
+  contained in the branch's upstream or namesake remote-tracking ref
+  (`pushedBranch`), a review-ledger proposal whose `latestRecordedHead` is
+  that head (`recordedProposals`), and, when the target moved since `loop
+  start`, a clean `git merge-tree --write-tree` (`movedTargetBlocker`).
+  `finalizationDecision` hands the assessment to `loopCompletionBlockers`
+  as a `CompletionBasis`: `runWorktreeBlockers` returns the assessment's
+  blockers in place of the worktree blocker, and
+  `repositoryCleanupBlockers` is skipped. That function is now
+  `primaryAndTargetBlockers` plus `containedCleanupBlockers`; for a queued
+  close the second becomes cleanup `notes` and `cleanupStatus: pending`
+  (`queuedLeftovers`, `housekeepingPending`), and the first does not apply,
+  so the primary checkout is never touched or required clean.
+  Design choices. Proposal evidence is the record `proposal
+  record-authors` already writes, not a new command: `change-requests.md`
+  requires that step, and `SKILL.md` has no bytes left for a new one.
+  `loop finalize --no-proposal TEXT` covers a remote with nowhere to open
+  a proposal and is ignored when `proposalForge` finds a `github`,
+  `gitlab`, or `codeberg` provider. `removeQueuedWorktrees` runs only
+  after the receipt is written and the lease is deleted, re-assesses from
+  a fresh inventory, and uses unforced `git worktree remove`, so a refused
+  removal leaves a kept checkout (`queuedWorktrees.kept` in the result,
+  never the receipt) and never a stranded run; the controller's own
+  checkout and a claimed checkout are always kept. No existing file
+  changes shape: the lease is untouched, the receipt gains an optional
+  `queued` member (`status: queued-for-review-not-merged`, with
+  `deliveryStatus` still `unverified`), and a closed run writes the new
+  `queued-work/<run-id>.json` (`queued-work.schema.json`, in
+  `SCHEMA_NAMES`). `queuedWorkNotices` compares that record with the
+  primary's current uncommitted bytes, so `loop start` and `loop status`
+  report `alreadyQueued` instead of letting the same content go up again
+  unannounced; `pruneQueuedWorkRecords` forgets a record at `loop start`
+  once its heads are merged or gone, or after 90 days. `queuedRunGuidance`
+  replaces "record its outcome" in `loop status` for these runs. Ship,
+  Integrate, Reconcile, a scoped Queue run, and `loop end` are unchanged.
+  Covered by `queued-finalization.test.ts`: the Queue close and a second
+  `loop start`, every case that still blocks, and Integrate and Ship still
+  relinquishing on the same repository.
 - Not independently reviewed: the owner ended review rounds for this line
   on 2026-11-18. Guidance stays 33.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-19T10:32:00-06:00" -->
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T12:00:00-06:00" -->
 
 ## 0.33.1 - 2026-11-18
 

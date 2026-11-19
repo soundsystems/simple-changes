@@ -1437,6 +1437,55 @@ describe("Simple Changes skill contract", () => {
     );
   });
 
+  test("Queue and Sweep close queued for review, never merged, and leave the primary alone", async () => {
+    const [cleanup, recovery, changeRequests] = await Promise.all([
+      readFile(cleanupCompletionPath, "utf8"),
+      readFile(recoveryPath, "utf8"),
+      readFile(
+        new URL(
+          "../../../skills/simple-changes/references/change-requests.md",
+          import.meta.url
+        ),
+        "utf8"
+      ),
+    ]);
+    const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+    const normalizedRecovery = recovery.replace(/\s+/g, " ");
+
+    expect(cleanup).toContain("### Queue and Sweep end queued, not merged");
+    for (const sentence of [
+      "A Queue or Sweep run never merges, so `loop finalize` does not hold it to a merged target or a clean primary checkout.",
+      "the review ledger records a proposal at that head: `proposal record-authors` for the pushed head",
+      'Where the remote has nowhere to open a proposal, finalize with `--no-proposal "<why>"`; the receipt then reports each such branch as pushed without a proposal.',
+      "a missing proposal there is unfinished work.",
+      // What still keeps the run open.
+      "Everything else still relinquishes the run with its blockers, exits nonzero, and keeps every worktree:",
+      "- uncommitted changes in a run-created worktree;",
+      "- commits that are not pushed;",
+      "- a pushed branch with no recorded proposal;",
+      "- an `--awaiting-user` pause.",
+      "A Queue or Sweep run that did record a shipment scope, the only kind that can hold a unit, keeps the scoped rules below.",
+      // Honest reporting.
+      "`status: queued-for-review-not-merged`",
+      "Report it as queued for review, never as merged, delivered, or shipped.",
+      // The person's source and earlier objects.
+      "**The primary checkout stays exactly as it is**, on its branch, with its uncommitted and untracked work: never stashed, reset, normalized, switched, or fast-forwarded, and never a blocker.",
+      "A clean worktree or local branch the target already contains is not removed and does not block.",
+      "**The run's own clean, pushed worktrees are removed** after the receipt is written and the run has closed, with Git's unforced `worktree remove`, which refuses a checkout that holds changes or untracked files.",
+      "that never reopens the run.",
+      // A later run says what is already up.
+      "Do not propose those paths again as new work: say they are already up, or update that branch and its proposal when the content should change.",
+    ]) {
+      expect(normalizedCleanup).toContain(sentence);
+    }
+    expect(normalizedRecovery).toContain(
+      "A relinquished Queue or Sweep run does not need a replan before the next request can start, including one an older runtime left behind."
+    );
+    expect(changeRequests.replace(/\s+/g, " ")).toContain(
+      "a pushed branch with no proposal recorded at its exact head keeps the run open. Record the authors again whenever the pushed head moves."
+    );
+  });
+
   test("Controllers finalize before replying, and a turn-end guard backs the rule", async () => {
     const [skill, cleanup, spec] = await Promise.all([
       readFile(skillPath, "utf8"),
@@ -1707,6 +1756,7 @@ describe("Simple Changes skill contract", () => {
       "A prompt from the computer is extra, never a substitute",
       // Without a review link nothing is added to the project.
       "do not add it to the project, with or without [Autopilot](#autopilot), until a review link exists or the owner says to add it without one",
+      'End that run with `loop finalize --no-proposal "<what is missing>"`, which closes it as sent without a review link. Where the host can open review links, a change sent without one keeps the run open instead.',
       // The brief keeps its timing, its scope, and the reviewer.
       "it is sent before the first step that changes anything shared, it presents the recorded scope, and it names the reviewer as the standard brief does: the agent, its model and effort, whether it must differ from the author, and the setting that chose it with the file it is saved in",
       "This project's review setting asks > for that (`<path>/.simple-changes-authoring.json`).",

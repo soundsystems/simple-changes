@@ -20,6 +20,11 @@ import {
   unmutatedCloseReady,
   verificationAgainst,
 } from "./loop-lease-verify.ts";
+import {
+  closesAsQueued,
+  type QueuedWorkNotice,
+  queuedWorkNotices,
+} from "./queued-completion.ts";
 import type { LoopLease, LoopVerification, LoopViolation } from "./types.ts";
 
 export interface LoopGuidance {
@@ -132,6 +137,19 @@ const relinquishedGuidance = (lease: LoopLease): LoopGuidance =>
     nextCommands: resumeCommands(lease),
   });
 
+// A Queue or Sweep run never merges or records a shipment outcome: it ends
+// with its own branches pushed and their proposals recorded.
+const queuedRunGuidance = (lease: LoopLease): LoopGuidance | null =>
+  closesAsQueued(lease) && !lease.shipmentOutcome
+    ? {
+        headline: `Loop ${lease.runId} is healthy. It is a ${lease.mode} run, so it ends queued for review, not merged: push each unit's own branch, open its proposal, record it with \`proposal record-authors\`, then finalize. Finalize closes the run when every run-created worktree is clean and pushed with its proposal recorded; it merges nothing and leaves uncommitted work in the primary checkout exactly as it is.`,
+        nextCommands: [
+          "simple-changes proposal record-authors --proposal <id> --base <sha> --head <sha>",
+          `simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>`,
+        ],
+      }
+    : null;
+
 const loopGuidanceFor = (
   lease: LoopLease | null,
   verification: LoopVerification,
@@ -223,6 +241,10 @@ const loopGuidanceFor = (
       ],
     };
   }
+  const queuedGuidance = queuedRunGuidance(lease);
+  if (queuedGuidance) {
+    return queuedGuidance;
+  }
   if (!lease.shipmentOutcome) {
     return {
       headline: `Loop ${lease.runId} is healthy; continue the shipment, then record its outcome before finalizing.`,
@@ -240,9 +262,28 @@ const loopGuidanceFor = (
   };
 };
 
+// Names content an earlier Queue or Sweep run already put up, so a run does
+// not propose the same uncommitted bytes again as new work unannounced.
+const withAlreadyQueued = (
+  guidance: LoopGuidance,
+  notices: readonly QueuedWorkNotice[]
+): LoopGuidance =>
+  notices.length === 0
+    ? guidance
+    : {
+        ...guidance,
+        headline: `${guidance.headline} Note: ${notices.map((notice) => notice.message).join(" ")}`,
+      };
+
 export const loopStatus = (
   repositoryPath: string
 ): {
+  /**
+   * Uncommitted primary-checkout content that a closed Queue or Sweep run
+   * already pushed for review and that is still unmerged; present only when
+   * there is some.
+   */
+  alreadyQueued?: QueuedWorkNotice[];
   guidance: LoopGuidance;
   lease: LoopLease | null;
   liveness: LeaseLiveness | null;
@@ -260,23 +301,28 @@ export const loopStatus = (
     ? verificationAgainst(lease, inventory)
     : emptyVerification(inventory);
   const liveness = storedLease ? leaseLiveness(storedLease) : null;
+  const alreadyQueued = queuedWorkNotices(repositoryPath, inventory);
   return {
-    guidance: loopGuidanceFor(lease, verification, {
-      // The target binding is resolved from the current checkout's branch,
-      // so the scope invariants are judged only from the controller checkout,
-      // where record-scope itself must run.
-      firstScopeFailure:
-        lease &&
-        owesFirstScope(lease) &&
-        registeredController(lease)?.path ===
-          inventory.repository.currentCheckout
-          ? openingScopeFailure(lease, inventory)
-          : null,
-      liveness,
-      unmutatedCloseAvailable: lease
-        ? unmutatedCloseReady(lease, inventory, verification)
-        : false,
-    }),
+    ...(alreadyQueued.length > 0 ? { alreadyQueued } : {}),
+    guidance: withAlreadyQueued(
+      loopGuidanceFor(lease, verification, {
+        // The target binding is resolved from the current checkout's branch,
+        // so the scope invariants are judged only from the controller checkout,
+        // where record-scope itself must run.
+        firstScopeFailure:
+          lease &&
+          owesFirstScope(lease) &&
+          registeredController(lease)?.path ===
+            inventory.repository.currentCheckout
+            ? openingScopeFailure(lease, inventory)
+            : null,
+        liveness,
+        unmutatedCloseAvailable: lease
+          ? unmutatedCloseReady(lease, inventory, verification)
+          : false,
+      }),
+      alreadyQueued
+    ),
     lease,
     liveness,
     verification,

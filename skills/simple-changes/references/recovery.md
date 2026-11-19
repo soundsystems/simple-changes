@@ -99,6 +99,14 @@ Resume a relinquished run with `loop start --mode resume`;
 takeover approval is only needed to replace an active controller.
 Takeover requires the exact current run ID and manifest digest plus approver and reason.
 
+A relinquished Queue or Sweep run does not need a replan before the next
+request can start, including one an older runtime left behind. Resume it,
+satisfy what its finalization named (push the branch, record its proposal with
+`proposal record-authors`, or commit what is uncommitted), and finalize: it
+closes as
+[queued for review, not merged](cleanup-and-completion.md#queue-and-sweep-end-queued-not-merged)
+with the primary checkout untouched.
+
 ## Released claims and paused changes
 
 A released claim is never refreshed. When a release leaves a registered

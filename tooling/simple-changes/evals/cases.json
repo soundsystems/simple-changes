@@ -158,7 +158,10 @@
       "expectedBehaviors": [
         "Package one coherent unit",
         "Verify it",
-        "Open but do not merge a proposal"
+        "Open but do not merge a proposal",
+        "Record the proposal's authors at the pushed head, then finalize so the run closes as queued for review, not merged",
+        "Leave uncommitted work in the primary checkout exactly as it is, and never report queued work as merged or delivered",
+        "When loop start reports alreadyQueued, say that content is already up for review instead of proposing it again as new work"
       ]
     },
     {

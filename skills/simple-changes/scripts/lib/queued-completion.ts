@@ -1,40 +1,26 @@
-import { randomUUID } from "node:crypto";
-import {
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { resolve } from "node:path";
-import {
-  deleteTargetContainedBranches,
-  targetContainmentAudit,
-  targetContainsRevision,
-} from "./cleanup-core.ts";
-import { ensureStateDirectory } from "./git-location.ts";
-import {
-  captureInventory,
-  isLossyName,
-  locateRepository,
-} from "./inventory.ts";
+import { targetContainsRevision } from "./cleanup-core.ts";
+import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { completeLine } from "./git-complete.ts";
+import { isLossyName } from "./inventory.ts";
 import {
   resolvedCurrentTargetRevision,
-  STATE_DIRECTORY,
+  retirementForRegistration,
   targetBranchForRef,
 } from "./loop-lease-core.ts";
-import { targetTreeEntry, worktreeSourceEntry } from "./loop-lease-shipment.ts";
-import { liveClaimFor } from "./loop-lease-verify.ts";
-import { runGit } from "./process.ts";
-import { latestRecordedHead, readReviewLedger } from "./review-ledger.ts";
-import { validateSchema } from "./schema.ts";
+import { runGit, runGitRemote } from "./process.ts";
+import { redactSecrets } from "./redact.ts";
+import {
+  isProposalId,
+  latestRecordedHead,
+  readReviewLedger,
+} from "./review-ledger.ts";
 import type {
   BranchInventory,
   LoopLease,
+  LoopWorktreeLease,
   RepositoryInventory,
   WorktreeInventory,
 } from "./types.ts";
-import { readCoordinationDocumentFromCommonDirectory } from "./worktree-coordination.ts";
 
 /**
  * The only finished state a Queue or Sweep run reports. It is never
@@ -57,24 +43,20 @@ const PROPOSAL_FORGES: ReadonlySet<string> = new Set([
   "gitlab",
 ]);
 
-const QUEUED_WORK_DIRECTORY = "queued-work";
-
-/** A record older than this is forgotten at the next loop start. */
-const QUEUED_WORK_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
-
 const MAX_NO_PROPOSAL_REASON_LENGTH = 500;
+
+const MAX_QUEUED_PROPOSALS = 50;
 
 /** One branch a Queue or Sweep run pushed and left for review. */
 export interface QueuedUnit {
   branch: string;
   headSha: string;
   /**
-   * Paths whose uncommitted bytes in the primary checkout equal this head's:
-   * the queued branch carries a copy of them, and the primary keeps its own.
+   * The proposal the controller named for this branch, whose recorded head
+   * is exactly `headSha` and whose recorded base the target contains; null
+   * when the branch was pushed without one.
    */
-  primaryCopies: string[];
-  /** Proposals the review ledger records at exactly this pushed head. */
-  proposalIds: string[];
+  proposalId: string | null;
   remote: string;
   remoteBranch: string;
   /**
@@ -82,20 +64,23 @@ export interface QueuedUnit {
    * it for a remote with nowhere to open one; null when a proposal exists.
    */
   withoutProposal: string | null;
-  worktree: string;
-}
-
-/** A clean run-created checkout whose head the target already contains. */
-export interface QueuedDiscardable {
-  branch: string | null;
-  headSha: string;
-  path: string;
+  /** The run-created checkout, kept in place; null when it is already gone. */
+  worktree: string | null;
 }
 
 export interface QueuedAssessment {
   blockers: string[];
-  discardable: QueuedDiscardable[];
+  /** Every live run-created checkout. Finalization keeps them all. */
+  keptWorktrees: string[];
   units: QueuedUnit[];
+}
+
+/** What the controller told `loop finalize` about its pushed branches. */
+export interface QueuedDeclarations {
+  /** `--no-proposal`: why no proposal can be opened; null when not given. */
+  noProposal: string | null;
+  /** `--queued-proposal <branch>=<id>`: the proposal each branch is in. */
+  proposals: ReadonlyMap<string, string>;
 }
 
 /**
@@ -106,83 +91,206 @@ export interface QueuedAssessment {
 export const closesAsQueued = (lease: LoopLease): boolean =>
   QUEUED_MODES.has(lease.mode) && !lease.shipmentScope;
 
-export const noProposalReason = (input: string | undefined): string | null => {
-  const reason = input?.trim();
-  return reason ? reason.slice(0, MAX_NO_PROPOSAL_REASON_LENGTH) : null;
+/**
+ * Reads the finalize options. Each `--queued-proposal` is `<branch>=<id>`,
+ * split at the last `=`, since a branch name may hold one and a proposal id
+ * never does. A malformed or repeated branch is a usage error.
+ */
+export const queuedDeclarations = (
+  noProposalInput: string | undefined,
+  proposalInputs: readonly string[] = []
+): QueuedDeclarations => {
+  if (proposalInputs.length > MAX_QUEUED_PROPOSALS) {
+    throw new SimpleChangesError(
+      `Name at most ${MAX_QUEUED_PROPOSALS} queued proposals.`,
+      EXIT_CODES.usage
+    );
+  }
+  const proposals = new Map<string, string>();
+  for (const input of proposalInputs) {
+    const separator = input.lastIndexOf("=");
+    const branch = input.slice(0, Math.max(separator, 0)).trim();
+    const proposalId = input.slice(separator + 1).trim();
+    if (!(branch && isProposalId(proposalId)) || proposals.has(branch)) {
+      throw new SimpleChangesError(
+        "--queued-proposal must be <branch>=<proposal id>, once per branch.",
+        EXIT_CODES.usage
+      );
+    }
+    proposals.set(branch, proposalId);
+  }
+  const reason = noProposalInput?.trim();
+  return {
+    noProposal: reason ? reason.slice(0, MAX_NO_PROPOSAL_REASON_LENGTH) : null,
+    proposals,
+  };
 };
 
-const resolveCommit = (repositoryPath: string, ref: string): string | null => {
-  const result = runGit(
-    repositoryPath,
-    ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
-    true
-  );
-  const revision = result.stdout.trim();
-  return result.exitCode === 0 && revision ? revision : null;
+interface QueuedContext {
+  declared: QueuedDeclarations;
+  inventory: RepositoryInventory;
+  lease: LoopLease;
+  /** The target's remote, when the target is a remote branch. */
+  remote: string | null;
+  targetBranch: string | null;
+  targetRevision: string;
+}
+
+type RemoteHead =
+  | { head: string | null; state: "answered" }
+  | { detail: string; state: "unanswered" };
+
+const LS_REMOTE_LINE = /^([0-9a-f]{40,64})\t(.+)$/u;
+
+/**
+ * The head of exactly `refs/heads/<branch>` at the remote's push
+ * destination, asked of the remote itself: a remote-tracking ref can still
+ * name a commit the server has since deleted or rewritten. The answer
+ * counts only when it arrived whole. Absence is `ls-remote --exit-code`
+ * exiting 2 with no output, which a lost answer cannot fake; anything else
+ * is no answer.
+ */
+const remoteBranchHead = (
+  repositoryPath: string,
+  remote: string,
+  branch: string
+): RemoteHead => {
+  const ref = `refs/heads/${branch}`;
+  let destination: string | null;
+  try {
+    // One whole line: a remote with several push URLs has no single
+    // destination to ask, and is refused below as no answer.
+    destination = completeLine(repositoryPath, [
+      "remote",
+      "get-url",
+      "--push",
+      remote,
+    ]).line;
+  } catch {
+    destination = null;
+  }
+  // A destination that begins with a dash would be read as an option.
+  if (!destination || destination.startsWith("-")) {
+    return {
+      detail: `${remote} has no single push destination to ask`,
+      state: "unanswered",
+    };
+  }
+  const listing = runGitRemote(repositoryPath, [
+    "ls-remote",
+    "--exit-code",
+    destination,
+    ref,
+  ]);
+  if (listing.exitCode === 2 && listing.stdout === "") {
+    return { head: null, state: "answered" };
+  }
+  const lines = listing.stdout.split("\n");
+  if (listing.exitCode !== 0 || lines.pop() !== "") {
+    return {
+      detail: redactSecrets(
+        (listing.stderr || listing.stdout).trim() ||
+          `git ls-remote exited ${listing.exitCode}`
+      ),
+      state: "unanswered",
+    };
+  }
+  const entries = lines.map((line) => LS_REMOTE_LINE.exec(line));
+  if (entries.length === 0 || entries.some((entry) => entry === null)) {
+    return {
+      detail: "the listing was lost or cut short",
+      state: "unanswered",
+    };
+  }
+  return {
+    head: entries.find((entry) => entry?.[2] === ref)?.[1] ?? null,
+    state: "answered",
+  };
 };
 
-interface PushedBranch {
+interface PushDestination {
   name: string;
   remote: string;
-  revision: string;
 }
 
 /**
- * Where this head is pushed, by Git's own remote-tracking refs: the branch's
+ * Where this branch is pushed, read from its own configuration: its
  * upstream on any remote, or its namesake on the target remote, and never
- * the target itself. A ref that does not resolve, or does not contain the
- * head, proves nothing, so the work then counts as not pushed.
+ * the target itself.
+ */
+const pushDestinations = (
+  context: QueuedContext,
+  branch: BranchInventory
+): PushDestination[] => {
+  const destinations: PushDestination[] = [];
+  const upstreamRemote = context.inventory.repository.remoteBindings.find(
+    (binding) => branch.upstream?.startsWith(`${binding.name}/`)
+  )?.name;
+  if (upstreamRemote && branch.upstream) {
+    destinations.push({
+      name: branch.upstream.slice(upstreamRemote.length + 1),
+      remote: upstreamRemote,
+    });
+  }
+  if (
+    context.remote &&
+    !destinations.some(
+      (item) => item.remote === context.remote && item.name === branch.exactName
+    )
+  ) {
+    destinations.push({ name: branch.exactName, remote: context.remote });
+  }
+  return destinations.filter(
+    (item) =>
+      !(item.remote === context.remote && item.name === context.targetBranch)
+  );
+};
+
+/**
+ * The remote branch that holds exactly this head, or why none is proven.
+ * Only a destination whose remote-tracking ref already names the head is
+ * asked, so unpushed work costs no network call; the remote's own answer
+ * then decides.
  */
 const pushedBranch = (
   context: QueuedContext,
   branch: BranchInventory,
   headSha: string
-): PushedBranch | null => {
+): PushDestination | { blocker: string } => {
   const repositoryPath = context.lease.primaryCheckout;
-  const candidates: { name: string; remote: string }[] = [];
-  const upstreamRemote = context.inventory.repository.remoteBindings.find(
-    (binding) => branch.upstream?.startsWith(`${binding.name}/`)
-  )?.name;
-  if (upstreamRemote && branch.upstream) {
-    candidates.push({
-      name: branch.upstream.slice(upstreamRemote.length + 1),
-      remote: upstreamRemote,
-    });
-  }
-  if (context.remote) {
-    candidates.push({ name: branch.exactName, remote: context.remote });
-  }
-  for (const { name, remote } of candidates) {
-    if (remote === context.remote && name === context.targetBranch) {
+  const notPushed = `Queued branch ${branch.name} at ${headSha} is not pushed: no remote branch holds exactly that commit. Push it as its own branch (\`git push -u ${context.remote ?? "<remote>"} ${branch.name}:${branch.name}\`), then resume and finalize again. Nothing was removed.`;
+  for (const destination of pushDestinations(context, branch)) {
+    const tracked = runGit(
+      repositoryPath,
+      [
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        `refs/remotes/${destination.remote}/${destination.name}^{commit}`,
+      ],
+      true
+    );
+    if (tracked.exitCode !== 0 || tracked.stdout.trim() !== headSha) {
       continue;
     }
-    const revision = resolveCommit(
+    const asked = remoteBranchHead(
       repositoryPath,
-      `refs/remotes/${remote}/${name}`
+      destination.remote,
+      destination.name
     );
-    if (revision && targetContainsRevision(repositoryPath, revision, headSha)) {
-      return { name, remote, revision };
+    if (asked.state === "unanswered") {
+      return {
+        blocker: `Could not confirm that ${destination.remote} still holds queued branch ${destination.name} at ${headSha}: ${asked.detail}. The local record of a push is not proof, so the run stays open; resume and finalize again when the remote answers.`,
+      };
     }
+    if (asked.head === headSha) {
+      return destination;
+    }
+    return {
+      blocker: `${destination.remote} no longer holds queued branch ${destination.name} at ${headSha}: it ${asked.head ? `is at ${asked.head}` : "has no such branch"} there now. Push the branch again or settle what replaced it, then resume and finalize again. Nothing was removed.`,
+    };
   }
-  return null;
-};
-
-/** Proposals whose latest recorded head is one of these revisions. */
-const recordedProposals = (
-  commonGitDirectory: string,
-  revisions: readonly string[]
-): string[] => {
-  const ledger = readReviewLedger(commonGitDirectory);
-  if (ledger.state !== "valid") {
-    return [];
-  }
-  return Object.entries(ledger.ledger.proposals)
-    .filter(([, proposal]) => {
-      const latest = latestRecordedHead(proposal);
-      return latest !== null && revisions.includes(latest);
-    })
-    .map(([proposalId]) => proposalId)
-    .sort((left, right) => left.localeCompare(right));
+  return { blocker: notPushed };
 };
 
 /**
@@ -210,96 +318,6 @@ const mergesIntoMovedTarget = (
   return merged.exitCode === 1 ? false : null;
 };
 
-/**
- * Dirty primary paths whose bytes are exactly the ones this head changed
- * from the target: the content the person asked to put up, which the queued
- * branch now carries a copy of.
- */
-const primaryCopiesOf = (
-  primary: WorktreeInventory | undefined,
-  headSha: string,
-  targetRevision: string
-): string[] => {
-  if (!primary) {
-    return [];
-  }
-  const copies: string[] = [];
-  for (const change of primary.changes) {
-    if (change.conflicted) {
-      continue;
-    }
-    try {
-      const queued = targetTreeEntry(primary.path, headSha, change.path);
-      if (
-        queued === worktreeSourceEntry(primary.path, change.path) &&
-        queued !== targetTreeEntry(primary.path, targetRevision, change.path)
-      ) {
-        copies.push(change.path);
-      }
-    } catch {
-      // An entry Git could not read is not proof of a copy.
-    }
-  }
-  return copies.sort((left, right) => left.localeCompare(right));
-};
-
-interface QueuedContext {
-  inventory: RepositoryInventory;
-  lease: LoopLease;
-  noProposal: string | null;
-  primary: WorktreeInventory | undefined;
-  /** The target's remote, when the target is a remote branch. */
-  remote: string | null;
-  targetBranch: string | null;
-  targetRevision: string;
-}
-
-/**
- * The forge that can open a proposal for a branch pushed to this remote:
- * the target's own host, or the host the branch was pushed to, as a fork's
- * branch is proposed on the target's forge. Null when neither is one.
- */
-const proposalForge = (
-  context: QueuedContext,
-  pushedRemote: string
-): string | null =>
-  context.inventory.repository.remoteBindings
-    .filter(
-      (binding) =>
-        binding.name === context.remote || binding.name === pushedRemote
-    )
-    .map((binding) => binding.provider)
-    .find((provider) => PROPOSAL_FORGES.has(provider)) ?? null;
-
-/**
- * Why a pushed branch has no acceptable proposal state, or the declared
- * reason it has none, or null when the ledger records one.
- */
-const proposalState = (
-  context: QueuedContext,
-  branch: string,
-  headSha: string,
-  pushed: PushedBranch,
-  proposalIds: readonly string[]
-): { blocker: string } | { withoutProposal: string | null } => {
-  if (proposalIds.length > 0) {
-    return { withoutProposal: null };
-  }
-  const record = `No proposal is recorded for queued branch ${branch} at ${headSha}. Open its proposal, run \`simple-changes proposal record-authors --proposal <id> --base ${context.lease.targetRevision} --head ${headSha}\`, then resume and finalize again`;
-  const forge = proposalForge(context, pushed.remote);
-  if (forge) {
-    return {
-      blocker: `${record}. ${forge} can open proposals, so \`--no-proposal\` does not apply to ${pushed.remote}.`,
-    };
-  }
-  if (context.noProposal) {
-    return { withoutProposal: context.noProposal };
-  }
-  return {
-    blocker: `${record}; or, only when ${pushed.remote} has nowhere to open one, finalize with \`--no-proposal "<why>"\` so the receipt reports the branch as pushed without a proposal.`,
-  };
-};
-
 /** Why a target that moved since the run started blocks this branch. */
 const movedTargetBlocker = (
   context: QueuedContext,
@@ -324,155 +342,256 @@ const movedTargetBlocker = (
     : `${moved} could not be checked against it: \`git merge-tree --write-tree\` gave no answer (it needs Git 2.38 or later). Update the branch onto the new target, or retry.`;
 };
 
-type WorktreeVerdict =
-  | { blocker: string }
-  | { discardable: QueuedDiscardable }
-  | { unit: QueuedUnit };
+/**
+ * The forge that can open a proposal for a branch pushed to this remote:
+ * the target's own host, or the host the branch was pushed to, as a fork's
+ * branch is proposed on the target's forge. Null when neither is one.
+ */
+const proposalForge = (
+  context: QueuedContext,
+  pushedRemote: string
+): string | null =>
+  context.inventory.repository.remoteBindings
+    .filter(
+      (binding) =>
+        binding.name === context.remote || binding.name === pushedRemote
+    )
+    .map((binding) => binding.provider)
+    .find((provider) => PROPOSAL_FORGES.has(provider)) ?? null;
 
-/** Why a run-created checkout cannot be read as queued work yet, or null. */
-const unreadableReason = (worktree: WorktreeInventory): string | null => {
-  if (worktree.prunable) {
-    return `Run-created worktree ${worktree.path} has no directory any more, so its work cannot be checked. Restore it, or prune its record with Git, before closing.`;
+/**
+ * Why the proposal the controller named for this branch does not bind to
+ * it, or null when it does. The name ties the proposal to this source
+ * branch and to no other; the review ledger must record that proposal's
+ * latest head as exactly the queued head, never an ancestor or descendant,
+ * with a base the run's target contains.
+ */
+const proposalMismatch = (
+  context: QueuedContext,
+  branch: string,
+  headSha: string,
+  proposalId: string
+): string | null => {
+  const { declared, lease } = context;
+  const shared = [...declared.proposals].find(
+    ([other, id]) => id === proposalId && other !== branch
+  )?.[0];
+  if (shared) {
+    return `Proposal ${proposalId} is named for both ${branch} and ${shared}; one proposal carries one branch.`;
   }
-  if (worktree.changes.length > 0) {
-    return `Queued worktree ${worktree.path} has uncommitted changes. Commit and push them, or keep them and pause for the user; nothing in it was removed.`;
+  const ledger = readReviewLedger(lease.commonGitDirectory);
+  const record =
+    ledger.state === "valid" &&
+    Object.hasOwn(ledger.ledger.proposals, proposalId)
+      ? ledger.ledger.proposals[proposalId]
+      : undefined;
+  const recorded = record ? latestRecordedHead(record) : null;
+  const recordAuthors = `\`simple-changes proposal record-authors --proposal ${proposalId} --base ${lease.targetRevision} --head ${headSha}\``;
+  if (!(record && recorded)) {
+    return `Proposal ${proposalId} has no recorded head in the review ledger. Run ${recordAuthors}.`;
   }
-  return null;
+  if (recorded !== headSha) {
+    return `Proposal ${proposalId} is recorded at ${recorded}, not at the queued head ${headSha} of ${branch}. Run ${recordAuthors}.`;
+  }
+  const base = record.heads[recorded]?.base;
+  return base &&
+    targetContainsRevision(lease.primaryCheckout, context.targetRevision, base)
+    ? null
+    : `Proposal ${proposalId} is recorded against a base that ${lease.targetRef} does not contain, so it is not a proposal into this run's target. Run ${recordAuthors}.`;
 };
 
-const pushedUnit = (
+/**
+ * The proposal state of one pushed branch: the proposal bound to it, the
+ * declared reason it has none, or why neither holds.
+ */
+const proposalState = (
   context: QueuedContext,
-  worktree: WorktreeInventory,
-  headSha: string
-): WorktreeVerdict => {
-  const { inventory, lease } = context;
-  const branch = inventory.branches.find(
-    (item) => item.worktreePath === worktree.path && item.sha === headSha
+  branch: string,
+  headSha: string,
+  pushedRemote: string
+):
+  | { blocker: string }
+  | { proposalId: string | null; withoutProposal: string | null } => {
+  const again = "then resume and finalize again";
+  const proposalId = context.declared.proposals.get(branch);
+  if (proposalId) {
+    const mismatch = proposalMismatch(context, branch, headSha, proposalId);
+    return mismatch
+      ? { blocker: `${mismatch} Nothing was removed; ${again}.` }
+      : { proposalId, withoutProposal: null };
+  }
+  const name = `No proposal is named for queued branch ${branch} at ${headSha}. Open its proposal, run \`simple-changes proposal record-authors --proposal <id> --base ${context.lease.targetRevision} --head ${headSha}\`, ${again} with \`--queued-proposal ${branch}=<id>\``;
+  const forge = proposalForge(context, pushedRemote);
+  if (forge) {
+    return {
+      blocker: `${name}. ${forge} can open proposals, so \`--no-proposal\` does not apply to ${pushedRemote}.`,
+    };
+  }
+  if (context.declared.noProposal) {
+    return { proposalId: null, withoutProposal: context.declared.noProposal };
+  }
+  return {
+    blocker: `${name}; or, only when ${pushedRemote} has nowhere to open one, finalize with \`--no-proposal "<why>"\` so the receipt reports the branch as pushed without a proposal.`,
+  };
+};
+
+type Verdict = { blocker: string } | { unit: QueuedUnit } | null;
+
+/**
+ * Reads one registered branch at its head: null when the target already
+ * contains it, so there is nothing to queue, a queued unit when its exact
+ * head is on the remote with its proposal state settled, or a blocker.
+ */
+const branchVerdict = (
+  context: QueuedContext,
+  branch: BranchInventory,
+  worktree: string | null
+): Verdict => {
+  const headSha = branch.sha;
+  const { lease, targetRevision } = context;
+  if (targetContainsRevision(lease.primaryCheckout, targetRevision, headSha)) {
+    return null;
+  }
+  const pushed = pushedBranch(context, branch, headSha);
+  if ("blocker" in pushed) {
+    return pushed;
+  }
+  const moved = movedTargetBlocker(context, branch.name, headSha);
+  if (moved) {
+    return { blocker: moved };
+  }
+  const proposal = proposalState(context, branch.name, headSha, pushed.remote);
+  if ("blocker" in proposal) {
+    return proposal;
+  }
+  return {
+    unit: {
+      branch: branch.name,
+      headSha,
+      proposalId: proposal.proposalId,
+      remote: pushed.remote,
+      remoteBranch: pushed.name,
+      withoutProposal: proposal.withoutProposal,
+      worktree,
+    },
+  };
+};
+
+/** A live run-created checkout: it must be clean and on its exact branch. */
+const liveVerdict = (
+  context: QueuedContext,
+  worktree: WorktreeInventory
+): Verdict => {
+  if (worktree.prunable) {
+    return {
+      blocker: `Run-created worktree ${worktree.path} has no directory any more, so its work cannot be checked. Restore it, or prune its record with Git, before closing.`,
+    };
+  }
+  if (worktree.changes.length > 0) {
+    return {
+      blocker: `Queued worktree ${worktree.path} has uncommitted changes. Commit and push them, or keep them and pause for the user; nothing in it was removed.`,
+    };
+  }
+  const branch = context.inventory.branches.find(
+    (item) =>
+      item.worktreePath === worktree.path && item.sha === worktree.headSha
   );
   if (!(branch && worktree.branch) || isLossyName(worktree.branch)) {
     return {
       blocker: `Queued worktree ${worktree.path} is not on a branch whose pushed copy can be named exactly, so its commits cannot be proven pushed.`,
     };
   }
-  const pushed = pushedBranch(context, branch, headSha);
-  if (!pushed) {
-    const remote = context.remote ?? "<remote>";
-    return {
-      blocker: `Queued branch ${worktree.branch} at ${headSha} is not pushed: no remote branch holds its commits. Push it as its own branch (\`git push -u ${remote} ${worktree.branch}:${worktree.branch}\`) before closing; its worktree ${worktree.path} was kept.`,
-    };
-  }
-  const moved = movedTargetBlocker(context, worktree.branch, headSha);
-  if (moved) {
-    return { blocker: moved };
-  }
-  const proposalIds = recordedProposals(lease.commonGitDirectory, [
-    headSha,
-    pushed.revision,
-  ]);
-  const proposal = proposalState(
-    context,
-    worktree.branch,
-    headSha,
-    pushed,
-    proposalIds
-  );
-  if ("blocker" in proposal) {
-    return proposal;
-  }
-  return {
-    unit: {
-      branch: worktree.branch,
-      headSha,
-      primaryCopies: primaryCopiesOf(
-        context.primary,
-        headSha,
-        context.targetRevision
-      ),
-      proposalIds,
-      remote: pushed.remote,
-      remoteBranch: pushed.name,
-      withoutProposal: proposal.withoutProposal,
-      worktree: worktree.path,
-    },
-  };
-};
-
-const worktreeVerdict = (
-  context: QueuedContext,
-  worktree: WorktreeInventory
-): WorktreeVerdict => {
-  const unreadable = unreadableReason(worktree);
-  const { headSha } = worktree;
-  if (unreadable !== null || headSha === null) {
-    return {
-      blocker:
-        unreadable ??
-        `Queued worktree ${worktree.path} has no commit to check.`,
-    };
-  }
-  if (
-    targetContainsRevision(
-      context.lease.primaryCheckout,
-      context.targetRevision,
-      headSha
-    )
-  ) {
-    return {
-      discardable: { branch: worktree.branch, headSha, path: worktree.path },
-    };
-  }
-  return pushedUnit(context, worktree, headSha);
+  return branchVerdict(context, branch, worktree.path);
 };
 
 /**
- * Reads every live run-created checkout of a Queue or Sweep run as queued
- * work: pushed as its own branch with a recorded proposal, or contained in
- * the target and so nothing to queue. Anything else is a blocker, and
- * nothing here changes the repository.
+ * A registered author whose checkout is gone. Its branch outlives the
+ * checkout, so commits made there still count: the branch is read exactly
+ * as a live one is. With the branch gone too, nothing can be checked.
+ */
+const absentVerdict = (
+  context: QueuedContext,
+  registered: LoopWorktreeLease
+): Verdict => {
+  if (retirementForRegistration(context.lease, registered)) {
+    return null;
+  }
+  const branch = context.inventory.branches.find(
+    (item) => item.name === registered.branch
+  );
+  if (!branch || isLossyName(branch.name)) {
+    return {
+      blocker: `Run-created worktree ${registered.path} is gone and its branch ${registered.branch ?? "(none)"} cannot be read, so commits made there cannot be checked. Restore the branch before closing.`,
+    };
+  }
+  if (branch.worktreePath !== null) {
+    return {
+      blocker: `Run-created worktree ${registered.path} is gone, and its branch ${branch.name} is checked out in ${branch.worktreePath}, which this run did not create. Settle that checkout before closing.`,
+    };
+  }
+  return branchVerdict(context, branch, null);
+};
+
+/**
+ * Reads every author registration of a Queue or Sweep run, live checkout or
+ * not, as queued work: its exact head on the remote with its proposal state
+ * settled, or contained in the target and so nothing to queue. Anything
+ * else is a blocker. Nothing here changes the repository, and an
+ * unresolved target is a blocker, never an empty result.
  */
 export const assessQueuedWork = (
   lease: LoopLease,
   inventory: RepositoryInventory,
-  noProposal: string | null
+  declared: QueuedDeclarations
 ): QueuedAssessment => {
   const assessment: QueuedAssessment = {
     blockers: [],
-    discardable: [],
+    keptWorktrees: [],
     units: [],
   };
+  // Resolved once for every check below; a failed lookup is a blocker, so
+  // it can never read as a run that queued nothing.
   const targetRevision = resolvedCurrentTargetRevision(lease);
   if (!targetRevision) {
-    // Completion already reports the unresolved target; nothing is proven.
+    assessment.blockers.push(
+      `Target ${lease.targetRef} could not be resolved, so no queued work was checked. Refresh it, then resume and finalize again.`
+    );
     return assessment;
   }
-  const remote = inventory.repository.targetRemote;
   const context: QueuedContext = {
+    declared,
     inventory,
     lease,
-    noProposal,
-    primary: inventory.worktrees.find(
-      (worktree) => worktree.path === lease.primaryCheckout
-    ),
-    remote,
+    remote: inventory.repository.targetRemote,
     targetBranch: targetBranchForRef(lease.primaryCheckout, lease.targetRef),
     targetRevision,
   };
-  const created = new Set(
-    lease.worktrees
-      .filter((worktree) => worktree.createdByRun)
-      .map((worktree) => worktree.path)
-  );
-  for (const worktree of inventory.worktrees) {
-    if (!created.has(worktree.path)) {
+  const branches = new Set<string | null>();
+  for (const registered of lease.worktrees) {
+    if (!registered.createdByRun) {
       continue;
     }
-    const verdict = worktreeVerdict(context, worktree);
-    if ("blocker" in verdict) {
+    const worktree = inventory.worktrees.find(
+      (item) => item.path === registered.path
+    );
+    if (worktree) {
+      assessment.keptWorktrees.push(worktree.path);
+    }
+    branches.add(worktree ? worktree.branch : registered.branch);
+    const verdict = worktree
+      ? liveVerdict(context, worktree)
+      : absentVerdict(context, registered);
+    if (verdict && "blocker" in verdict) {
       assessment.blockers.push(verdict.blocker);
-    } else if ("unit" in verdict) {
+    } else if (verdict) {
       assessment.units.push(verdict.unit);
-    } else {
-      assessment.discardable.push(verdict.discardable);
+    }
+  }
+  for (const branch of declared.proposals.keys()) {
+    if (!branches.has(branch)) {
+      assessment.blockers.push(
+        `\`--queued-proposal\` names ${branch}, which is not a branch this run created. Name each branch exactly as the run registered it.`
+      );
     }
   }
   return assessment;
@@ -484,8 +603,9 @@ const plural = (count: number, noun: string): string =>
 /** One plain sentence set for the receipt and the command's own output. */
 export const queuedSummary = (
   lease: LoopLease,
-  units: readonly QueuedUnit[]
+  assessment: QueuedAssessment
 ): string => {
+  const { keptWorktrees, units } = assessment;
   const proposed = units.filter((unit) => unit.withoutProposal === null);
   const bare = units.length - proposed.length;
   const counts =
@@ -501,433 +621,9 @@ export const queuedSummary = (
               ]
             : []),
         ].join(" and ");
-  return `Queued for review, not merged: ${counts}. Nothing was added to ${lease.targetRef}. Uncommitted work in the primary checkout was left exactly as it was; each unit lists the paths its branch carries a copy of. A clean, pushed worktree of this run is removed after this receipt is written, and its local branch keeps the work.`;
-};
-
-export interface QueuedWorktreeCleanup {
-  kept: { path: string; reason: string }[];
-  removed: string[];
-}
-
-interface RemovalCandidate {
-  branch: string | null;
-  discard: boolean;
-  headSha: string;
-  path: string;
-}
-
-/**
- * Removes a run-created checkout with Git's own unforced removal, which
- * refuses one holding changes or untracked files. Returns why it was kept.
- */
-const removeCleanWorktree = (
-  repositoryPath: string,
-  path: string
-): string | null => {
-  const removal = runGit(repositoryPath, ["worktree", "remove", path], true);
-  return removal.exitCode === 0
-    ? null
-    : `Git did not remove it: ${removal.stderr.trim() || removal.stdout.trim()}`;
-};
-
-/**
- * Deletes the branches of removed checkouts that queued nothing, once
- * unattached: only a branch this run registered for that checkout and that
- * did not exist when the run started, so an earlier branch is never taken.
- */
-const deleteDiscardedBranches = (
-  lease: LoopLease,
-  discarded: readonly RemovalCandidate[]
-): void => {
-  const targetRevision = resolvedCurrentTargetRevision(lease);
-  if (!targetRevision || discarded.length === 0) {
-    return;
-  }
-  const targetBranch = targetBranchForRef(
-    lease.primaryCheckout,
-    lease.targetRef
-  );
-  const opening = new Set(
-    (lease.openingBranches ?? []).map((branch) => branch.name)
-  );
-  const heads = new Map(
-    discarded.flatMap((item): [string, string][] =>
-      item.branch &&
-      !opening.has(item.branch) &&
-      lease.worktrees.some(
-        (worktree) =>
-          worktree.createdByRun &&
-          worktree.path === item.path &&
-          worktree.branch === item.branch
-      )
-        ? [[item.branch, item.headSha]]
-        : []
-    )
-  );
-  deleteTargetContainedBranches({
-    branches: captureInventory(lease.primaryCheckout).branches.filter(
-      (branch) =>
-        heads.get(branch.name) === branch.sha &&
-        !isLossyName(branch.name) &&
-        branch.name !== targetBranch &&
-        branch.worktreePath === null
-    ),
-    repositoryPath: lease.primaryCheckout,
-    targetRevision,
-  });
-};
-
-/** Why a checkout the run just proved must stay after all, or null. */
-const keepReason = (
-  lease: LoopLease,
-  fresh: RepositoryInventory,
-  stillProven: ReadonlyMap<string, string>,
-  candidate: RemovalCandidate
-): string | null => {
-  if (stillProven.get(candidate.path) !== candidate.headSha) {
-    return "It changed while the run was closing.";
-  }
-  if (
-    candidate.path === fresh.repository.currentCheckout ||
-    lease.worktrees.some(
-      (worktree) =>
-        worktree.path === candidate.path && worktree.role === "controller"
-    )
-  ) {
-    return "It is the checkout this run was controlled from.";
-  }
-  return liveClaimFor(
-    readCoordinationDocumentFromCommonDirectory(lease.commonGitDirectory),
-    lease.commonGitDirectory,
-    candidate.path
-  )
-    ? "A worktree claim still holds it."
-    : null;
-};
-
-const removeProvenWorktrees = (
-  lease: LoopLease,
-  repositoryPath: string,
-  candidates: readonly RemovalCandidate[],
-  noProposal: string | null,
-  cleanup: QueuedWorktreeCleanup
-): void => {
-  const fresh = captureInventory(repositoryPath);
-  const proven = assessQueuedWork(lease, fresh, noProposal);
-  const stillProven = new Map<string, string>([
-    ...proven.units.map((unit): [string, string] => [
-      unit.worktree,
-      unit.headSha,
-    ]),
-    ...proven.discardable.map((item): [string, string] => [
-      item.path,
-      item.headSha,
-    ]),
-  ]);
-  const discarded: RemovalCandidate[] = [];
-  for (const candidate of candidates) {
-    const reason =
-      keepReason(lease, fresh, stillProven, candidate) ??
-      removeCleanWorktree(lease.primaryCheckout, candidate.path);
-    if (reason) {
-      cleanup.kept.push({ path: candidate.path, reason });
-      continue;
-    }
-    cleanup.removed.push(candidate.path);
-    if (candidate.discard) {
-      discarded.push(candidate);
-    }
-  }
-  deleteDiscardedBranches(lease, discarded);
-};
-
-/**
- * After a Queue or Sweep run has closed, removes each of its checkouts that
- * a fresh inventory still proves clean and either pushed with its proposal
- * state or contained in the target. The pushed branch stays, locally and on
- * the remote; a branch the target contains is deleted with its checkout.
- * Anything that changed, is claimed, is the controller's own checkout, or
- * that Git refuses to remove is kept and named. The run is already closed,
- * so this never blocks or throws: a failure keeps what is left.
- */
-export const removeQueuedWorktrees = (
-  lease: LoopLease,
-  repositoryPath: string,
-  assessed: QueuedAssessment,
-  noProposal: string | null
-): QueuedWorktreeCleanup => {
-  const cleanup: QueuedWorktreeCleanup = { kept: [], removed: [] };
-  const candidates: RemovalCandidate[] = [
-    ...assessed.units.map((unit) => ({
-      branch: unit.branch,
-      discard: false,
-      headSha: unit.headSha,
-      path: unit.worktree,
-    })),
-    ...assessed.discardable.map((item) => ({ ...item, discard: true })),
-  ];
-  try {
-    removeProvenWorktrees(
-      lease,
-      repositoryPath,
-      candidates,
-      noProposal,
-      cleanup
-    );
-  } catch (error) {
-    const settled = new Set([
-      ...cleanup.removed,
-      ...cleanup.kept.map((item) => item.path),
-    ]);
-    const detail = error instanceof Error ? error.message : String(error);
-    for (const candidate of candidates) {
-      if (!settled.has(candidate.path)) {
-        cleanup.kept.push({
-          path: candidate.path,
-          reason: `Cleanup stopped before it: ${detail}`,
-        });
-      }
-    }
-  }
-  return cleanup;
-};
-
-// ---------------------------------------------------------------------------
-// What closed Queue and Sweep runs already put up
-
-/**
- * The record a closed Queue or Sweep run leaves beside the loop state, in
- * its own file so older runtimes never meet it: the branches it pushed for
- * review. A later run reads it to say so before the same uncommitted bytes
- * are proposed again as new work.
- */
-export interface QueuedWorkRecord {
-  closedAt: string;
-  kind: "queued-work";
-  mode: "queue" | "sweep";
-  primaryCheckout: string;
-  runId: string;
-  schemaVersion: 1;
-  targetRef: string;
-  units: QueuedUnit[];
-}
-
-const queuedWorkDirectory = (commonGitDirectory: string): string =>
-  resolve(commonGitDirectory, STATE_DIRECTORY, QUEUED_WORK_DIRECTORY);
-
-export const writeQueuedWorkRecord = (
-  lease: LoopLease,
-  units: readonly QueuedUnit[],
-  closedAt: string
-): void => {
-  if (units.length === 0) {
-    return;
-  }
-  const record = validateSchema<QueuedWorkRecord>("queued-work", {
-    closedAt,
-    kind: "queued-work",
-    mode: lease.mode,
-    primaryCheckout: lease.primaryCheckout,
-    runId: lease.runId,
-    schemaVersion: 1,
-    targetRef: lease.targetRef,
-    units,
-  });
-  const directory = ensureStateDirectory(
-    lease.commonGitDirectory,
-    queuedWorkDirectory(lease.commonGitDirectory)
-  );
-  const path = resolve(directory, `${lease.runId}.json`);
-  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(record, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
-  renameSync(temporaryPath, path);
-};
-
-interface StoredQueuedWork {
-  path: string;
-  record: QueuedWorkRecord;
-}
-
-// A record that is missing, unreadable, or not this shape is skipped: it
-// only ever adds a notice, so it never stops a command.
-const storedQueuedWork = (commonGitDirectory: string): StoredQueuedWork[] => {
-  const directory = queuedWorkDirectory(commonGitDirectory);
-  let names: string[];
-  try {
-    names = readdirSync(directory).filter((name) => name.endsWith(".json"));
-  } catch {
-    return [];
-  }
-  const stored: StoredQueuedWork[] = [];
-  for (const name of names.sort((left, right) => left.localeCompare(right))) {
-    const path = resolve(directory, name);
-    try {
-      stored.push({
-        path,
-        record: validateSchema<QueuedWorkRecord>(
-          "queued-work",
-          JSON.parse(readFileSync(path, "utf8")) as unknown
-        ),
-      });
-    } catch {
-      // Skipped, as above.
-    }
-  }
-  return stored;
-};
-
-export const readQueuedWorkRecords = (
-  repositoryPath: string
-): QueuedWorkRecord[] =>
-  storedQueuedWork(
-    locateRepository(repositoryPath).repository.commonGitDirectory
-  ).map((item) => item.record);
-
-/**
- * Whether a queued head is still waiting: present locally and not in the
- * target, by ancestry or patch equivalence. Absence is read from Git's exit
- * code alone, and an audit Git could not finish counts as still waiting, so
- * an answer lost under load never forgets queued work.
- */
-const stillQueued = (
-  repositoryPath: string,
-  targetRevision: string,
-  headSha: string
-): boolean => {
-  if (
-    runGit(repositoryPath, ["cat-file", "-e", `${headSha}^{commit}`], true)
-      .exitCode !== 0
-  ) {
-    return false;
-  }
-  try {
-    return (
-      targetContainmentAudit(repositoryPath, targetRevision, headSha).method ===
-      null
-    );
-  } catch {
-    return true;
-  }
-};
-
-/**
- * Forgets every record whose branches are all merged or gone, or that has
- * passed its retention. Runs at loop start, under the loop lock.
- */
-export const pruneQueuedWorkRecords = (
-  inventory: RepositoryInventory
-): void => {
-  const { commonGitDirectory, primaryCheckout } = inventory.repository;
-  try {
-    const targetRevision = resolveCommit(primaryCheckout, inventory.targetRef);
-    if (!targetRevision) {
-      return;
-    }
-    const now = Date.now();
-    for (const { path, record } of storedQueuedWork(commonGitDirectory)) {
-      const expired = !(
-        now - Date.parse(record.closedAt) <
-        QUEUED_WORK_RETENTION_MS
-      );
-      if (
-        expired ||
-        !record.units.some((unit) =>
-          stillQueued(primaryCheckout, targetRevision, unit.headSha)
-        )
-      ) {
-        rmSync(path, { force: true });
-      }
-    }
-  } catch {
-    // Housekeeping only: a record that could not be judged or removed stays
-    // for the next start, and never stops this one.
-  }
-};
-
-/** Uncommitted primary content that an earlier run already put up. */
-export interface QueuedWorkNotice {
-  branch: string;
-  headSha: string;
-  message: string;
-  paths: string[];
-  proposalIds: string[];
-  runId: string;
-  withoutProposal: string | null;
-}
-
-const noticeFor = (
-  record: QueuedWorkRecord,
-  unit: QueuedUnit,
-  paths: string[]
-): QueuedWorkNotice => {
-  const where =
-    unit.proposalIds.length > 0
-      ? `proposal ${unit.proposalIds.join(", ")}`
-      : "pushed without a proposal";
-  return {
-    branch: unit.branch,
-    headSha: unit.headSha,
-    message: `${paths.join(", ")} in the primary checkout ${paths.length === 1 ? "is" : "are"} already queued for review, not merged: branch ${unit.branch} at ${unit.headSha} (${where}) carries the same bytes, put up by ${record.runId}. Do not propose ${paths.length === 1 ? "it" : "them"} again as new work; say ${paths.length === 1 ? "it is" : "they are"} already up, or update that branch and its proposal if the content should change.`,
-    paths,
-    proposalIds: unit.proposalIds,
-    runId: record.runId,
-    withoutProposal: unit.withoutProposal,
-  };
-};
-
-const noticesFrom = (
-  repositoryPath: string,
-  inventoryInput?: RepositoryInventory
-): QueuedWorkNotice[] => {
-  const stored = storedQueuedWork(
-    (inventoryInput ?? locateRepository(repositoryPath)).repository
-      .commonGitDirectory
-  );
-  if (stored.length === 0) {
-    // The usual case costs no inventory.
-    return [];
-  }
-  const inventory = inventoryInput ?? captureInventory(repositoryPath);
-  const { primaryCheckout } = inventory.repository;
-  const primary = inventory.worktrees.find((worktree) => worktree.isPrimary);
-  const targetRevision = resolveCommit(primaryCheckout, inventory.targetRef);
-  if (!(primary?.changes.length && targetRevision)) {
-    return [];
-  }
-  const notices: QueuedWorkNotice[] = [];
-  for (const { record } of stored) {
-    for (const unit of record.units) {
-      // The cheap comparison first; the merge audit only for a match.
-      const paths = primaryCopiesOf(primary, unit.headSha, targetRevision);
-      if (
-        paths.length > 0 &&
-        stillQueued(primaryCheckout, targetRevision, unit.headSha)
-      ) {
-        notices.push(noticeFor(record, unit, paths));
-      }
-    }
-  }
-  return notices;
-};
-
-/**
- * Names every uncommitted path in the primary checkout whose bytes a closed
- * Queue or Sweep run already pushed for review and that is still unmerged.
- * Read-only, and judged from the current bytes: once the person edits a
- * path again, it is new work and is no longer named. It is advice beside a
- * command's own result, so a failure to read it never fails that command.
- */
-export const queuedWorkNotices = (
-  repositoryPath: string,
-  inventory?: RepositoryInventory
-): QueuedWorkNotice[] => {
-  try {
-    return noticesFrom(repositoryPath, inventory);
-  } catch {
-    return [];
-  }
+  const kept =
+    keptWorktrees.length === 0
+      ? ""
+      : ` The run's ${keptWorktrees.length === 1 ? "worktree was" : `${keptWorktrees.length} worktrees were`} kept. Remove one when you no longer need it with \`git worktree remove <path>\`, which refuses a checkout that holds changes; its branch keeps the work.`;
+  return `Queued for review, not merged: ${counts}. Nothing was added to ${lease.targetRef}, and finalization deleted no checkout, branch, or file. Uncommitted work in the primary checkout was left exactly as it was.${kept}`;
 };

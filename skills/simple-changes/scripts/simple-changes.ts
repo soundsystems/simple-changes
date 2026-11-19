@@ -175,7 +175,6 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
-import { queuedWorkNotices } from "./lib/queued-completion.ts";
 import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
@@ -485,7 +484,8 @@ Usage:
   simple-changes loop end --run-id ID --agent-id ID [--reason TEXT]
     [--json] [--repo PATH]
   simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
-    [--awaiting-user TEXT ...] [--no-proposal TEXT] [--json] [--repo PATH]
+    [--awaiting-user TEXT ...] [--queued-proposal BRANCH=ID ...]
+    [--no-proposal TEXT] [--json] [--repo PATH]
   simple-changes loop turn-check [--hook] [--harness ID] [--json]
   simple-changes harness stop-hook [--harness claude-code|codex] [--write]
     [--json]
@@ -750,6 +750,9 @@ interface CliOptions {
   providerReceiptPath?: string;
   purpose?: string;
   questions?: RepoPolicy["questions"];
+  // loop finalize --queued-proposal BRANCH=ID: the proposal that carries a
+  // Queue or Sweep run's pushed branch, once per branch.
+  queuedProposals: string[];
   // loop hold-unit --readiness-evidence: each failed-readiness citation.
   readinessEvidence: string[];
   ready: boolean;
@@ -844,6 +847,7 @@ const VALUED_OPTIONS = new Set([
   "--migration-target",
   "--mode",
   "--no-proposal",
+  "--queued-proposal",
   "--observation-digest",
   "--owner-ref",
   "--opening-remote-inventory",
@@ -1302,6 +1306,16 @@ const applySetupValuedOption = (
   return false;
 };
 
+// Options that may be given more than once, each adding one text value.
+const REPEATED_TEXT_OPTIONS: Record<
+  string,
+  "awaitingUser" | "queuedProposals" | "readinessEvidence" | undefined
+> = {
+  "--awaiting-user": "awaitingUser",
+  "--queued-proposal": "queuedProposals",
+  "--readiness-evidence": "readinessEvidence",
+};
+
 const applyLoopValuedOption = (
   options: CliOptions,
   option: string,
@@ -1369,12 +1383,9 @@ const applyLoopValuedOption = (
     options.evidencePaths.push(resolve(value));
     return true;
   }
-  if (option === "--awaiting-user") {
-    options.awaitingUser.push(value);
-    return true;
-  }
-  if (option === "--readiness-evidence") {
-    options.readinessEvidence.push(value);
+  const repeated = REPEATED_TEXT_OPTIONS[option];
+  if (repeated) {
+    options[repeated].push(value);
     return true;
   }
   if (option === "--root") {
@@ -1719,6 +1730,7 @@ const parseOptions = (args: string[]): CliOptions => {
     overrideHalt: false,
     positional: [],
     productionAuthorized: false,
+    queuedProposals: [],
     readinessEvidence: [],
     ready: false,
     releaseClaim: false,
@@ -4323,29 +4335,19 @@ const renderHeldUnits = (
 // A closed Queue or Sweep run, in its own terms: never "completed" work.
 const renderQueuedClose = (
   runId: string,
-  queued: LoopFinalizationQueued,
-  result: Pick<LoopFinalizationResult, "queuedWorktrees">
+  queued: LoopFinalizationQueued
 ): string =>
   [
     `Closed ${runId}. ${queued.summary}\n`,
     ...queued.units.map(
       (unit) =>
         `Queued, not merged: ${unit.branch} at ${unit.headSha} on ${unit.remote}, ${
-          unit.withoutProposal === null
-            ? `proposal ${unit.proposalIds.join(", ")}`
-            : `pushed without a proposal (${unit.withoutProposal})`
-        }${
-          unit.primaryCopies.length > 0
-            ? `; it carries a copy of the primary checkout's uncommitted ${unit.primaryCopies.join(", ")}`
-            : ""
+          unit.proposalId === null
+            ? `pushed without a proposal (${unit.withoutProposal})`
+            : `proposal ${unit.proposalId}`
         }.\n`
     ),
-    ...(result.queuedWorktrees?.removed ?? []).map(
-      (path) => `Removed its clean, pushed worktree ${path}.\n`
-    ),
-    ...(result.queuedWorktrees?.kept ?? []).map(
-      ({ path, reason }) => `Kept worktree ${path}: ${reason}\n`
-    ),
+    ...queued.keptWorktrees.map((path) => `Kept worktree ${path}.\n`),
   ].join("");
 
 // A cleanup's non-fatal notes, one per line.
@@ -4415,6 +4417,7 @@ const runLoopFinalize = (
           removeRunWorkDirectories(workRepository, runId)
         );
       },
+      queuedProposals: options.queuedProposals,
     }
   );
   if (result.outcome === "relinquished" && options.awaitingUser.length > 0) {
@@ -4451,7 +4454,7 @@ const runLoopFinalize = (
     options.json,
     `${
       result.receipt.queued
-        ? renderQueuedClose(runId, result.receipt.queued, result)
+        ? renderQueuedClose(runId, result.receipt.queued)
         : `Completed and released ${runId}. Normalized ${result.cleanup.cleanedPrimaryPaths.length} target-equivalent primary path(s), removed ${result.cleanup.removedWorktrees.length} worktree(s) and ${result.cleanup.removedBranches.length} branch(es); pruned ${result.cleanup.prunedWorktreeMetadata} stale worktree record(s); released ${result.cleanup.releasedClaims.length} finished or orphaned worktree claim(s).\n`
     }${renderHeldUnits(result.receipt.heldUnits)}${renderFinalizeArchivePruning(result.archivePruning)}${renderExpiredExternalDeletionPins(result.expiredExternalDeletionPins)}${renderCleanupNotes(result.cleanup.notes)}${renderRemoteBranchCleanup(result.receipt.remoteBranches)}${renderRemovedWorkDirectories(removedWorkDirectories)}`
   );
@@ -4724,10 +4727,8 @@ const runLoopStart = (options: CliOptions): void => {
   const holds = informationalHolds(options.repo);
   const freshness = leaseRuntimeFreshness(lease);
   const resumedQuestions = resumedAwaitingUser(lease);
-  const alreadyQueued = queuedWorkNotices(options.repo);
   writeOutput(
     {
-      ...(alreadyQueued.length > 0 ? { alreadyQueued } : {}),
       holds,
       inheritedAwaitingUser: resumedQuestions,
       lease,
@@ -4743,7 +4744,7 @@ const runLoopStart = (options: CliOptions): void => {
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
-    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}${alreadyQueued.map((notice) => `Note: ${notice.message}\n`).join("")}`
+    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
   );
 };
 

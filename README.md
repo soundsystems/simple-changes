@@ -354,7 +354,8 @@ simple-changes loop archive-recorded --run-id ID --agent-id ID
 simple-changes loop end --run-id ID --agent-id ID [--reason TEXT]
   [--json] [--repo PATH]
 simple-changes loop finalize --run-id ID --agent-id ID --reason TEXT
-  [--awaiting-user TEXT ...] [--no-proposal TEXT] [--json] [--repo PATH]
+  [--awaiting-user TEXT ...] [--queued-proposal BRANCH=ID ...]
+  [--no-proposal TEXT] [--json] [--repo PATH]
 simple-changes worktree status [--json] [--repo PATH]
 simple-changes worktree observe [--json] [--repo PATH]
 simple-changes worktree request --claim-id ID --run-id ID

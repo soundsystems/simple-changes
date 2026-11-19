@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
@@ -17,12 +23,12 @@ import {
 } from "../../../skills/simple-changes/scripts/lib/loop-lease.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
 import {
+  assessQueuedWork,
   QUEUED_FOR_REVIEW,
-  queuedWorkNotices,
-  readQueuedWorkRecords,
+  queuedDeclarations,
 } from "../../../skills/simple-changes/scripts/lib/queued-completion.ts";
 import { recordProposalAuthors } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
-import { claimWorktree } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
+import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
   createTestRepository,
   git,
@@ -45,6 +51,7 @@ afterEach(() => {
 });
 
 const PERSON_EDIT = "# Fixture\n\nA sentence the person typed.\n";
+const PROPOSAL = "example/project!7";
 
 type Mode = "integrate" | "queue" | "ship" | "sweep";
 
@@ -125,24 +132,44 @@ const queueUnit = (
 const recordProposal = (
   run: OpenRun,
   head: string,
-  proposalId = "example/project!7"
+  proposalId = PROPOSAL,
+  base = run.lease.targetRevision
 ): void => {
   recordProposalAuthors({
-    base: run.lease.targetRevision,
+    base,
     head,
     proposalId,
     repositoryPath: run.root,
   });
 };
 
-const finalize = (run: OpenRun, noProposal?: string) =>
+interface FinalizeOptions {
+  noProposal?: string;
+  /** `<branch>=<proposal id>` entries, as `--queued-proposal` takes them. */
+  proposals?: string[];
+}
+
+const finalize = (
+  run: OpenRun,
+  { noProposal, proposals = [] }: FinalizeOptions = {}
+) =>
   finalizeLoop(
     run.root,
     run.lease.runId,
     "controller",
     "The change is up for review.",
-    noProposal === undefined ? {} : { noProposal }
+    {
+      ...(noProposal === undefined ? {} : { noProposal }),
+      queuedProposals: proposals,
+    }
   );
+
+/** A unit pushed with its proposal recorded, ready to be named at finalize. */
+const proposedUnit = (run: OpenRun, options: QueuedUnitOptions = {}) => {
+  const unit = queueUnit(run, options);
+  recordProposal(run, unit.head);
+  return { ...unit, named: [`${unit.branch}=${PROPOSAL}`] };
+};
 
 const primaryState = (root: string) => ({
   branch: git(root, ["branch", "--show-current"]),
@@ -152,14 +179,26 @@ const primaryState = (root: string) => ({
   status: git(root, ["status", "--porcelain=v1"]),
 });
 
+/** Someone else lands a change on the target, and the run fetches it. */
+const moveTarget = (run: OpenRun, file: string, contents: string): void => {
+  const other = join(run.base, "other");
+  git(run.base, ["clone", run.remote, other]);
+  git(other, ["config", "user.name", "Someone Else"]);
+  git(other, ["config", "user.email", "else@simple-changes.invalid"]);
+  writeFixture(other, file, contents);
+  git(other, ["add", file]);
+  git(other, ["commit", "-m", "Another change"]);
+  git(other, ["push", "origin", "main:main"]);
+  git(run.root, ["fetch", "origin"]);
+};
+
 describe("Queue and Sweep finalization", () => {
-  test("closes a Queue run whose branch is pushed with a recorded proposal, and the next request starts", () => {
+  test("closes a Queue run whose branch is pushed with its proposal named, and the next request starts", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
+    const unit = proposedUnit(run);
     const before = primaryState(run.root);
 
-    const result = finalize(run);
+    const result = finalize(run, { proposals: unit.named });
 
     expect(result.blockers).toEqual([]);
     expect(result.outcome).toBe("completed");
@@ -172,13 +211,13 @@ describe("Queue and Sweep finalization", () => {
       targetRevision: null,
     });
     expect(result.receipt.queued).toMatchObject({
+      keptWorktrees: [unit.path],
       status: QUEUED_FOR_REVIEW,
       units: [
         {
           branch: unit.branch,
           headSha: unit.head,
-          primaryCopies: ["README.md"],
-          proposalIds: ["example/project!7"],
+          proposalId: PROPOSAL,
           remote: "origin",
           remoteBranch: unit.branch,
           withoutProposal: null,
@@ -189,12 +228,14 @@ describe("Queue and Sweep finalization", () => {
     expect(result.receipt.queued?.summary).toContain(
       "Queued for review, not merged"
     );
+    expect(result.receipt.queued?.summary).toContain("git worktree remove");
     // The person's uncommitted source is exactly as they left it.
     expect(primaryState(run.root)).toEqual(before);
     expect(before.status).toBe("M README.md");
-    // The clean, pushed worktree is removed; its branch keeps the work.
-    expect(existsSync(unit.path)).toBe(false);
-    expect(result.queuedWorktrees).toEqual({ kept: [], removed: [unit.path] });
+    // Finalization deletes nothing: the run's own worktree is kept.
+    expect(existsSync(unit.path)).toBe(true);
+    expect(result.cleanup.removedWorktrees).toEqual([]);
+    expect(result.cleanup.removedBranches).toEqual([]);
     expect(git(run.root, ["rev-parse", unit.branch])).toBe(unit.head);
     expect(git(run.remote, ["rev-parse", unit.branch])).toBe(unit.head);
     // Nothing was merged, and the old branch is neither deleted nor a blocker.
@@ -220,17 +261,18 @@ describe("Queue and Sweep finalization", () => {
     expect(refused.receipt.blocksNextShipment).toBe(true);
     expect(refused.blockers.join("\n")).toContain("--no-proposal");
     expect(refused.blockers.join("\n")).toContain(silentUnit.branch);
-    expect(existsSync(silentUnit.path)).toBe(true);
 
     const run = openRun({});
     const unit = queueUnit(run);
-    const result = finalize(run, "The shared folder remote has no reviews.");
+    const result = finalize(run, {
+      noProposal: "The shared folder remote has no reviews.",
+    });
     expect(result.outcome).toBe("completed");
     expect(result.receipt.blocksNextShipment).toBe(false);
     expect(result.receipt.queued?.units).toMatchObject([
       {
         branch: unit.branch,
-        proposalIds: [],
+        proposalId: null,
         withoutProposal: "The shared folder remote has no reviews.",
       },
     ]);
@@ -246,6 +288,9 @@ describe("Queue and Sweep finalization", () => {
     const first = finalize(run);
     expect(first.outcome).toBe("relinquished");
     expect(first.blockers.join("\n")).toContain("proposal record-authors");
+    expect(first.blockers.join("\n")).toContain(
+      `--queued-proposal ${unit.branch}=<id>`
+    );
     expect(() => startLoop(run.root, "second-agent", "queue")).toThrow(
       "was relinquished"
     );
@@ -257,7 +302,8 @@ describe("Queue and Sweep finalization", () => {
       run.root,
       run.lease.runId,
       "second-agent",
-      "The proposal is recorded now."
+      "The proposal is recorded now.",
+      { queuedProposals: [`${unit.branch}=${PROPOSAL}`] }
     );
     expect(second.outcome).toBe("completed");
     expect(second.receipt.queued?.units).toHaveLength(1);
@@ -268,67 +314,31 @@ describe("Queue and Sweep finalization", () => {
 
   test("the person may keep editing their checkout while the run is open", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
+    const unit = proposedUnit(run);
     const later = `${PERSON_EDIT}Typed while the change went up.\n`;
     writeFixture(run.root, "README.md", later);
 
-    const result = finalize(run);
+    const result = finalize(run, { proposals: unit.named });
 
     expect(result.outcome).toBe("completed");
-    // The branch no longer carries a copy of what is in the checkout now.
-    expect(result.receipt.queued?.units[0]?.primaryCopies).toEqual([]);
     expect(readFileSync(join(run.root, "README.md"), "utf8")).toBe(later);
-    expect(queuedWorkNotices(run.root)).toEqual([]);
   });
 
-  test("keeps a queued worktree its author still claims, and closes all the same", () => {
+  test("never removes a queued worktree, so a file Git ignores there survives", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
-    claimWorktree(run.root, "author", unit.path, "test");
+    appendFileSync(join(run.root, ".git", "info", "exclude"), ".env.local\n");
+    const unit = proposedUnit(run);
+    writeFixture(unit.path, ".env.local", "TOKEN=only-copy\n");
+    expect(git(unit.path, ["status", "--porcelain=v1"])).toBe("");
 
-    const result = finalize(run);
+    const result = finalize(run, { proposals: unit.named });
 
-    expect(result.blockers).toEqual([]);
     expect(result.outcome).toBe("completed");
-    expect(result.queuedWorktrees).toEqual({
-      kept: [{ path: unit.path, reason: "A worktree claim still holds it." }],
-      removed: [],
-    });
-    expect(existsSync(unit.path)).toBe(true);
-    expect(startLoop(run.root, "second-agent", "queue").runId).not.toBe(
-      run.lease.runId
+    expect(result.receipt.queued?.keptWorktrees).toEqual([unit.path]);
+    expect(readFileSync(join(unit.path, ".env.local"), "utf8")).toBe(
+      "TOKEN=only-copy\n"
     );
-  });
-
-  test("never removes the checkout a resumed run is controlled from", () => {
-    const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    expect(finalize(run).outcome).toBe("relinquished");
-    recordProposal(run, unit.head);
-    // The next controller resumes from the run's own prepared worktree.
-    startLoop(unit.path, "second-agent", "resume");
-
-    const result = finalizeLoop(
-      unit.path,
-      run.lease.runId,
-      "second-agent",
-      "The proposal is recorded now."
-    );
-
-    expect(result.blockers).toEqual([]);
-    expect(result.outcome).toBe("completed");
-    expect(result.queuedWorktrees).toEqual({
-      kept: [
-        {
-          path: unit.path,
-          reason: "It is the checkout this run was controlled from.",
-        },
-      ],
-      removed: [],
-    });
-    expect(existsSync(unit.path)).toBe(true);
+    expect(git(unit.path, ["rev-parse", "HEAD"])).toBe(unit.head);
   });
 
   test("closes a Sweep run with every unit queued", () => {
@@ -338,17 +348,22 @@ describe("Queue and Sweep finalization", () => {
     recordProposal(run, first.head, "example/project!1");
     recordProposal(run, second.head, "example/project!2");
 
-    const result = finalize(run);
+    const result = finalize(run, {
+      proposals: [
+        `${first.branch}=example/project!1`,
+        `${second.branch}=example/project!2`,
+      ],
+    });
 
     expect(result.outcome).toBe("completed");
-    expect(
-      result.receipt.queued?.units.map((unit) => unit.proposalIds)
-    ).toEqual([["example/project!1"], ["example/project!2"]]);
-    expect(existsSync(first.path)).toBe(false);
-    expect(existsSync(second.path)).toBe(false);
+    expect(result.receipt.queued?.units.map((unit) => unit.proposalId)).toEqual(
+      ["example/project!1", "example/project!2"]
+    );
+    expect(existsSync(first.path)).toBe(true);
+    expect(existsSync(second.path)).toBe(true);
   });
 
-  test("removes a run-created worktree that queued nothing, with its branch", () => {
+  test("keeps a run-created worktree that queued nothing, with its branch", () => {
     const run = openRun({ forge: true });
     const unit = queueUnit(run, { commit: false });
     git(unit.path, ["checkout", "--", "README.md"]);
@@ -357,22 +372,48 @@ describe("Queue and Sweep finalization", () => {
 
     expect(result.outcome).toBe("completed");
     expect(result.receipt.queued?.units).toEqual([]);
+    expect(result.receipt.queued?.keptWorktrees).toEqual([unit.path]);
     expect(result.receipt.queued?.summary).toContain("nothing was queued");
-    expect(existsSync(unit.path)).toBe(false);
-    expect(git(run.root, ["branch", "--list", unit.branch])).toBe("");
+    expect(existsSync(unit.path)).toBe(true);
+    expect(git(run.root, ["rev-parse", unit.branch])).toBe(
+      run.lease.targetRevision
+    );
+  });
+
+  test("a queued branch whose checkout is already gone still counts", () => {
+    const run = openRun({ forge: true });
+    const unit = proposedUnit(run);
+    git(run.root, ["worktree", "remove", unit.path]);
+
+    const result = finalize(run, { proposals: unit.named });
+
+    expect(result.outcome).toBe("completed");
+    expect(result.receipt.queued).toMatchObject({
+      keptWorktrees: [],
+      units: [{ branch: unit.branch, headSha: unit.head, worktree: null }],
+    });
   });
 });
 
 describe("what still blocks a Queue run", () => {
+  const blocked = (
+    run: OpenRun,
+    options: FinalizeOptions,
+    message: string
+  ): void => {
+    const result = finalize(run, options);
+    expect(result.blockers.join("\n")).toContain(message);
+    expect(result.outcome).toBe("relinquished");
+    expect(result.receipt.blocksNextShipment).toBe(true);
+    expect(result.receipt.queued).toBeUndefined();
+  };
+
   test("uncommitted work in the queued worktree", () => {
     const run = openRun({ forge: true });
     const unit = queueUnit(run, { commit: false });
 
-    const result = finalize(run);
+    blocked(run, {}, "uncommitted");
 
-    expect(result.outcome).toBe("relinquished");
-    expect(result.blockers.join("\n")).toContain("uncommitted");
-    expect(result.receipt.queued).toBeUndefined();
     expect(readFileSync(join(unit.path, "README.md"), "utf8")).toBe(
       PERSON_EDIT
     );
@@ -380,96 +421,251 @@ describe("what still blocks a Queue run", () => {
 
   test("commits that were never pushed", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run, { push: false });
-    recordProposal(run, unit.head);
+    const unit = proposedUnit(run, { push: false });
 
-    const result = finalize(run);
+    blocked(run, { proposals: unit.named }, "is not pushed");
 
-    expect(result.outcome).toBe("relinquished");
-    expect(result.blockers.join("\n")).toContain("not pushed");
-    expect(existsSync(unit.path)).toBe(true);
     expect(git(unit.path, ["rev-parse", "HEAD"])).toBe(unit.head);
   });
 
   test("a commit made after the push", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
+    const unit = proposedUnit(run);
     writeFixture(unit.path, "later.md", "later\n");
     git(unit.path, ["add", "later.md"]);
     git(unit.path, ["commit", "-m", "Later"]);
 
-    const result = finalize(run);
+    blocked(run, { proposals: unit.named }, "is not pushed");
 
-    expect(result.outcome).toBe("relinquished");
-    expect(result.blockers.join("\n")).toContain("not pushed");
     expect(existsSync(join(unit.path, "later.md"))).toBe(true);
+  });
+
+  test("commits in a prepared worktree that was removed before they were pushed", () => {
+    const run = openRun({ forge: true });
+    const unit = queueUnit(run, { push: false });
+    git(run.root, ["worktree", "remove", unit.path]);
+
+    blocked(run, {}, `Queued branch ${unit.branch} at ${unit.head}`);
+
+    // The branch, and the unpushed commit on it, are still there.
+    expect(git(run.root, ["rev-parse", unit.branch])).toBe(unit.head);
+  });
+
+  test("a prepared worktree and its branch both gone", () => {
+    const run = openRun({ forge: true });
+    const unit = queueUnit(run, { push: false });
+    git(run.root, ["worktree", "remove", unit.path]);
+    git(run.root, ["branch", "-D", unit.branch]);
+
+    blocked(run, {}, "cannot be read");
+  });
+
+  test("a branch the server deleted after the push, whatever the local record says", () => {
+    const run = openRun({ forge: true });
+    const unit = proposedUnit(run);
+    git(run.remote, ["update-ref", "-d", `refs/heads/${unit.branch}`]);
+    // The remote-tracking ref still names the pushed commit.
+    expect(git(run.root, ["rev-parse", `origin/${unit.branch}`])).toBe(
+      unit.head
+    );
+
+    blocked(run, { proposals: unit.named }, "has no such branch");
+
+    expect(existsSync(unit.path)).toBe(true);
+  });
+
+  test("a branch the server now has at another commit", () => {
+    const run = openRun({ forge: true });
+    const unit = proposedUnit(run);
+    git(run.remote, [
+      "update-ref",
+      `refs/heads/${unit.branch}`,
+      run.lease.targetRevision,
+    ]);
+
+    blocked(
+      run,
+      { proposals: unit.named },
+      `is at ${run.lease.targetRevision}`
+    );
+  });
+
+  test("a remote that gives no answer", () => {
+    const run = openRun({ forge: true });
+    const unit = proposedUnit(run);
+    renameSync(run.remote, `${run.remote}.offline`);
+
+    blocked(run, { proposals: unit.named }, "Could not confirm");
+
+    expect(existsSync(unit.path)).toBe(true);
   });
 
   test("a proposal never opened where one is possible, whatever the controller says", () => {
     const run = openRun({ forge: true });
+    queueUnit(run);
+
+    blocked(
+      run,
+      { noProposal: "No time to open one." },
+      "github can open proposals"
+    );
+  });
+
+  test("a proposal recorded at another head of the branch", () => {
+    const run = openRun({ forge: true });
+    const unit = proposedUnit(run);
+    writeFixture(unit.path, "later.md", "later\n");
+    git(unit.path, ["add", "later.md"]);
+    git(unit.path, ["commit", "-m", "Later"]);
+    git(unit.path, ["push", "origin", `${unit.branch}:${unit.branch}`]);
+
+    blocked(
+      run,
+      { proposals: unit.named },
+      `is recorded at ${unit.head}, not at the queued head`
+    );
+  });
+
+  test("a proposal that the ledger does not record", () => {
+    const run = openRun({ forge: true });
     const unit = queueUnit(run);
 
-    const result = finalize(run, "No time to open one.");
+    blocked(
+      run,
+      { proposals: [`${unit.branch}=${PROPOSAL}`] },
+      "has no recorded head in the review ledger"
+    );
+  });
 
-    expect(result.outcome).toBe("relinquished");
-    expect(result.blockers.join("\n")).toContain("github can open proposals");
-    expect(existsSync(unit.path)).toBe(true);
+  test("a proposal recorded against a base the target does not contain", () => {
+    const run = openRun({ forge: true });
+    const unit = queueUnit(run, { push: false });
+    writeFixture(unit.path, "second.md", "second\n");
+    git(unit.path, ["add", "second.md"]);
+    git(unit.path, ["commit", "-m", "Second"]);
+    git(unit.path, ["push", "-u", "origin", `${unit.branch}:${unit.branch}`]);
+    const head = git(unit.path, ["rev-parse", "HEAD"]);
+    // Recorded as a proposal onto the unit's own first commit, not the target.
+    recordProposal(run, head, PROPOSAL, unit.head);
+
+    blocked(
+      run,
+      { proposals: [`${unit.branch}=${PROPOSAL}`] },
+      "not a proposal into this run's target"
+    );
+  });
+
+  test("one proposal for two branches at the same commit", () => {
+    const run = openRun({ forge: true, mode: "sweep" });
+    const first = queueUnit(run, { agentId: "first" });
+    const second = prepareAgentWorktree(
+      run.root,
+      run.lease.runId,
+      "second",
+      "put up second"
+    );
+    git(second.path, ["merge", "--ff-only", first.head]);
+    git(second.path, [
+      "push",
+      "-u",
+      "origin",
+      `${second.branch}:${second.branch}`,
+    ]);
+    recordProposal(run, first.head);
+
+    // Naming it for one branch leaves the other without a proposal.
+    const one = finalize(run, { proposals: [`${first.branch}=${PROPOSAL}`] });
+    expect(one.outcome).toBe("relinquished");
+    expect(one.blockers.join("\n")).toContain(
+      `No proposal is named for queued branch ${second.branch}`
+    );
+
+    startLoop(run.root, "controller", "resume");
+    blocked(
+      run,
+      {
+        proposals: [
+          `${first.branch}=${PROPOSAL}`,
+          `${second.branch}=${PROPOSAL}`,
+        ],
+      },
+      "one proposal carries one branch"
+    );
+  });
+
+  test("a proposal named for a branch the run did not create", () => {
+    const run = openRun({ forge: true });
+    const unit = proposedUnit(run);
+
+    blocked(
+      run,
+      { proposals: [...unit.named, "old-merged=example/project!9"] },
+      "old-merged, which is not a branch this run created"
+    );
+  });
+
+  test("a target that cannot be resolved is a blocker, never an empty result", () => {
+    const run = openRun({ forge: true });
+    queueUnit(run, { push: false });
+    const lease = readLoopLease(run.root) as LoopLease;
+    const inventory = captureInventory(run.root);
+    git(run.root, ["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
+    git(run.root, ["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    const assessment = assessQueuedWork(
+      lease,
+      inventory,
+      queuedDeclarations(undefined)
+    );
+
+    expect(assessment.units).toEqual([]);
+    expect(assessment.blockers).toHaveLength(1);
+    expect(assessment.blockers[0]).toContain("could not be resolved");
   });
 
   test("a target that moved so the queued branch no longer merges", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
-    const other = join(run.base, "other");
-    git(run.base, ["clone", run.remote, other]);
-    git(other, ["config", "user.name", "Someone Else"]);
-    git(other, ["config", "user.email", "else@simple-changes.invalid"]);
-    writeFixture(other, "README.md", "# Fixture\n\nA different sentence.\n");
-    git(other, ["commit", "-am", "Conflicting change"]);
-    git(other, ["push", "origin", "main:main"]);
-    git(run.root, ["fetch", "origin"]);
+    const unit = proposedUnit(run);
+    moveTarget(run, "README.md", "# Fixture\n\nA different sentence.\n");
 
-    const result = finalize(run);
-
-    expect(result.outcome).toBe("relinquished");
-    expect(result.blockers.join("\n")).toContain("no longer merges");
-    expect(existsSync(unit.path)).toBe(true);
+    blocked(run, { proposals: unit.named }, "no longer merges");
   });
 
   test("a target that moved without touching the queued work does not", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
-    const other = join(run.base, "other");
-    git(run.base, ["clone", run.remote, other]);
-    git(other, ["config", "user.name", "Someone Else"]);
-    git(other, ["config", "user.email", "else@simple-changes.invalid"]);
-    writeFixture(other, "unrelated.md", "unrelated\n");
-    git(other, ["add", "unrelated.md"]);
-    git(other, ["commit", "-m", "Unrelated change"]);
-    git(other, ["push", "origin", "main:main"]);
-    git(run.root, ["fetch", "origin"]);
+    const unit = proposedUnit(run);
+    moveTarget(run, "unrelated.md", "unrelated\n");
 
-    expect(finalize(run).outcome).toBe("completed");
+    expect(finalize(run, { proposals: unit.named }).outcome).toBe("completed");
   });
 
   test("a pause for the user's answer", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
+    const unit = proposedUnit(run);
 
     const result = finalizeLoop(
       run.root,
       run.lease.runId,
       "controller",
       "Waiting on the person.",
-      { awaitingUser: ["Should the footer change go up too?"] }
+      {
+        awaitingUser: ["Should the footer change go up too?"],
+        queuedProposals: unit.named,
+      }
     );
 
     expect(result.outcome).toBe("relinquished");
     expect(result.receipt.blocksNextShipment).toBe(true);
-    expect(existsSync(unit.path)).toBe(true);
+  });
+
+  test("a malformed proposal name is refused before anything is decided", () => {
+    const run = openRun({ forge: true });
+    queueUnit(run);
+
+    expect(() => finalize(run, { proposals: ["no-separator"] })).toThrow(
+      "--queued-proposal must be <branch>=<proposal id>"
+    );
+    expect(readLoopLease(run.root)?.controller?.status).toBe("active");
   });
 });
 
@@ -487,11 +683,13 @@ describe("Ship and Integrate finalization of the same situation", () => {
           buildPreviewPlan(opening, opening, compareSnapshots(opening, opening))
         );
       }
-      const unit = queueUnit(run);
-      recordProposal(run, unit.head);
+      const unit = proposedUnit(run);
       const before = primaryState(run.root);
 
-      const result = finalize(run, "Not a Queue run.");
+      const result = finalize(run, {
+        noProposal: "Not a Queue run.",
+        proposals: unit.named,
+      });
 
       expect(result.outcome).toBe("relinquished");
       expect(result.receipt).toMatchObject({
@@ -499,7 +697,6 @@ describe("Ship and Integrate finalization of the same situation", () => {
         shipmentStatus: "open",
       });
       expect(result.receipt.queued).toBeUndefined();
-      expect(result.queuedWorktrees).toBeUndefined();
       const blockers = result.blockers.join("\n");
       expect(blockers).toContain(
         `Remove run-created worktrees before ending the loop: ${unit.path}`
@@ -513,7 +710,6 @@ describe("Ship and Integrate finalization of the same situation", () => {
       expect(git(run.root, ["branch", "--list", "old-merged"])).toBe("");
       expect(existsSync(unit.path)).toBe(true);
       expect(primaryState(run.root)).toEqual(before);
-      expect(readQueuedWorkRecords(run.root)).toEqual([]);
       expect(() => startLoop(run.root, "second-agent", "queue")).toThrow(
         "was relinquished"
       );
@@ -521,96 +717,50 @@ describe("Ship and Integrate finalization of the same situation", () => {
   }
 });
 
-describe("content a closed Queue run already put up", () => {
-  test("is named when a later run starts with the same uncommitted bytes", () => {
-    const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
-    finalize(run);
-
-    expect(readQueuedWorkRecords(run.root)).toMatchObject([
-      { runId: run.lease.runId, units: [{ headSha: unit.head }] },
-    ]);
-    const notices = queuedWorkNotices(run.root);
-    expect(notices).toMatchObject([
-      {
-        branch: unit.branch,
-        headSha: unit.head,
-        paths: ["README.md"],
-        proposalIds: ["example/project!7"],
-        runId: run.lease.runId,
-      },
-    ]);
-    expect(notices[0]?.message).toContain("already queued for review");
-
-    startLoop(run.root, "second-agent", "queue");
-    const status = loopStatus(run.root);
-    expect(status.alreadyQueued).toEqual(notices);
-    expect(status.guidance.headline).toContain("already queued for review");
-  });
-
-  test("is not named once the person changes those bytes", () => {
-    const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
-    finalize(run);
-    writeFixture(run.root, "README.md", `${PERSON_EDIT}One more line.\n`);
-
-    expect(queuedWorkNotices(run.root)).toEqual([]);
-  });
-
-  test("is forgotten once the target contains the queued head", () => {
-    const run = openRun({ forge: true });
-    const unit = queueUnit(run);
-    recordProposal(run, unit.head);
-    finalize(run);
-    git(run.root, ["push", "origin", `${unit.head}:main`]);
-    git(run.root, ["fetch", "origin"]);
-
-    expect(queuedWorkNotices(run.root)).toEqual([]);
-    startLoop(run.root, "second-agent", "queue");
-    expect(readQueuedWorkRecords(run.root)).toEqual([]);
-  });
-});
-
 describe("loop status for a Queue run", () => {
-  test("says the run ends queued for review, not merged", () => {
+  test("says the run ends queued for review, not merged, and how to name its proposal", () => {
     const run = openRun({ forge: true });
-    queueUnit(run);
+    const unit = queueUnit(run);
 
     const { guidance } = loopStatus(run.root);
 
     expect(guidance.headline).toContain("queued for review, not merged");
     expect(guidance.headline).not.toContain("record its outcome");
-    expect(guidance.nextCommands.join("\n")).toContain("loop finalize");
+    expect(guidance.nextCommands.join("\n")).toContain(
+      `loop finalize --run-id ${run.lease.runId} --agent-id controller --reason <why> --queued-proposal ${unit.branch}=<id>`
+    );
   });
 });
 
 describe("the command line", () => {
-  test("reports a closed Queue run in its own words and names its content to the next run", () => {
+  const cli = (run: OpenRun, args: string[]) => {
+    const result = spawnSync(
+      [process.execPath, cliPath, ...args, "--repo", run.root],
+      { env: { ...process.env }, stderr: "pipe", stdout: "pipe" }
+    );
+    return {
+      exitCode: result.exitCode,
+      stderr: decoder.decode(result.stderr),
+      stdout: decoder.decode(result.stdout),
+    };
+  };
+  const finalizeArguments = (run: OpenRun) => [
+    "loop",
+    "finalize",
+    "--run-id",
+    run.lease.runId,
+    "--agent-id",
+    "controller",
+    "--reason",
+    "The change is up.",
+  ];
+
+  test("reports a closed Queue run in its own words, and the next run starts", () => {
     const run = openRun({});
     const unit = queueUnit(run);
-    const cli = (args: string[]) => {
-      const result = spawnSync(
-        [process.execPath, cliPath, ...args, "--repo", run.root],
-        { env: { ...process.env }, stderr: "pipe", stdout: "pipe" }
-      );
-      return {
-        exitCode: result.exitCode,
-        stderr: decoder.decode(result.stderr),
-        stdout: decoder.decode(result.stdout),
-      };
-    };
 
-    const closed = cli([
-      "loop",
-      "finalize",
-      "--run-id",
-      run.lease.runId,
-      "--agent-id",
-      "controller",
-      "--reason",
-      "The change is up.",
+    const closed = cli(run, [
+      ...finalizeArguments(run),
       "--no-proposal",
       "A shared folder has no reviews.",
     ]);
@@ -621,16 +771,11 @@ describe("the command line", () => {
     expect(closed.stdout).toContain(
       `Queued, not merged: ${unit.branch} at ${unit.head} on origin, pushed without a proposal (A shared folder has no reviews.)`
     );
-    expect(closed.stdout).toContain(
-      "it carries a copy of the primary checkout's uncommitted README.md"
-    );
-    expect(closed.stdout).toContain(
-      `Removed its clean, pushed worktree ${unit.path}.`
-    );
+    expect(closed.stdout).toContain(`Kept worktree ${unit.path}.`);
     expect(closed.stdout).not.toContain("Completed and released");
-    expect(existsSync(unit.path)).toBe(false);
+    expect(existsSync(unit.path)).toBe(true);
 
-    const next = cli([
+    const next = cli(run, [
       "loop",
       "start",
       "--mode",
@@ -640,8 +785,22 @@ describe("the command line", () => {
       "--json",
     ]);
     expect(next.exitCode).toBe(0);
-    expect(JSON.parse(next.stdout)).toMatchObject({
-      alreadyQueued: [{ branch: unit.branch, paths: ["README.md"] }],
-    });
+  });
+
+  test("takes each branch's proposal with --queued-proposal", () => {
+    const run = openRun({ forge: true });
+    const unit = proposedUnit(run);
+
+    const closed = cli(run, [
+      ...finalizeArguments(run),
+      "--queued-proposal",
+      unit.named[0] ?? "",
+    ]);
+
+    expect(closed.stderr).toBe("");
+    expect(closed.exitCode).toBe(0);
+    expect(closed.stdout).toContain(
+      `Queued, not merged: ${unit.branch} at ${unit.head} on origin, proposal ${PROPOSAL}.`
+    );
   });
 });

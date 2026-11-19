@@ -60,8 +60,9 @@ another agent's commits to fill a gap.
 In Queue and Sweep, that record is also what `loop finalize` reads to close
 the run as
 [queued for review](cleanup-and-completion.md#queue-and-sweep-end-queued-not-merged):
-a pushed branch with no proposal recorded at its exact head keeps the run
-open. Record the authors again whenever the pushed head moves.
+name each pushed branch's proposal with `--queued-proposal <branch>=<id>`. A
+pushed branch whose named proposal is not recorded at its exact head keeps
+the run open. Record the authors again whenever the pushed head moves.
 
 Save the fetched source body to a file in the agent's
 [work directory](inventory-and-concurrency.md#agent-work-directories) and audit

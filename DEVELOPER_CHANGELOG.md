@@ -32,48 +32,54 @@
   --mode queue` was refused until an approved `loop replan`.
   New `lib/queued-completion.ts`: `closesAsQueued` (mode queue or sweep
   with no shipment scope) selects the rule, and `assessQueuedWork` reads
-  each live run-created worktree as queued, as nothing to queue (clean and
-  target-contained), or as a blocker. Queued means clean, with its head
-  contained in the branch's upstream or namesake remote-tracking ref
-  (`pushedBranch`), a review-ledger proposal whose `latestRecordedHead` is
-  that head (`recordedProposals`), and, when the target moved since `loop
-  start`, a clean `git merge-tree --write-tree` (`movedTargetBlocker`).
+  every author registration of the run, live checkout or not
+  (`liveVerdict`, `absentVerdict`), as queued, as nothing to queue
+  (target-contained), or as a blocker. Queued means: a clean checkout;
+  the exact `refs/heads/<branch>` at the push destination answering
+  `ls-remote --exit-code` with exactly the head (`remoteBranchHead`,
+  `pushedBranch`; a remote-tracking ref only decides whether to ask, and
+  no answer keeps the run open); when the target moved since `loop
+  start`, a clean `git merge-tree --write-tree` (`movedTargetBlocker`);
+  and a proposal bound to the unit (`proposalMismatch`). The controller
+  names it with `loop finalize --queued-proposal <branch>=<id>`
+  (`queuedDeclarations`), which ties it to that source branch and no
+  other, and the review ledger must record that proposal's
+  `latestRecordedHead` as exactly the queued head on a base the target
+  contains, so no proposal matches by SHA alone or by descent.
+  `--no-proposal TEXT` covers a remote with nowhere to open one and is
+  ignored when `proposalForge` finds a `github`, `gitlab`, or `codeberg`
+  provider. An unresolved target is a blocker in the assessment itself.
   `finalizationDecision` hands the assessment to `loopCompletionBlockers`
   as a `CompletionBasis`: `runWorktreeBlockers` returns the assessment's
   blockers in place of the worktree blocker, and
   `repositoryCleanupBlockers` is skipped. That function is now
   `primaryAndTargetBlockers` plus `containedCleanupBlockers`; for a queued
   close the second becomes cleanup `notes` and `cleanupStatus: pending`
-  (`queuedLeftovers`, `housekeepingPending`), and the first does not apply,
-  so the primary checkout is never touched or required clean.
-  Design choices. Proposal evidence is the record `proposal
-  record-authors` already writes, not a new command: `change-requests.md`
-  requires that step, and `SKILL.md` has no bytes left for a new one.
-  `loop finalize --no-proposal TEXT` covers a remote with nowhere to open
-  a proposal and is ignored when `proposalForge` finds a `github`,
-  `gitlab`, or `codeberg` provider. `removeQueuedWorktrees` runs only
-  after the receipt is written and the lease is deleted, re-assesses from
-  a fresh inventory, and uses unforced `git worktree remove`, so a refused
-  removal leaves a kept checkout (`queuedWorktrees.kept` in the result,
-  never the receipt) and never a stranded run; the controller's own
-  checkout and a claimed checkout are always kept. No existing file
-  changes shape: the lease is untouched, the receipt gains an optional
-  `queued` member (`status: queued-for-review-not-merged`, with
-  `deliveryStatus` still `unverified`), and a closed run writes the new
-  `queued-work/<run-id>.json` (`queued-work.schema.json`, in
-  `SCHEMA_NAMES`). `queuedWorkNotices` compares that record with the
-  primary's current uncommitted bytes, so `loop start` and `loop status`
-  report `alreadyQueued` instead of letting the same content go up again
-  unannounced; `pruneQueuedWorkRecords` forgets a record at `loop start`
-  once its heads are merged or gone, or after 90 days. `queuedRunGuidance`
-  replaces "record its outcome" in `loop status` for these runs. Ship,
-  Integrate, Reconcile, a scoped Queue run, and `loop end` are unchanged.
-  Covered by `queued-finalization.test.ts`: the Queue close and a second
-  `loop start`, every case that still blocks, and Integrate and Ship still
-  relinquishing on the same repository.
-- Not independently reviewed: the owner ended review rounds for this line
-  on 2026-11-18. Guidance stays 33.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T12:00:00-06:00" -->
+  (`queuedLeftovers`, `housekeepingPending`), and the first does not
+  apply, so the primary checkout is never touched or required clean.
+  Design choice: Queue finalization deletes nothing. The run's own
+  worktrees are kept and listed in the receipt's `queued.keptWorktrees`
+  with how to remove one, so an ignored file, an edit Git's status hides,
+  or a stopped Git operation in one is never lost. No state file is added
+  or changes shape: the lease is untouched, and the receipt gains an
+  optional `queued` member (`status: queued-for-review-not-merged`, with
+  `deliveryStatus` still `unverified`). `queuedRunGuidance` replaces
+  "record its outcome" in `loop status` for these runs and prints the
+  finalize command with each branch to name. Known gap: a later run can
+  propose the same unchanged content from the primary checkout again
+  without being told it is already queued. Ship, Integrate, Reconcile, a
+  scoped Queue run, and `loop end` are unchanged. Covered by
+  `queued-finalization.test.ts`: the Queue close and a second `loop
+  start`, every case that still blocks, a kept worktree that holds an
+  ignored file, and Integrate and Ship still relinquishing on the same
+  repository.
+- Review: the text rules above were not independently reviewed, because
+  the owner ended review rounds for this line on 2026-11-18. The Queue
+  finalization commit had one review by gpt-6.2-astra at high effort that
+  found 2 blocking and 9 should-fix defects, answered by removing
+  automatic removal and the already-queued notice and fixing the rest;
+  the result was not re-reviewed. Guidance stays 33.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T13:41:00-06:00" -->
 
 ## 0.33.1 - 2026-11-18
 

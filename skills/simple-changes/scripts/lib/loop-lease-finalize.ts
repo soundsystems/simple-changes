@@ -82,14 +82,12 @@ import { runGit } from "./process.ts";
 import {
   assessQueuedWork,
   closesAsQueued,
-  noProposalReason,
   QUEUED_FOR_REVIEW,
   type QueuedAssessment,
+  type QueuedDeclarations,
   type QueuedUnit,
-  type QueuedWorktreeCleanup,
+  queuedDeclarations,
   queuedSummary,
-  removeQueuedWorktrees,
-  writeQueuedWorkRecord,
 } from "./queued-completion.ts";
 import {
   type RemoteBranchCleanupReport,
@@ -2326,13 +2324,6 @@ export interface LoopFinalizationResult {
   expiredExternalDeletionPins?: ExpiredExternalDeletionPins;
   lease: LoopLease | null;
   outcome: "completed" | "relinquished" | "closed-without-mutation";
-  /**
-   * What became of a closed Queue or Sweep run's own checkouts: removed
-   * when still clean and pushed, otherwise kept with the reason. Removal
-   * runs after the run has closed, so it is never part of the receipt and
-   * never blocks.
-   */
-  queuedWorktrees?: QueuedWorktreeCleanup;
   receipt: LoopFinalizationReceipt;
   receiptPath: string;
   verification: LoopVerification;
@@ -2343,6 +2334,11 @@ export interface LoopFinalizationResult {
  * review. Nothing was merged or delivered, and the target did not change.
  */
 export interface LoopFinalizationQueued {
+  /**
+   * Every checkout the run created that still exists. Finalization keeps
+   * them all: it deletes no checkout, branch, or file in these modes.
+   */
+  keptWorktrees: string[];
   status: typeof QUEUED_FOR_REVIEW;
   summary: string;
   units: QueuedUnit[];
@@ -2777,8 +2773,9 @@ const queuedField = (
   queued && blockers.length === 0
     ? {
         queued: {
+          keptWorktrees: queued.keptWorktrees,
           status: QUEUED_FOR_REVIEW,
-          summary: queuedSummary(lease, queued.units),
+          summary: queuedSummary(lease, queued),
           units: queued.units,
         },
       }
@@ -3052,32 +3049,13 @@ const relinquishController = (
   });
 };
 
-// Written before the lease goes, so a later run can say which uncommitted
-// bytes are already up for review. The receipt is persisted by now and the
-// run is closing, so a record that cannot be written is a note in the
-// result, never a failed finalization.
-const recordQueuedWork = (
-  lease: LoopLease,
-  queued: QueuedAssessment,
-  closedAt: string,
-  cleanup: FinalizationCleanupResult
-): void => {
-  try {
-    writeQueuedWorkRecord(lease, queued.units, closedAt);
-  } catch (error) {
-    cleanup.notes.push(
-      `The record that lets a later run recognise this queued work could not be written: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
-};
-
 const finalizeOwnedLoop = (
   repositoryPath: string,
   openingLease: LoopLease,
   inventory: RepositoryInventory,
   reason: string,
   awaitingUser: string[] | null,
-  noProposal: string | null
+  declared: QueuedDeclarations
 ): LoopFinalizationResult => {
   let lease = reconcileAbsentRetainedWorktrees(openingLease, inventory);
   lease = reconcilePrimarySynchronization(lease, inventory);
@@ -3089,10 +3067,11 @@ const finalizeOwnedLoop = (
   ({ lease } = automaticCleanup);
   const finalInventory = captureInventory(repositoryPath);
   // A Queue or Sweep run never merges, so it is judged by its own pushed
-  // branches and proposals, and it leaves the primary checkout, the local
-  // target branch, and every earlier branch and worktree as they are.
+  // branches and proposals. Its finalization deletes nothing: the primary
+  // checkout, the local target branch, every earlier branch and worktree,
+  // and the run's own worktrees all stay as they are.
   const queued = closesAsQueued(lease)
-    ? assessQueuedWork(lease, finalInventory, noProposal)
+    ? assessQueuedWork(lease, finalInventory, declared)
     : null;
   if (queued) {
     automaticCleanup.cleanup.notes.push(
@@ -3124,9 +3103,6 @@ const finalizeOwnedLoop = (
   );
   writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
   if (blockers.length === 0) {
-    if (queued) {
-      recordQueuedWork(lease, queued, now, automaticCleanup.cleanup);
-    }
     rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
     forgetLeaseSession(lease);
     removeControllerBinding(lease);
@@ -3136,18 +3112,6 @@ const finalizeOwnedLoop = (
       cleanup: automaticCleanup.cleanup,
       lease: null,
       outcome: "completed",
-      // Only once the run is durably closed: a failed or refused removal
-      // then leaves a kept checkout, never a stranded run.
-      ...(queued
-        ? {
-            queuedWorktrees: removeQueuedWorktrees(
-              lease,
-              repositoryPath,
-              queued,
-              noProposal
-            ),
-          }
-        : {}),
       receipt,
       receiptPath,
       verification,
@@ -3218,6 +3182,12 @@ export interface LoopFinalizationOptions {
    * without mutation), never when it pauses or relinquishes.
    */
   onClosed?: () => void;
+  /**
+   * `--queued-proposal <branch>=<id>`, once per pushed branch of a Queue or
+   * Sweep run: the proposal that carries that branch. It binds only when
+   * the review ledger records that proposal at the branch's exact head.
+   */
+  queuedProposals?: readonly string[];
 }
 
 const MAX_AWAITING_USER_QUESTIONS = 10;
@@ -3253,7 +3223,7 @@ const finalizeRun = (
   inventory: RepositoryInventory,
   reason: string,
   awaitingUser: string[] | null,
-  noProposal: string | null
+  declared: QueuedDeclarations
 ): LoopFinalizationResult => {
   const untouched = finalizeUnmutatedRun(
     lease,
@@ -3271,7 +3241,7 @@ const finalizeRun = (
       inventory,
       reason,
       awaitingUser,
-      noProposal
+      declared
     );
   } catch (error) {
     return relinquishAfterFinalizationError(lease, error, awaitingUser);
@@ -3321,6 +3291,10 @@ export const finalizeLoop = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = requiredText(reasonInput, "finalization reason");
   const awaitingUser = awaitingUserQuestions(options.awaitingUser);
+  const declared = queuedDeclarations(
+    options.noProposal,
+    options.queuedProposals
+  );
   const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
@@ -3346,7 +3320,7 @@ export const finalizeLoop = (
             inventory,
             reason,
             awaitingUser,
-            noProposalReason(options.noProposal)
+            declared
           );
           if (result.outcome !== "relinquished") {
             options.onClosed?.();

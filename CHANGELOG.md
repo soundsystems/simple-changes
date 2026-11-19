@@ -18,15 +18,15 @@
     close. It was held to the rules for merged work: it wanted your unsaved
     edit cleaned up, its own working copy removed, and old merged branches
     deleted, and every later request was refused until the owner cleared
-    it. Now a Queue or Sweep run closes once each branch it made is pushed
-    and its proposal is recorded, and it reports the work as queued for
-    review, not merged. Your unsaved work stays exactly as it was. Unpushed
-    or uncommitted work, a proposal that was never opened where one can be,
-    and a question waiting on you still keep the run open. If the same
-    unsaved content is still there on a later request, the run says it is
-    already up for review.
+    it. Now a Queue or Sweep run closes once each branch it made is on the
+    remote, confirmed by the remote itself, and the agent has named and
+    recorded its proposal. It reports the work as queued for review, not
+    merged, and it deletes nothing: your unsaved work, the run's working
+    copy, and older branches all stay where they are. Unpushed or
+    uncommitted work, a proposal that was never opened where one can be,
+    and a question waiting on you still keep the run open.
   - Guidance stays 33, so no repository is asked anything by this update.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T12:00:00-06:00" -->
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T13:41:00-06:00" -->
 
 ## 0.33.1 - 2026-11-18
 

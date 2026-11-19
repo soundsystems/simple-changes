@@ -1697,7 +1697,8 @@ describe("Simple Changes skill contract", () => {
       "Everything `initialize` requires is still presented, in plain words and before the run changes anything",
       "its required answers first, then any recommended change with the current and the proposed setting, then what matters in a line and every choice the standard notice offers, each under a short label of its own",
       "**Carry on**, **Quick tour**, **Full tour**, **Release notes**, or **Decide later**?",
-      "a one-time offer, such as the turn-end guard or a refreshed instruction rule, in one line the person can decline",
+      "the one-time turn-end guard offer, in one line the person can decline",
+      "An offer to refresh a note in the person's own agent instruction files is not made in this mode: mention it only under Details.",
       "Never ask twice for the same thing while nothing has changed",
       // Upload permission comes from the person, never from a harness prompt.
       "When the saved setting is to ask before uploads, the person is the one who answers, in this conversation.",

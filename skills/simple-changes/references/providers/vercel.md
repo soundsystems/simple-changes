@@ -31,3 +31,15 @@ Do not promote a preview that has not passed the immutable-revision and
 readiness checks. Do not use alias assignment to transfer domains between
 projects, replace wildcard configuration, or modify DNS. Record the deployment
 ID and each hostname-to-deployment-ID mapping in the normalized receipt.
+
+## Preview links
+
+A preview exists for a proposal only when Vercel built the exact pushed
+commit. Vercel builds from the Git repository its project is linked to, so
+check that link first: a project linked to one host builds nothing for a
+push to another, and then there is no preview to report. Look for the
+deployment on the proposal itself (its deployments, statuses, or the Vercel
+comment) or with a read-only listing filtered by the commit, and report the
+link only when its commit is the proposal's current head. When there is
+none, say so and why in a few words; never create one and never report a
+preview of another commit.

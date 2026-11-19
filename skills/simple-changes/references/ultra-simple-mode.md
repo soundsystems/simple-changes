@@ -141,8 +141,9 @@ before the run changes anything:
   under a short label of its own ("Simple Changes was updated: `<what
   matters>`. Your settings are the same. **Carry on**, **Quick tour**,
   **Full tour**, **Release notes**, or **Decide later**?");
-- a one-time offer, such as the turn-end guard or a refreshed instruction
-  rule, in one line the person can decline.
+- the one-time turn-end guard offer, in one line the person can decline.
+  An offer to refresh a note in the person's own agent instruction files is
+  not made in this mode: mention it only under Details.
 
 Asked whenever saved setup and the request do not already cover it:
 

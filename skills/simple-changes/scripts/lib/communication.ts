@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { installWithoutReplacing } from "./path-safety.ts";
 import { resolvePersonalPolicyPath } from "./policy.ts";
 
 // How Simple Changes talks to a person: the words it uses and how often it
@@ -84,10 +85,16 @@ export const communicationPaths = (
 type FileState =
   | { state: "absent" }
   | { error: string; state: "malformed" }
-  | { state: "valid"; style: CommunicationStyle };
+  | {
+      state: "valid";
+      style: CommunicationStyle;
+      /** Members this copy does not know, by name. */
+      unknownMembers: string[];
+    };
 
 // Only `schemaVersion` and `style` are read. Other members are ignored, so a
-// later release can add one without this copy refusing the whole file.
+// later release can add one without this copy refusing to read the file.
+// Their names are kept, because a file that has any is never rewritten.
 const readCommunicationFile = (path: string): FileState => {
   // lstat, not existsSync: a dangling symbolic link is a directory entry
   // that is not a regular file, never an absent sidecar a write may replace.
@@ -112,7 +119,11 @@ const readCommunicationFile = (path: string): FileState => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { error: `${path} must hold a JSON object`, state: "malformed" };
   }
-  const { schemaVersion, style } = value as Record<string, unknown>;
+  const members = value as Record<string, unknown>;
+  const { schemaVersion, style } = members;
+  const unknownMembers = Object.keys(members).filter(
+    (name) => name !== "schemaVersion" && name !== "style"
+  );
   if (schemaVersion !== 1) {
     return { error: `${path}: schemaVersion must be 1`, state: "malformed" };
   }
@@ -122,7 +133,7 @@ const readCommunicationFile = (path: string): FileState => {
       state: "malformed",
     };
   }
-  return { state: "valid", style };
+  return { state: "valid", style, unknownMembers };
 };
 
 /**
@@ -176,18 +187,50 @@ const replaceableCommunication = (path: string): FileState => {
 };
 
 /**
- * Refuses, before anything else is written, when `writeCommunication` would
- * refuse this path: a setup that also saves the style checks every
- * destination first, so it never stops half saved.
+ * Refuses, before anything else is written, when a first-use save could not
+ * record `style` at `path`: the file cannot be read, or it already holds the
+ * other style. A first-use setup creates the setting or finds it already
+ * there; it never changes a style someone chose. A setup that also saves the
+ * style checks this first, so it never stops half saved.
  */
-export const assertCommunicationWritable = (path: string): void => {
-  replaceableCommunication(path);
+export const assertCommunicationUnsetOrSame = (
+  path: string,
+  style: CommunicationStyle
+): void => {
+  const current = replaceableCommunication(path);
+  if (current.state === "valid" && current.style !== style) {
+    throw new SimpleChangesError(
+      `${path} already sets the ${current.style} style, and a first-use setup never changes a saved one, so nothing was written. Change it with setup --communication.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+const installCommunication = (
+  stagedPath: string,
+  path: string,
+  replacing: boolean
+): void => {
+  if (replacing) {
+    renameSync(stagedPath, path);
+    return;
+  }
+  // Nothing was here when this save read the path, so nothing may be
+  // replaced: a file another save created meanwhile is reported instead.
+  if (!installWithoutReplacing(stagedPath, path)) {
+    throw new SimpleChangesError(
+      `A communication setting was saved at ${path} while this one was open, so it was not replaced. Run the command again to see it.`,
+      EXIT_CODES.unsafe
+    );
+  }
 };
 
 /**
  * Records the style in one sidecar and nothing else. A file that is not a
  * regular file, or that this copy cannot read, is never replaced: the owner
- * repairs or removes it.
+ * repairs or removes it. Neither is a file with members this version does
+ * not know: parsing and writing them back could alter a value. A first save
+ * never replaces a file it did not read.
  */
 export const writeCommunication = (
   path: string,
@@ -198,19 +241,26 @@ export const writeCommunication = (
   if (current.state === "valid" && current.style === style) {
     return { changed: false, path };
   }
+  if (current.state === "valid" && current.unknownMembers.length > 0) {
+    throw new SimpleChangesError(
+      `${path} holds settings this version cannot safely rewrite (${current.unknownMembers.join(", ")}), so it was left as it is. Edit "style" by hand, or change it with a version that knows them.`,
+      EXIT_CODES.unsafe
+    );
+  }
   const directory = dirname(path);
   mkdirSync(directory, { mode: privateFile ? 0o700 : 0o755, recursive: true });
   const temporaryPath = resolve(
     directory,
     `.${randomUUID()}.simple-changes.tmp`
   );
-  writeFileSync(
-    temporaryPath,
-    `${JSON.stringify({ schemaVersion: 1, style }, null, 2)}\n`,
-    { encoding: "utf8", flag: "wx", mode: privateFile ? 0o600 : 0o644 }
-  );
+  const members = { schemaVersion: 1, style };
+  writeFileSync(temporaryPath, `${JSON.stringify(members, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: privateFile ? 0o600 : 0o644,
+  });
   try {
-    renameSync(temporaryPath, path);
+    installCommunication(temporaryPath, path, current.state === "valid");
   } catch (error) {
     if (existsSync(temporaryPath)) {
       unlinkSync(temporaryPath);

@@ -16,7 +16,10 @@ import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { ensureStateDirectory } from "./git-location.ts";
 import { CURRENT_GUIDANCE_VERSION } from "./guidance-updates.ts";
 import { sha256 } from "./hash.ts";
-import { assertNoSymlinkAncestors } from "./path-safety.ts";
+import {
+  assertNoSymlinkAncestors,
+  installWithoutReplacing,
+} from "./path-safety.ts";
 import { validateSchema } from "./schema.ts";
 import type { PolicySource, RepoPolicy } from "./types.ts";
 
@@ -312,10 +315,28 @@ const assertWritablePolicyPath = (path: string): void => {
   }
 };
 
+const installPolicyFile = (
+  temporaryPath: string,
+  path: string,
+  createOnly: boolean
+): void => {
+  if (!createOnly) {
+    renameSync(temporaryPath, path);
+    return;
+  }
+  if (!installWithoutReplacing(temporaryPath, path)) {
+    throw new SimpleChangesError(
+      `A setup was saved at ${path} while this one was open, so it was not replaced. Run setup again to review it.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
 const replacePolicyFileText = (
   path: string,
   text: string,
-  privateFile: boolean
+  privateFile: boolean,
+  createOnly: boolean
 ): void => {
   assertWritablePolicyPath(path);
   const directory = dirname(path);
@@ -333,7 +354,7 @@ const replacePolicyFileText = (
     mode: privateFile ? 0o600 : 0o644,
   });
   try {
-    renameSync(temporaryPath, path);
+    installPolicyFile(temporaryPath, path, createOnly);
   } catch (error) {
     if (existsSync(temporaryPath)) {
       unlinkSync(temporaryPath);
@@ -342,16 +363,23 @@ const replacePolicyFileText = (
   }
 };
 
+/**
+ * Writes a policy file. `createOnly` is for a first-use save: the file is
+ * installed only when nothing is at `path`, so a setup saved by someone else
+ * in the meantime is reported and never replaced, with or without a lock.
+ */
 export const writePolicyFile = (
   path: string,
   policy: RepoPolicy,
-  privateFile = false
+  privateFile = false,
+  createOnly = false
 ): void => {
   const validated = validateSchema<RepoPolicy>("repo-policy", policy);
   replacePolicyFileText(
     path,
     `${JSON.stringify(validated, null, 2)}\n`,
-    privateFile
+    privateFile,
+    createOnly
   );
   const persisted = validateSchema<RepoPolicy>(
     "repo-policy",
@@ -838,7 +866,7 @@ export const writeGuidanceAcknowledgement = (
     );
   }
   assertPolicyUnchanged(path, saved);
-  replacePolicyFileText(path, edited, target.source === "user");
+  replacePolicyFileText(path, edited, target.source === "user", false);
   if (readFileSync(path, "utf8") !== edited) {
     throw new SimpleChangesError(
       `Policy verification failed after writing: ${path}`,

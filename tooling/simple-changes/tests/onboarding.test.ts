@@ -27,9 +27,7 @@ import {
   type OnboardingChoice,
   PROPOSAL_SCHEDULING_CHOICES,
   pendingChangelogInstallOffer,
-  quickStartAvailable,
   renderOnboardingSummary,
-  renderUltraSimpleSummary,
   resolveChangelogInstallCommand,
   SHIPPING_MODE_CHOICES,
   UI_ARTIFACT_VERSIONING_CHOICES,
@@ -335,9 +333,6 @@ describe("onboarding conversation", () => {
           if (question === ONBOARDING_QUESTIONS.existingPersonalDefaults) {
             return Promise.resolve("review");
           }
-          if (question === ONBOARDING_QUESTIONS.quickStart) {
-            return Promise.resolve("options");
-          }
           if (question === ONBOARDING_QUESTIONS.start) {
             return Promise.resolve("customize");
           }
@@ -371,9 +366,6 @@ describe("onboarding conversation", () => {
       {
         choose: (question, choices) => {
           choicesByQuestion.set(question, choices);
-          if (question === ONBOARDING_QUESTIONS.quickStart) {
-            return Promise.resolve("options");
-          }
           if (question === ONBOARDING_QUESTIONS.start) {
             return Promise.resolve("run");
           }
@@ -404,185 +396,20 @@ describe("onboarding conversation", () => {
       "Customize",
       "Use recommended setup for this run only",
     ]);
-    expect(selection).toMatchObject({
-      communication: null,
-      scope: "run",
-      setupStyle: "run",
-    });
+    expect(selection).toMatchObject({ scope: "run", setupStyle: "run" });
   });
 
-  test("leads with the outcome and two choices, then saves the mode with the recommended setup", async () => {
-    // An instruction file exists, so a setup that offered the pointer or
-    // either rule would have to ask about it.
-    const fixture = createTestRepository();
-    repositories.push(fixture);
-    writeFixture(fixture.root, "AGENTS.md", "# Agent guidance\n");
-    const run = async (
-      finish: "open-change-request" | "integrate" | "ship"
-    ) => {
-      const events: string[] = [];
-      const choicesByQuestion = new Map<string, readonly OnboardingChoice[]>();
-      let confirmed = "";
-      const selection = await collectOnboardingSelection(
-        DEFAULT_POLICY,
-        { defaultFinish: finish },
-        {
-          choose: (question, choices, defaultValue) => {
-            events.push(`question:${question}`);
-            choicesByQuestion.set(question, choices);
-            return Promise.resolve(defaultValue);
-          },
-          confirm: (summary) => {
-            confirmed = summary;
-            return Promise.resolve(true);
-          },
-          present: (message) => events.push(`intro:${message}`),
-        },
-        undefined,
-        fixture.root,
-        false,
-        { firstUse: true, showFirstScreen: true }
-      );
-      return { choicesByQuestion, confirmed, events, selection };
-    };
-
-    const review = await run("open-change-request");
-    // One sentence, one question, and nothing else before the receipt.
-    expect(review.events).toEqual([
-      "intro:I'll check your change and give you a link to review. Nothing will go live.",
-      `question:${ONBOARDING_QUESTIONS.quickStart}`,
-    ]);
-    expect(
-      review.choicesByQuestion
-        .get(ONBOARDING_QUESTIONS.quickStart)
-        ?.map((choice) => choice.label)
-    ).toEqual(["Use this setup", "Show options"]);
-    expect(review.selection).toMatchObject({
-      authoring: null,
-      communication: "ultra-simple",
-      confirmed: true,
-      instructionPointer: { action: "leave" },
-      reviewLoopRule: { action: "leave" },
-      scope: "repository",
-      scratchFileRule: { action: "leave" },
-      setupStyle: "recommended",
-    });
-    // The mode adds no authority: the policy is the recommended setup's.
-    expect(review.selection.policy).toEqual({
-      ...DEFAULT_POLICY,
-      defaultFinish: "open-change-request",
-    });
-    expect(review.confirmed).toBe(review.selection.summary);
-    expect(review.confirmed).toBe(
-      [
-        "Here's what I'll remember for this project:",
-        "",
-        "- I stop at a review link unless you ask for more.",
-        "- I ask before anything goes live, and before any database change.",
-        '- I keep updates short and skip the technical terms. Say "details" any time.',
-        "",
-        `I'll save that in ${fixture.root}/.simple-changes.json and ${fixture.root}/.simple-changes-communication.json, so anyone working on this project gets the same setup.`,
-      ].join("\n")
-    );
-
-    const merge = await run("integrate");
-    expect(merge.events[0]).toBe(
-      "intro:I'll check your change, get it a second look, and add it to the project once it's approved. Nothing will go live."
-    );
-    expect(merge.confirmed).toContain(
-      "- I add your change to the project once it's approved."
-    );
-    const ship = await run("ship");
-    expect(ship.events[0]).toBe(
-      "intro:I'll check your change, get it a second look, add it to the project, and ask you before anything goes live."
-    );
-    expect(ship.confirmed).toContain(
-      "- I take your change live after I ask you."
-    );
-    // Going live stays behind a question, and the database behind review.
-    expect(ship.selection.policy).toMatchObject({
-      defaultFinish: "ship",
-      migrationHandling: "ask-after-review",
-      migrationTargets: [],
-      productionDeploy: "ask",
-    });
-  });
-
-  test("offers the quick start only at first use and with no other setup choice", async () => {
-    const asked = async (
-      policy: RepoPolicy,
-      inputs: Parameters<typeof collectOnboardingSelection>[1],
-      firstUse: boolean
-    ) => {
-      const questions: string[] = [];
-      const selection = await collectOnboardingSelection(
-        policy,
-        inputs,
-        {
-          choose: (question, _choices, defaultValue) => {
-            questions.push(question);
-            return Promise.resolve(
-              question === ONBOARDING_QUESTIONS.start ? "run" : defaultValue
-            );
-          },
-          confirm: () => Promise.resolve(true),
-        },
-        undefined,
-        "/work/project",
-        false,
-        { firstUse, showFirstScreen: true }
-      );
-      return { questions, selection };
-    };
-
-    // A saved policy that deploys automatically: accepting a quick start
-    // here would copy that permission under a receipt that says "I ask".
-    const saved = await asked(
-      { ...DEFAULT_POLICY, defaultFinish: "ship", productionDeploy: "allow" },
-      {},
-      false
-    );
-    expect(saved.questions).not.toContain(ONBOARDING_QUESTIONS.quickStart);
-    expect(saved.questions[0]).toBe(ONBOARDING_QUESTIONS.start);
-    expect(saved.selection.communication).toBeNull();
-
-    // A setup choice the receipt does not describe goes to the full setup.
-    const chosen = await asked(
-      DEFAULT_POLICY,
-      { defaultFinish: "ship", productionDeploy: "allow" },
-      true
-    );
-    expect(chosen.questions).not.toContain(ONBOARDING_QUESTIONS.quickStart);
-    expect(chosen.selection.communication).toBeNull();
-
-    expect(
-      quickStartAvailable({ defaultFinish: "ship" }, { firstUse: true })
-    ).toBe(true);
-    expect(quickStartAvailable({ scope: "user" }, { firstUse: true })).toBe(
-      true
-    );
-    expect(quickStartAvailable({}, {})).toBe(false);
-    // Someone who chose full detail for themselves is not offered a setup
-    // whose receipt promises them the plain wording.
-    expect(
-      quickStartAvailable({}, { firstUse: true, personalStandardStyle: true })
-    ).toBe(false);
-    for (const inputs of [
-      { productionDeploy: "allow" },
-      { migrationHandling: "auto-apply-reviewed-routine" },
-      { gitPushAuthorization: "configure-harness" },
-      { questions: "never" },
-      { instructionPointer: "add" },
-    ] as const) {
-      expect(quickStartAvailable(inputs, { firstUse: true })).toBe(false);
-    }
-  });
-
-  test("still asks who reviews when two agents are detected", async () => {
+  test("honors an explicit scheduling input without prompting in non-interactive flows", async () => {
     const questions: string[] = [];
     const selection = await collectOnboardingSelection(
       DEFAULT_POLICY,
-      { defaultFinish: "open-change-request" },
+      {
+        defaultFinish: "open-change-request",
+        gitPushAuthorization: "ask",
+        proposalScheduling: "parallel",
+        questions: "blocking-only",
+        scope: "run",
+      },
       {
         choose: (question, _choices, defaultValue) => {
           questions.push(question);
@@ -593,76 +420,14 @@ describe("onboarding conversation", () => {
       undefined,
       "/work/project",
       false,
-      {
-        authoring: {
-          definitions: [],
-          detected: ["alpha-agent", "beta-agent"].map((id) => ({
-            evidence: ["harness root"],
-            id,
-            name: id,
-          })),
-          prefill: null,
-          runningHarness: "alpha-agent",
-        },
-        firstUse: true,
-        showFirstScreen: true,
-      }
+      { forgeProvider: "github", showFirstScreen: false }
     );
-    // The quick start skips setup preferences, never a required question.
-    expect(questions[0]).toBe(ONBOARDING_QUESTIONS.quickStart);
-    expect(questions.length).toBeGreaterThan(1);
-    expect(selection.communication).toBe("ultra-simple");
-    expect(selection.authoring?.roles.review).toBeDefined();
-    expect(selection.summary).toContain(
-      "Here's what I'll remember for this project:"
-    );
-  });
 
-  test("the plain receipt is shown only when every line of it is true", () => {
-    const personalPaths = {
-      communication: "/home/sam/.config/simple-changes/communication.json",
-      policy: "/home/sam/.config/simple-changes/preferences.json",
-    };
-    const personal = renderUltraSimpleSummary(
-      DEFAULT_POLICY,
-      "user",
-      null,
-      personalPaths
+    expect(questions).not.toContain(
+      "When there are multiple independent PRs, what should I optimize for?"
     );
-    expect(personal).toContain("Here's what I'll remember for you:");
-    expect(personal).toContain(
-      "I'll save the setup in /home/sam/.config/simple-changes/preferences.json, for projects that have none of their own, and the plain wording in /home/sam/.config/simple-changes/communication.json, for you in every project."
-    );
-    const runOnly = renderUltraSimpleSummary(DEFAULT_POLICY, "run", "/work");
-    expect(runOnly).toContain("Here's how I'll work for this request:");
-    expect(runOnly).toContain(
-      "This is for this request only. Nothing is saved, so I'll ask again next time."
-    );
-    expect(runOnly).not.toContain(".simple-changes.json");
-
-    // Any setting the receipt's lines would misstate withholds it.
-    for (const change of [
-      { productionDeploy: "allow" },
-      { migrationHandling: "never" },
-      {
-        migrationHandling: "auto-apply-reviewed-routine",
-        migrationTargets: [
-          { environment: "production", project: "shop", provider: "supabase" },
-        ],
-      },
-      { gitPushAuthorization: "configure-harness" },
-      { shippingMode: "expedited" },
-      { questions: "always" },
-      { changelogHandling: "ask" },
-    ] as Partial<RepoPolicy>[]) {
-      expect(
-        renderUltraSimpleSummary(
-          { ...DEFAULT_POLICY, ...change },
-          "repository",
-          "/work"
-        )
-      ).toBeNull();
-    }
+    expect(selection.policy.proposalScheduling).toBe("parallel");
+    expect(selection.summary).toContain("Multiple PRs");
   });
 
   test("uses provider-specific terms and neutral change proposals for scheduling", async () => {
@@ -683,9 +448,6 @@ describe("onboarding conversation", () => {
             choiceDescriptions.push(
               ...choices.map((choice) => choice.description)
             );
-            if (question === ONBOARDING_QUESTIONS.quickStart) {
-              return Promise.resolve("options");
-            }
             return Promise.resolve(
               question === ONBOARDING_QUESTIONS.start
                 ? "customize"
@@ -1271,9 +1033,6 @@ describe("onboarding conversation", () => {
       {
         choose: (question, choices) => {
           events.push(`question:${question}`);
-          if (question === ONBOARDING_QUESTIONS.quickStart) {
-            return Promise.resolve("options");
-          }
           return Promise.resolve(
             question === ONBOARDING_QUESTIONS.start
               ? "run"
@@ -1286,25 +1045,20 @@ describe("onboarding conversation", () => {
       undefined,
       "/work/project",
       false,
-      { firstUse: true, showFirstScreen: true }
+      { showFirstScreen: true }
     );
 
-    // The first screen is the outcome alone; "Show options" explains.
-    expect(events[0]).toBe(
-      "intro:I'll check your change, get it a second look, and add it to the project once it's approved. Nothing will go live."
-    );
-    expect(events[1]).toBe(`question:${ONBOARDING_QUESTIONS.quickStart}`);
-    expect(events[2]).toContain("inventory");
-    expect(events[2]).toContain("Put this up");
-    expect(events[2]).toContain("Ship what’s ready");
-    expect(events[2]).toContain("Sync with main");
-    expect(events[2]).toContain("Open changes for everything ready");
-    expect(events[2]).toContain("Clean up the repo");
-    expect(events[2]).toContain("Show me what you would do");
-    expect(events[2]).toContain("Leave this work alone");
-    expect(events[2]).toContain("Would you like a walkthrough");
-    expect(events[2]).toContain("verify the exact delivered revision");
-    expect(events[3]).toBe(`question:${ONBOARDING_QUESTIONS.start}`);
+    expect(events[0]).toContain("inventory");
+    expect(events[0]).toContain("Put this up");
+    expect(events[0]).toContain("Ship what’s ready");
+    expect(events[0]).toContain("Sync with main");
+    expect(events[0]).toContain("Open changes for everything ready");
+    expect(events[0]).toContain("Clean up the repo");
+    expect(events[0]).toContain("Show me what you would do");
+    expect(events[0]).toContain("Leave this work alone");
+    expect(events[0]).toContain("Would you like a walkthrough");
+    expect(events[0]).toContain("verify the exact delivered revision");
+    expect(events[1]).toBe(`question:${ONBOARDING_QUESTIONS.start}`);
   });
 
   test("renders a review-only summary without production language", () => {

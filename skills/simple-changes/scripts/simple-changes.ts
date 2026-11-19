@@ -40,7 +40,7 @@ import {
 import { auditBranchReplacements } from "./lib/branch-audit.ts";
 import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
 import {
-  assertCommunicationWritable,
+  assertCommunicationUnsetOrSame,
   COMMUNICATION_STYLES,
   type CommunicationStyle,
   communicationPaths,
@@ -404,6 +404,7 @@ Usage:
     [--migration-target provider:project:environment]
     [--questions blocking-only|always|never]
     [--scope user|repository|run] [--acknowledge-push-scope]
+    [--first-use [--communication ultra-simple|standard]]
     [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup --authoring JSON|@FILE --scope repository|personal
     --confirm [--agent-id ID] [--json] [--repo PATH]
@@ -692,6 +693,7 @@ interface CliOptions {
   evidencePaths: string[];
   extractTo?: string;
   filePath?: string;
+  firstUse: boolean;
   forkDeltas?: string;
   forkDestination?: string;
   forkName?: string;
@@ -911,6 +913,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--complete-identity",
   "--detached",
   "--dry-run",
+  "--first-use",
   "--hook",
   "--json",
   "--local-only",
@@ -1646,6 +1649,17 @@ const applyTurnGuardBooleanOption = (
   return false;
 };
 
+const applySetupBooleanOption = (
+  options: CliOptions,
+  option: string
+): boolean => {
+  if (option === "--first-use") {
+    options.firstUse = true;
+    return true;
+  }
+  return false;
+};
+
 const applyBooleanOption = (options: CliOptions, option: string): void => {
   if (option === "--acknowledge-push-scope") {
     options.acknowledgePushScope = true;
@@ -1703,6 +1717,7 @@ const parseOptions = (args: string[]): CliOptions => {
     detached: false,
     dryRun: false,
     evidencePaths: [],
+    firstUse: false,
     help: false,
     hook: false,
     json: false,
@@ -1742,7 +1757,12 @@ const parseOptions = (args: string[]): CliOptions => {
       continue;
     }
     if (argument && BOOLEAN_OPTIONS.has(argument)) {
-      if (!applyTurnGuardBooleanOption(options, argument)) {
+      if (
+        !(
+          applyTurnGuardBooleanOption(options, argument) ||
+          applySetupBooleanOption(options, argument)
+        )
+      ) {
         applyBooleanOption(options, argument);
       }
       index += 1;
@@ -2082,16 +2102,11 @@ const describeChangelogCapability = (
     : "not available";
 };
 
-const NOT_A_REPOSITORY_PATTERN = /not a git repository/iu;
-
 const setupContext = (
   repositoryPath: string
 ): {
   changelog: ReturnType<typeof inspectChangelogCoordination>;
   existingPersonalDefaults: RepoPolicy | null;
-  // No repository or personal policy is saved: the effective one is the
-  // built-in default.
-  firstUse: boolean;
   forgeProvider: string | null;
   policy: RepoPolicy;
   primaryCheckout: string | null;
@@ -2103,11 +2118,6 @@ const setupContext = (
       changelog: inspectChangelogCoordination(null),
       existingPersonalDefaults:
         personalPolicy.source === "user" ? personalPolicy.value : null,
-      // First use only when Git confirms there is no repository here. Any
-      // other failure could be hiding a project that already has a setup.
-      firstUse:
-        personalPolicy.source === "default" &&
-        NOT_A_REPOSITORY_PATTERN.test(probe.stderr),
       forgeProvider: null,
       policy: personalPolicy.value,
       primaryCheckout: null,
@@ -2123,7 +2133,6 @@ const setupContext = (
     ),
     existingPersonalDefaults:
       personalPolicy.source === "user" ? personalPolicy.value : null,
-    firstUse: inventory.policy.source === "default",
     forgeProvider: targetBinding?.provider ?? null,
     policy: inventory.policy.value,
     primaryCheckout: inventory.repository.primaryCheckout,
@@ -2293,6 +2302,51 @@ const COMMUNICATION_SAVED: Record<
   },
 };
 
+interface SavedCommunication {
+  report: {
+    effective: ReturnType<typeof resolveCommunication>;
+    path: string;
+    scope: "personal" | "repository";
+    style: CommunicationStyle;
+    written: boolean;
+  };
+  summary: string;
+}
+
+// What was saved is this scope's setting. What applies to this person may
+// differ, because their own setting outranks the project's; the summary names
+// the file that does, and only when there is one.
+const savedCommunication = (
+  scope: "personal" | "repository",
+  style: CommunicationStyle,
+  recorded: { changed: boolean; path: string },
+  primaryCheckout: string | null
+): SavedCommunication => {
+  const effective = resolveCommunication(primaryCheckout);
+  const outranked =
+    effective.style !== style &&
+    effective.path !== null &&
+    effective.path !== recorded.path;
+  const summary = [
+    `${COMMUNICATION_SAVED[scope][style]} ${recorded.changed ? "Saved in" : "Already saved in"} ${recorded.path}.`,
+    outranked
+      ? `For you it stays ${effective.style === "ultra-simple" ? "on" : "off"}: ${effective.path} outranks it.`
+      : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join(" ");
+  return {
+    report: {
+      effective,
+      path: recorded.path,
+      scope,
+      style,
+      written: recorded.changed,
+    },
+    summary,
+  };
+};
+
 /**
  * `setup --communication <style> --scope <repository|personal> --confirm`
  * records how Simple Changes talks as its own transaction. It writes only the
@@ -2309,10 +2363,18 @@ const runCommunicationSetup = async (
     ),
     ...(options.migrationTargets.length > 0 ? ["migrationTargets"] : []),
     ...(options.authoring === undefined ? [] : ["authoring"]),
+    ...(options.uiArtifacts ? ["uiArtifacts"] : []),
+    ...(options.acknowledgePushScope ? ["acknowledgePushScope"] : []),
   ];
   if (mixed.length > 0) {
     throw new SimpleChangesError(
       `setup --communication is a standalone transaction that changes no other setting; record ${mixed.join(", ")} in a separate setup.`,
+      EXIT_CODES.usage
+    );
+  }
+  if (options.dryRun) {
+    throw new SimpleChangesError(
+      "setup --communication has no --dry-run: it writes one file, and only with --confirm.",
       EXIT_CODES.usage
     );
   }
@@ -2351,30 +2413,16 @@ const runCommunicationSetup = async (
         write
       )
     : write();
-  // What was saved is this scope's setting. What applies to this person
-  // may differ, because their own setting outranks the project's.
-  const effective = resolveCommunication(repository?.primaryCheckout ?? null);
-  const summary = [
-    `${COMMUNICATION_SAVED[scope][style]} ${recorded.changed ? "Saved in" : "Already saved in"} ${recorded.path}.`,
-    effective.style === style || effective.path === recorded.path
-      ? null
-      : `For you it stays ${effective.style === "ultra-simple" ? "on" : "off"}: ${effective.path} outranks it.`,
-  ]
-    .filter((line): line is string => line !== null)
-    .join(" ");
+  const saved = savedCommunication(
+    scope,
+    style,
+    recorded,
+    repository?.primaryCheckout ?? null
+  );
   writeOutput(
-    {
-      communication: {
-        effective,
-        path: recorded.path,
-        scope,
-        style,
-        written: recorded.changed,
-      },
-      summary,
-    },
+    { communication: saved.report, summary: saved.summary },
     options.json,
-    `${summary}\n`
+    `${saved.summary}\n`
   );
 };
 
@@ -2433,6 +2481,9 @@ const renderRunOnlyRequest = (request: RunOnlyRequest | null): string =>
     ? `\nNothing was saved. Pass this to every later initialize and loop start in this run:\n--policy-request ${shellQuoted(request.policyRequest)}\n${request.authoringRequest ? `Pass this to every later initialize, proposal record-review, and loop start --mode resume in this run:\n--authoring-request ${shellQuoted(request.authoringRequest)}\n` : ""}`
     : "";
 
+const renderSavedStyle = (saved: SavedCommunication | null): string =>
+  saved ? `${saved.summary}\n` : "";
+
 interface SetupRun {
   result: Record<string, unknown> & {
     confirmed: boolean;
@@ -2443,12 +2494,43 @@ interface SetupRun {
   text: string;
 }
 
+// `setup --first-use` is one transaction with one writer, the setup's own.
+// Whatever would start another transaction, ask a question, or save nothing
+// is refused before anything is read or locked.
+const assertFirstUseInvocation = (options: CliOptions): void => {
+  if (options.authoring !== undefined) {
+    throw new SimpleChangesError(
+      "setup --first-use saves a first setup and never the review settings; record --authoring in a separate setup.",
+      EXIT_CODES.usage
+    );
+  }
+  if (options.dryRun) {
+    throw new SimpleChangesError(
+      "setup --first-use has no --dry-run: it saves the confirmed setup or refuses.",
+      EXIT_CODES.usage
+    );
+  }
+  if (options.scope !== "repository" && options.scope !== "user") {
+    throw new SimpleChangesError(
+      "setup --first-use requires --scope repository or --scope personal; a setup for one run saves nothing.",
+      EXIT_CODES.usage
+    );
+  }
+  if (!options.yes) {
+    throw new SimpleChangesError(
+      "setup --first-use requires --yes, after the person confirmed what will be saved and where.",
+      EXIT_CODES.usage
+    );
+  }
+};
+
 const runSetup = async (options: CliOptions): Promise<void> => {
-  if (options.communication !== undefined) {
+  if (options.firstUse) {
+    assertFirstUseInvocation(options);
+  } else if (options.communication !== undefined) {
     await runCommunicationSetup(options, options.communication);
     return;
-  }
-  if (options.authoring !== undefined) {
+  } else if (options.authoring !== undefined) {
     await runAuthoringSetup(options, options.authoring);
     return;
   }
@@ -2456,61 +2538,114 @@ const runSetup = async (options: CliOptions): Promise<void> => {
   writeOutput(setup.result, options.json, setup.text);
 };
 
-// Where a confirmed setup saves the style its first screen selected: beside
-// the policy for the same scope. Null when no style was selected, the setup
-// was declined, or it is run-only.
-const setupCommunicationTarget = (
-  selection: Pick<
-    Awaited<ReturnType<typeof collectOnboardingSelection>>,
-    "communication" | "confirmed" | "scope"
-  >,
-  primaryCheckout: string | null
-): string | null => {
-  if (
-    !(selection.confirmed && selection.communication) ||
-    selection.scope === "run"
-  ) {
-    return null;
-  }
-  const paths = communicationPaths(primaryCheckout);
-  return selection.scope === "repository" ? paths.repository : paths.personal;
+interface FirstUseSave {
+  /** False for an ordinary setup, whose other members then do nothing. */
+  active: boolean;
+  /**
+   * Throws, with nothing written, unless this is still a first use. Called
+   * before the setup is built and again under the lock, before the first
+   * write.
+   */
+  assertStillFirstUse: () => void;
+  /** Saves the style once the setup is written; null when none was passed. */
+  saveStyle: (
+    setupWritten: boolean
+  ) => { changed: boolean; path: string } | null;
+  /** What a saved style reports, with the style now in effect. */
+  styleReport: (
+    recorded: { changed: boolean; path: string } | null
+  ) => SavedCommunication | null;
+}
+
+const ORDINARY_SETUP: FirstUseSave = {
+  active: false,
+  assertStillFirstUse: () => undefined,
+  saveStyle: () => null,
+  styleReport: () => null,
 };
 
-// "Use this setup" is offered only when nothing is saved. Checked again
-// here, under the setup lock and before the first write: a setup saved
-// while this one was open is never replaced, and a style file this copy
-// could not replace stops the save before anything lands. `policyPath` is
-// where this setup would write its policy, null for run-only.
-const assertQuickStartStillSafe = (
-  policyPath: string | null,
-  communicationTarget: string | null
-): void => {
-  if (!communicationTarget) {
-    return;
-  }
-  if (policyPath && policyEntryExists(policyPath)) {
+const assertNoSavedSetup = (policyPaths: string[]): void => {
+  const saved = policyPaths.find((path) => policyEntryExists(path));
+  if (saved) {
     throw new SimpleChangesError(
-      `A setup was saved at ${policyPath} while this one was open, so nothing was written. Run setup again to review it.`,
+      `A setup is already saved at ${saved}, so this first-use setup wrote nothing. Run setup without --first-use to review or change it.`,
       EXIT_CODES.unsafe
     );
   }
-  assertCommunicationWritable(communicationTarget);
 };
 
-const writeSetupCommunication = (
-  target: string | null,
-  selection: Pick<
-    Awaited<ReturnType<typeof collectOnboardingSelection>>,
-    "communication" | "scope"
-  >
-): { changed: boolean; path: string } | null =>
-  target && selection.communication
-    ? writeCommunication(
-        target,
-        selection.communication,
-        selection.scope === "user"
-      )
-    : null;
+// The receipt a first-use save follows promises the plain wording. A person
+// whose own setting keeps the standard one would not get it, whatever the
+// project saves.
+const assertPlainWordingApplies = (style: CommunicationStyle): void => {
+  const personal = resolveCommunication(null);
+  if (
+    style === "ultra-simple" &&
+    personal.source === "personal" &&
+    personal.style === "standard"
+  ) {
+    throw new SimpleChangesError(
+      `Your own setting in ${personal.path} keeps the standard wording and outranks the project's, so this first-use setup wrote nothing. Run setup without --first-use, or change your own setting with setup --communication ultra-simple --scope personal.`,
+      EXIT_CODES.unsafe
+    );
+  }
+};
+
+/**
+ * `setup --first-use`: save the supplied setup, and the style when
+ * `--communication` comes with it, only when nothing is saved yet. First use
+ * means no policy entry at the repository layer or the personal one, so a
+ * setup someone saved while this one was open is never replaced or
+ * shadowed, and a style destination that is unset or already says the same.
+ */
+const firstUseSave = (
+  options: CliOptions,
+  primaryCheckout: string | null
+): FirstUseSave => {
+  if (!options.firstUse) {
+    return ORDINARY_SETUP;
+  }
+  const personal = options.scope === "user";
+  if (!(personal || primaryCheckout)) {
+    throw new SimpleChangesError(
+      "Repository-scoped setup requires a Git repository; use --scope personal outside one.",
+      EXIT_CODES.usage
+    );
+  }
+  const policyPaths = [
+    primaryCheckout ? setupPolicyPath("repository", primaryCheckout) : null,
+    setupPolicyPath("user", null),
+  ].filter((path): path is string => path !== null);
+  const sidecars = communicationPaths(primaryCheckout);
+  const style = options.communication;
+  const target = personal ? sidecars.personal : sidecars.repository;
+  if (!(style && target)) {
+    return {
+      ...ORDINARY_SETUP,
+      active: true,
+      assertStillFirstUse: () => assertNoSavedSetup(policyPaths),
+    };
+  }
+  return {
+    active: true,
+    assertStillFirstUse: () => {
+      assertNoSavedSetup(policyPaths);
+      assertCommunicationUnsetOrSame(target, style);
+      assertPlainWordingApplies(style);
+    },
+    saveStyle: (setupWritten) =>
+      setupWritten ? writeCommunication(target, style, personal) : null,
+    styleReport: (recorded) =>
+      recorded
+        ? savedCommunication(
+            personal ? "personal" : "repository",
+            style,
+            recorded,
+            primaryCheckout
+          )
+        : null,
+  };
+};
 
 // The setup answers this invocation supplies, after refusing a combination
 // that cannot run: an incomplete non-interactive setup, or automatic pushes
@@ -2526,6 +2661,12 @@ const resolveSetupInputs = (
     instructionTargetCount,
     changelogInstallOfferApplies(context.changelog)
   );
+  if (needsPrompt && options.firstUse) {
+    throw new SimpleChangesError(
+      "setup --first-use asks nothing: supply every answer the setup needs, as a non-interactive setup does, and --yes.",
+      EXIT_CODES.usage
+    );
+  }
   if (needsPrompt && !process.stdin.isTTY) {
     throw new SimpleChangesError(
       "Interactive setup requires a terminal. Supply --finish, --questions, --scope, --git-push-authorization for every pushing finish, --production and --shipping-mode when shipping, --migration-handling and --migration-target for automatic migration apply, --changelog when relevant, --changelog-install after offering the Simple Changelogs install when changelog work is relevant but no compatible provider is installed, --ui-versioning with --ui-artifacts, --instruction-pointer when an instruction file exists, --handoff when adding the pointer, --instruction-file when selecting among targets, and --yes.",
@@ -2533,7 +2674,7 @@ const resolveSetupInputs = (
     );
   }
   if (
-    !process.stdin.isTTY &&
+    (options.firstUse || !process.stdin.isTTY) &&
     options.gitPushAuthorization === "configure-harness" &&
     !options.acknowledgePushScope
   ) {
@@ -2547,6 +2688,10 @@ const resolveSetupInputs = (
 
 const performSetup = async (options: CliOptions): Promise<SetupRun> => {
   const context = setupContext(options.repo);
+  const firstUse = firstUseSave(options, context.primaryCheckout);
+  firstUse.assertStillFirstUse();
+  // A first-use save asks nothing, in a terminal or out of one.
+  const interactiveSetup = process.stdin.isTTY && !firstUse.active;
   const instructionTargets = options.scope
     ? discoverInstructionTargets(
         options.scope,
@@ -2569,22 +2714,12 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
       context.primaryCheckout,
       options.uiArtifacts,
       {
-        authoring: process.stdin.isTTY
+        authoring: interactiveSetup
           ? interactiveAuthoringContext(context.primaryCheckout)
           : null,
         existingPersonalDefaults: context.existingPersonalDefaults,
-        firstUse: context.firstUse,
         forgeProvider: context.forgeProvider,
-        personalPaths: {
-          communication: communicationPaths(null).personal,
-          policy: resolvePersonalPolicyPath(),
-        },
-        // Someone who already chose full detail for themselves is not
-        // offered a setup whose receipt promises them the plain wording.
-        personalStandardStyle:
-          resolveCommunication(null).source === "personal" &&
-          resolveCommunication(null).style === "standard",
-        showFirstScreen: process.stdin.isTTY,
+        showFirstScreen: interactiveSetup,
       }
     );
     const path = setupPolicyPath(selection.scope, context.primaryCheckout);
@@ -2608,13 +2743,36 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
               : paths.personal;
           })()
         : null;
-    // "Use this setup" also turns on Ultra-Simple Mode, in the sidecar beside
-    // the policy for the same scope; run-only setup writes nothing.
+    // A first-use save may also record the style, in the sidecar beside the
+    // policy for the same scope.
     let communicationWrite: { changed: boolean; path: string } | null = null;
-    const communicationTarget = setupCommunicationTarget(
-      selection,
-      context.primaryCheckout
-    );
+    const savePolicy = (): void => {
+      if (!(written && path)) {
+        return;
+      }
+      writePolicyFile(
+        path,
+        policy,
+        selection.scope === "user",
+        firstUse.active
+      );
+      if (selection.scope === "repository" && context.primaryCheckout) {
+        writeRepositoryPolicyTrustReceipt(
+          context.primaryCheckout,
+          locateRepository(context.primaryCheckout).repository
+            .commonGitDirectory,
+          "confirmed-setup-user",
+          "User confirmed these exact consequential repository settings in Simple Changes setup."
+        );
+      }
+    };
+    // A first-use save installs the policy before anything else, without
+    // replacing: when another setup landed after the check, nothing of this
+    // one has been written. An ordinary setup saves it after the rest, as
+    // it always has.
+    const [savePolicyFirst, savePolicyLast] = firstUse.active
+      ? [savePolicy, () => undefined]
+      : [() => undefined, savePolicy];
     const applyWrites = (): {
       instructionPointerChanged: boolean;
       instructionPointerWritten: boolean;
@@ -2623,7 +2781,8 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
       scratchFileRuleChanged: boolean;
       scratchFileRuleWritten: boolean;
     } => {
-      assertQuickStartStillSafe(path, communicationTarget);
+      firstUse.assertStillFirstUse();
+      savePolicyFirst();
       if (authoringTarget && selection.authoring) {
         authoringWrite = writeAuthoringSidecar(
           authoringTarget,
@@ -2672,24 +2831,10 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
         reviewLoopRuleWritten = ruleResult.written;
         reviewLoopRuleChanged = ruleResult.changed;
       }
-      if (written && path) {
-        writePolicyFile(path, policy, selection.scope === "user");
-        if (selection.scope === "repository" && context.primaryCheckout) {
-          writeRepositoryPolicyTrustReceipt(
-            context.primaryCheckout,
-            locateRepository(context.primaryCheckout).repository
-              .commonGitDirectory,
-            "confirmed-setup-user",
-            "User confirmed these exact consequential repository settings in Simple Changes setup."
-          );
-        }
-      }
+      savePolicyLast();
       // Last, after the setup itself is saved: its destination was checked
       // before the first write, so this cannot leave a setup half saved.
-      communicationWrite = writeSetupCommunication(
-        communicationTarget,
-        selection
-      );
+      communicationWrite = firstUse.saveStyle(written);
       return {
         instructionPointerChanged,
         instructionPointerWritten,
@@ -2727,6 +2872,7 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
     } else {
       writeResult = applyWrites();
     }
+    const savedStyle = firstUse.styleReport(communicationWrite);
     const result = {
       // `authoring` is the persistence receipt (null for run-only, which
       // writes nothing); `authoringAnswer` is the confirmed answer itself,
@@ -2735,12 +2881,9 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
       authoringAnswer: selection.confirmed ? selection.authoring : null,
       changelogCoordination: context.changelog,
       changelogInstall: selection.changelogInstall,
-      // The sidecar "Use this setup" wrote, or null when the style was left
-      // as it is.
-      communication: communicationWrite as {
-        changed: boolean;
-        path: string;
-      } | null,
+      // The style a first-use save recorded, with the style now in effect
+      // for this person; null when the style was left as it is.
+      communication: savedStyle?.report ?? null,
       confirmed: selection.confirmed,
       instructionPointer: {
         ...selection.instructionPointer,
@@ -2774,7 +2917,7 @@ const performSetup = async (options: CliOptions): Promise<SetupRun> => {
     const outcome = setupOutcome(selection.confirmed, written, path);
     return {
       result: { ...result, runRequest },
-      text: `${selection.summary}\n\n${outcome}\n${renderRunOnlyRequest(runRequest)}`,
+      text: `${selection.summary}\n\n${outcome}\n${renderSavedStyle(savedStyle)}${renderRunOnlyRequest(runRequest)}`,
     };
   } finally {
     interactive.close();

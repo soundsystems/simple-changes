@@ -27,52 +27,59 @@
   `setup --communication <style> --scope repository|personal --confirm`
   refuses every other setup input, `--migration-target`, `--authoring`, a
   run-only scope, and a missing `--confirm` with exit 2, then calls
-  `writeCommunication`: stage and rename, 0644 for the repository and 0600
-  for the personal file, no write when the style is already saved, and
-  exit 5 for a file it cannot read or that is not a regular file. A
-  repository write holds the same setup lock as `setup --authoring`; a
-  personal write touches no repository state and takes none. Its summary
-  says what was saved for the scope and, when another file decides, which
-  one.
+  `writeCommunication`: stage and install, 0644 for the repository and
+  0600 for the personal file, no write when the style is already saved,
+  and exit 5 for a file it cannot read or that is not a regular file. A
+  file with members this version does not know is never rewritten:
+  parsing and writing it back can alter a value, as it does an integer
+  above 2^53. A new file is installed with
+  `installWithoutReplacing` (`lib/path-safety.ts`: a hard link, or an
+  exclusive copy where links are unavailable), so two first saves cannot
+  both win; once installed the file is saved, and a failure to remove the
+  staged name is not reported as a failed save. The command also refuses
+  `--dry-run`,
+  `--ui-artifacts`, and `--acknowledge-push-scope` before it resolves a
+  destination or takes a lock. A repository write holds the same setup
+  lock as `setup --authoring`; a personal write touches no repository
+  state and takes none. Its summary says what was saved for the scope and,
+  when another file decides, which one.
 - `initialize` reports `communication` (`style`, `source`, `path`,
   `errors`) in every mode, and `initialization.schema.json` gains the
-  property. Nothing else reads the style: a test asserts that only
-  `initialization.ts` (a type import) and `onboarding.ts` import
-  `lib/communication.ts`, so no rule can use it to decide what is allowed.
-- First screen (`lib/onboarding.ts`): `selectQuickStart` presents the
-  outcome sentence for the request's finish and asks
-  `ONBOARDING_QUESTIONS.quickStart`. It is offered only when
-  `quickStartAvailable` holds: no saved policy (`firstUse`, which is false
-  when Git failed for any reason other than "not a git repository"), no
-  setup input other than the finish and scope, and no personal `standard`
-  style. **Use this setup** is the existing recommended style with
-  `communication: "ultra-simple"` on the selection and the instruction
-  pointer, both instruction rules, and the Simple Changelogs install offer
-  left alone; the review questions are still asked when two agents are
-  detected. `renderUltraSimpleSummary` is the receipt, returned only when
-  `quickStartPromisesHold` (ask for production and migrations, no
-  automatic push, standard shipping, questions only when blocked);
-  otherwise the full summary is shown. `performSetup` checks again under
-  the setup lock (`assertQuickStartStillSafe`: `policyEntryExists` uses
-  `lstat`, so a policy saved meanwhile or a dangling policy link stops the
-  save, and an unusable style file stops it before the first write), then
-  writes the policy and its trust receipt, and the style last.
-- No quick-start command. Review round 1 asked for a non-interactive form
-  of **Use this setup**, and round 2 then found five defects in the
-  resulting `setup --quick-start` (a preview that took the write lock, an
-  `--authoring` mix that bypassed its refusal, terminal prompts under an
-  explicit flag, a first-use check outside the lock, a partial save). It
-  was removed: a chat agent runs the existing recommended setup with its
-  answers fixed to the safe defaults, then `setup --communication`, as
-  `references/ultra-simple-mode.md` spells out. A test runs exactly those
-  two commands for each finish.
+  property. Nothing else reads the style: a test asserts that
+  `initialization.ts` (a type import) is the only library module that
+  imports `lib/communication.ts`, so no rule can use it to decide what is
+  allowed.
+- First use (`setup --first-use` in `simple-changes.ts`): the first screen
+  is guidance text, and the one setup writer gained a precondition. Review
+  found defects in a second setup path three rounds running: a
+  `setup --quick-start` command, then a terminal first screen with its own
+  receipt and recheck, then a two-command chat recipe that could replace a
+  setup saved meanwhile or save half of itself. Both were removed, and
+  `lib/onboarding.ts` is byte-identical to 0.33.0. `assertFirstUseInvocation`
+  refuses `--authoring`, `--dry-run`, a run-only scope, and a missing
+  `--yes`; `resolveSetupInputs` refuses a missing answer instead of
+  prompting, in a terminal too. `firstUseSave` returns the three checks
+  that make the save conditional: `assertNoSavedSetup` (the repository
+  policy when inside a repository, and the personal policy, by `lstat`, so
+  a dangling link counts as saved), `assertPlainWordingApplies` (a personal
+  `standard` sidecar would outrank the receipt), and
+  `assertCommunicationUnsetOrSame` (the style destination holds another
+  style or cannot be read). They run before the setup is built and again
+  inside `applyWrites`, under the setup lock. `writePolicyFile` takes
+  `createOnly` and then installs with `installWithoutReplacing`, so a
+  policy saved after the check is never replaced. A first-use save writes
+  the policy before the instruction files, so losing that race leaves
+  nothing else written; an ordinary setup keeps its order. The style is
+  written last, to a destination already checked. `performSetup` treats a
+  first-use run as non-interactive whatever the terminal, so it builds no
+  authoring answer and writes no authoring sidecar.
 - Guidance text: new `references/ultra-simple-mode.md`.
   `references/user-communication.md` gains Say less, Keep work moving, and
   Messages to other agents, its questions rules defer to the saved
   `questions` preference, and final responses report an existing preview
   link and a before and after picture. `references/onboarding.md` leads
-  with the outcome screen at first use and moves the four setup styles
-  under `### Show options`. `references/setup-and-policy.md` gains
+  with the outcome screen at first use, as a conversation step, and moves
+  the four setup styles under `### Show options`. `references/setup-and-policy.md` gains
   Communication preference, `change-requests.md` a default naming
   paragraph, and `migrations-and-high-risk-actions.md`,
   `ship-communication.md`, and `inventory-and-concurrency.md` one pointer
@@ -93,9 +100,12 @@
   production and routine automatic migrations, turning the mode on leaves
   the policy and its trust receipt byte-identical and every authority
   field `initialize` reports unchanged; with the same policy untrusted, no
-  trust receipt appears and authority stays reduced. `onboarding.test.ts`
-  covers the first screen for all three finishes, its gating, and the
-  receipt's refusal of every setting it would misstate.
+  trust receipt appears and authority stays reduced. It runs the exact
+  `setup --first-use` command of the reference for all three finishes, and
+  covers every refusal: a setup saved at either layer, a dangling policy
+  link, another saved style, a personal `standard` style, an unreadable
+  style file, a missing answer, and each flag it rejects, with nothing
+  written in any of them.
   `skill-contract.test.ts` pins the new copy in two tests, and nine
   journeys in `evals/cases.json` cover first and repeat use, a routine
   database update on a saved and on an unapproved target, a partial run,
@@ -104,20 +114,46 @@
 - Guidance stays 33. A bump would stop the next write-capable run in every
   configured repository with an update notice for a mode that is off by
   default and rules that need no decision.
-- Lifted from the unmerged 0.34.0 line, unchanged, with `cherry-pick -x`:
-  the Git 2.53 fixture and ship-hold fixes
-  (`fix/0-34-0-git-2-53-compat`: d83bd03, b03af77, f1c12b4), the lineage
-  fixes for soundsystems/simple-changes#20 and #26
-  (`fix/0-34-0-lineage-keeps-work`: 7143fbf, 5edd153), and the upstream
-  hold fixes for #19 and #27 (`fix/0-34-0-remote-prune-holds`: 76c46d3,
-  8770761, 98dbe3e, 5abf468, f04a224). All three branch from the same
-  `main` commit as this release. Each makes cleanup keep more, never
+- Lifted from the unmerged 0.34.0 line with `cherry-pick -x`: the Git 2.53
+  fixture and ship-hold fixes (`fix/0-34-0-git-2-53-compat`: d83bd03,
+  b03af77, f1c12b4), the lineage fixes for soundsystems/simple-changes#20
+  and #26 (`fix/0-34-0-lineage-keeps-work`: 7143fbf, 5edd153), and the
+  upstream hold fixes for #19 and #27 (`fix/0-34-0-remote-prune-holds`:
+  76c46d3, 8770761, 98dbe3e, 5abf468, f04a224). All three branch from the
+  same `main` commit as this release. Each makes cleanup keep more, never
   delete more. Without d83bd03, `bun run check` cannot pass on Git 2.53
   or later.
+- Two lifted fixes changed after the full-range review, and the 0.40.0
+  line needs both changes when it merges `main`:
+  - `deleteRemoteRef` (`lib/ship-holds.ts`): `goneBeforeDelete` replaces
+    `refKept`. A failed delete is considered withdrawn only when the push
+    itself says this exact ref was already gone: Git's own status line
+    `! [remote rejected] <ref> (reference does not exist)`, or an older
+    Git's bare `unable to resolve reference '<ref>'`. The lifted rule
+    treated every rejection except a short list as possibly gone and let
+    `ls-remote` settle it, but a host can hide a ref from listings
+    (`uploadpack.hideRefs`) and still decline its deletion, which read as
+    withdrawn and was never retried. A declined delete now stays pending
+    whatever the listing shows, and the retry settles it, because deleting
+    a ref that is by then absent exits 0. The pattern matches only the
+    status line, so the same words in a remote hook's message, which
+    arrive behind `remote:`, prove nothing.
+  - `trackedProviderBranches` (`lib/remote-branch-prune.ts`) returns Git's
+    upstream and every configured `branch.<name>.merge` value together.
+    The lifted fix returned only Git's upstream when Git gave one, so with
+    two merge values the second branch, which 0.33.0 held, was proposed
+    for deletion.
+- Known gap, filed as soundsystems/simple-changes#36 and unchanged from
+  0.33.0: upstreams and configuration are read from the primary checkout
+  only, so an upstream that only a linked worktree's configuration defines
+  (a branch-conditional include, or `extensions.worktreeConfig`) is not
+  held.
 - Review: gpt-6.2-astra at high effort. Round 1 found 2 blocking and 10
   should-fix defects. Round 2 found 1 blocking and 12 should-fix and
-  reopened five round 1 items. Each fix is described above.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-18T17:29:50-06:00" -->
+  reopened five round 1 items. Round 3, over the full range, found 12
+  should-fix defects, eight of them in first-use setup, so that approach
+  was replaced as described above instead of patched again.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-18T22:09:00-06:00" -->
 
 ## 0.33.0 - 2026-10-24
 

@@ -490,10 +490,20 @@ ignore it and keep the standard voice.
 refuses any other setup option in the same command, so changing how Simple
 Changes talks can never change the policy, its trust receipt, or anything
 Simple Changes is allowed to do. It never replaces a file it cannot read or
-that is not a regular file. At first use, **Use this setup** runs it right
-after the recommended setup, for the same storage; interactive setup offers
-that choice only when no policy is saved, checks again before its first
-write, and saves the style last.
+that is not a regular file, and never rewrites one holding members this
+version does not know.
+
+`--first-use` is the one place another setup option joins it. At first use,
+**Use this setup** runs `setup --first-use --communication ultra-simple` with
+every answer of the recommended setup and `--yes`, so the policy and the
+style are one save. The flag makes that save conditional: it writes only
+while no repository or personal policy exists, checks that again under the
+setup lock, and installs the policy first, without replacing a file that
+appeared meanwhile. Before writing anything it refuses a style destination
+that holds a different style or cannot be read, and an Ultra-Simple style
+the person's own `standard` setting would outrank. It never prompts, in a
+terminal or out of one, never writes the authoring sidecar, takes `--scope
+repository` or `--scope personal` only, and saves the style last.
 
 `initialize` reports the effective `communication.style`, its `source`, and
 the `path` it came from. Precedence, highest first: the current request, the

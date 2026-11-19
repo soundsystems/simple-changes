@@ -1622,7 +1622,8 @@ const outcome = (built: ReturnType<typeof buildRemoteInventory>) => ({
 describe("an upstream is read the way Git resolves it", () => {
   // Issue #19: main lists two merge values, kept and then other. Git's
   // upstream is the first, origin/kept, but reading the configuration by
-  // hand took the last, so kept was proposed and other was held instead.
+  // hand took the last, so kept was proposed and only other was held. A
+  // pull merges both, so both hold.
   const twoMerges = () => {
     const { root } = repository();
     git(root, ["remote", "add", "origin", "git@gitlab.com:group/project.git"]);
@@ -1633,7 +1634,7 @@ describe("an upstream is read the way Git resolves it", () => {
     return { head: git(root, ["rev-parse", "HEAD"]), heads, root };
   };
 
-  test("with two merge values, the first one, which Git uses, holds", () => {
+  test("with two merge values, the one Git uses and the other both hold", () => {
     const { head, heads, root } = twoMerges();
     // Control: with main tracking nothing, both merged heads are proposed.
     expect(outcome(mergedHeads(head, heads, localHolds(root)))).toEqual({
@@ -1651,11 +1652,15 @@ describe("an upstream is read the way Git resolves it", () => {
       ])
     ).toBe("origin/kept");
     const built = mergedHeads(head, heads, localHolds(root));
+    const why = `upstream of main, checked out in ${root}`;
     expect(outcome(built)).toEqual({
-      held: [["kept", `upstream of main, checked out in ${root}`]],
-      proposed: ["other"],
+      held: [
+        ["kept", why],
+        ["other", why],
+      ],
+      proposed: [],
     });
-    // Finalize reports from the same holds: kept is held, other pending.
+    // Finalize reports from the same holds: both held, nothing pending.
     const report = remoteBranchCleanupReport({
       claims: [],
       inventory: captureInventory(root, { skipWorktreeStatus: true }),
@@ -1664,9 +1669,10 @@ describe("an upstream is read the way Git resolves it", () => {
     });
     expect(report.errors).toEqual([]);
     expect(report.held.map((branch) => [branch.name, branch.reasons])).toEqual([
-      ["kept", [`upstream of main, checked out in ${root}`]],
+      ["kept", [why]],
+      ["other", [why]],
     ]);
-    expect(report.pending.map((branch) => branch.name)).toEqual(["other"]);
+    expect(report.pending.map((branch) => branch.name)).toEqual([]);
   });
 
   test("a merge value Git maps to no remote-tracking branch still holds", () => {
@@ -1774,11 +1780,11 @@ try {
         (cleanup) => cleanups.push(cleanup)
       ).reply;
     const reason = `upstream of main, checked out in ${root}`;
-    // Control: a Git that knows the atoms holds only its upstream.
-    expect(run()).toMatchObject({ kept: [reason] });
-    expect(run()).not.toHaveProperty("other");
+    // Control: a Git that knows the atoms holds its upstream and the other
+    // merge value alike.
+    expect(run()).toMatchObject({ kept: [reason], other: [reason] });
     // Git 2.13 to 2.15, and Git before 2.13, refuse the atoms in their own
-    // words, so the configuration holds every value.
+    // words, so the configuration alone holds every value.
     const refused = {
       exitCode: 128,
       stderr: "fatal: unrecognized %(upstream) argument: remotename",

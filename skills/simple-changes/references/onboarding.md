@@ -95,15 +95,21 @@ Nothing will go live." For ship: "I'll check your change, get it a second
 look, add it to the project, and ask you before anything goes live."
 
 **Use this setup** is the recommended setup with its answers fixed to the
-safe defaults, followed by `setup --communication ultra-simple` for the same
-storage. Show the plain receipt in
-[first use](ultra-simple-mode.md#first-use) and save, with the two commands
-it gives, only after the person confirms it. It asks no setup preference and
-leaves instruction files alone. Whatever `initialize` reports as required is
-still asked, once and in plain words: the pending review question when two
-or more agents are detected, and a pending Simple Changelogs install offer.
+safe defaults, plus the Ultra-Simple style, saved together by one
+`setup --first-use` command. Show the plain receipt in
+[first use](ultra-simple-mode.md#first-use) and run the command it gives
+only after the person confirms it. The command saves only while nothing is
+saved, asks nothing, writes no review settings, and leaves instruction files
+alone. Whatever `initialize` reports as required is still asked, once and in
+plain words: a pending Simple Changelogs install offer before the save, and
+the pending review question when two or more agents are detected, recorded
+with `setup --authoring` as
+[agents, models, and reviews](#agents-models-and-reviews) describes.
 Choosing it grants nothing the recommended setup does not: the mode is a
 display preference, never a permission.
+
+This screen is a step in the conversation. `simple-changes setup` run in a
+terminal opens with the full choices under [Show options](#show-options).
 
 Offer this screen only at first use. When a policy is already saved, the
 request names a setup choice, or the person saved the standard style for
@@ -378,9 +384,9 @@ this** (`null`).
 **Reviews.** With two or more detected agents, ask the review questions in
 every setup style, **Use this setup** and run-only included, whatever the
 agent list selected; otherwise ask them in Customize and the walkthrough, or
-when a second model name was recorded. Explain that a review from a different agent catches what
-the author's model tends to miss, and self-review never counts. Ask **Who
-should perform independent reviews?**
+when a second model name was recorded. Explain that a review from a
+different agent catches what the author's model tends to miss, and
+self-review never counts. Ask **Who should perform independent reviews?**
 
 1. **A different agent (Recommended when more than one agent is recorded)**:
    offered only with two or more recorded agents.

@@ -1,4 +1,12 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import {
+  constants,
+  copyFileSync,
+  existsSync,
+  linkSync,
+  lstatSync,
+  realpathSync,
+  unlinkSync,
+} from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 
@@ -60,4 +68,49 @@ export const assertNoSymlinkAncestors = (
     );
   }
   return safe.absolutePath;
+};
+
+const alreadyExists = (error: unknown): boolean =>
+  (error as NodeJS.ErrnoException).code === "EEXIST";
+
+/**
+ * Puts a finished staged file at `path` only when nothing is there, a
+ * dangling symbolic link included. Returns false, with `path` untouched,
+ * when something is; the caller reports that as someone else's save. A hard
+ * link installs the complete file in one step; a filesystem without hard
+ * links gets an exclusive copy, which still never replaces a file. Once
+ * installed, the file is saved: the staged name is removed here, and a
+ * failure to remove it is never reported as a failed save. When this
+ * returns false or throws, the staged file is the caller's to remove.
+ */
+export const installWithoutReplacing = (
+  stagedPath: string,
+  path: string
+): boolean => {
+  const installed = (): boolean => {
+    try {
+      unlinkSync(stagedPath);
+    } catch {
+      // The installed file is the save; a leftover staged name changes
+      // nothing a later run reads.
+    }
+    return true;
+  };
+  try {
+    linkSync(stagedPath, path);
+    return installed();
+  } catch (error) {
+    if (alreadyExists(error)) {
+      return false;
+    }
+  }
+  try {
+    copyFileSync(stagedPath, path, constants.COPYFILE_EXCL);
+    return installed();
+  } catch (error) {
+    if (alreadyExists(error)) {
+      return false;
+    }
+    throw error;
+  }
 };

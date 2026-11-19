@@ -38,10 +38,11 @@ simple-changes setup --communication ultra-simple --scope repository --confirm
 
 That writes one file, `<primary-checkout>/.simple-changes-communication.json`,
 and nothing else: no policy, no trust receipt, no instruction file. Commit it
-beside `.simple-changes.json` and everyone working in the project gets the
-mode with no setup of their own. `--scope personal` writes a private
-`communication.json` beside the personal preferences instead, for this person
-in every project. `--communication standard` turns it off.
+beside `.simple-changes.json` and it is the project's default: teammates get
+the mode with no setup of their own, unless their own setting says
+otherwise. `--scope personal` writes a private `communication.json` beside
+the personal preferences instead, for this person in every project.
+`--communication standard` turns it off.
 
 Which setting applies, highest first:
 
@@ -107,11 +108,11 @@ Simple Changes says to the person, not what it writes for reviewers and tools.
 
 ## First use
 
-When setup is needed and nothing is saved yet, the first screen is one
-sentence and two choices; see
-[the first screen](onboarding.md#first-screen). **Use this setup** is the
-recommended setup with its answers fixed, plus this mode. Show what will be
-remembered and where, with the real paths, and save only after a yes:
+When setup is needed and nothing is saved yet, open with
+[the first screen](onboarding.md#first-screen): one sentence and two
+choices. **Use this setup** is the recommended setup with its answers fixed,
+plus this mode. Show what will be remembered and where, with the real paths,
+and save only after a yes:
 
 > Here's what I'll remember for this project:
 >
@@ -125,26 +126,44 @@ remembered and where, with the real paths, and save only after a yes:
 
 Change the first line to match the request's finish: "I add your change to
 the project once it's approved" for merge, and "I take your change live
-after I ask you" for ship. Then save it with the two existing commands, the
-setup first, so every line above is what was saved:
+after I ask you" for ship. Then save all of it with one command, so every
+line above is what was saved:
 
 ```sh
-simple-changes setup --finish <review|integrate|ship> \
-  --questions blocking-only --scope repository \
-  --git-push-authorization ask --production ask --shipping-mode standard \
-  --migration-handling ask-after-review --changelog <handling> \
-  --instruction-pointer leave --yes
-simple-changes setup --communication ultra-simple --scope repository --confirm
+simple-changes setup --first-use --communication ultra-simple \
+  --finish <review|integrate|ship> --questions blocking-only \
+  --scope repository --git-push-authorization ask --production ask \
+  --shipping-mode standard --migration-handling ask-after-review \
+  --changelog <handling> --instruction-pointer leave --yes
 ```
 
-Outside a Git repository use `--scope personal` for both and say so in the
-receipt. `<handling>` is `delegate-if-available` when `initialize` reports a
-compatible changelog workflow and `preserve-and-report` otherwise; when the
-project has release notes, add a line for it: "I hand release notes to
-Simple Changelogs" or "I leave release notes alone and tell you what still
-needs writing". When `initialize` reports a pending Simple Changelogs
-install offer, make that offer first, in one line, and pass the answer as
-`--changelog-install`; never record an answer the person did not give.
+`--first-use` saves only while nothing is saved, and checks that again at
+the moment it writes, so an answer given a minute ago never replaces a setup
+someone finished meanwhile. It writes nothing when:
+
+- a setup is already saved for the project or for the person;
+- the project or the person already has a different style saved, or a style
+  file it cannot read;
+- the person keeps the standard wording for themselves, which would outrank
+  the project's and make the receipt untrue.
+
+It asks nothing, so a missing answer is an error and never a prompt, and it
+writes no review settings. When it refuses, say what is already saved, work
+from that, and offer **Show options** if the person wants a change. Never
+drop the flag to get past a refusal.
+
+Outside a Git repository use `--scope personal` and say so in the receipt.
+`<handling>` follows `changelogCoordination.capabilityAvailable` from
+`initialize`: `delegate-if-available` when it is true, `preserve-and-report`
+otherwise. When the project has release notes, add a line that is true
+either way: "I hand release notes to Simple Changelogs when it can take them
+here, and otherwise leave them alone and tell you what still needs writing."
+The saved answer proves nothing about the provider: confirm what it supports
+before each handoff, as
+[changelog coordination](changelog-coordination.md) requires. When
+`initialize` reports a pending install offer (`changelogInstall`), make that
+offer first, in one line, and pass the answer as `--changelog-install`;
+never record an answer the person did not give.
 
 This path changes no answer above and adds none. A different stopping
 point, automatic pushes, [Autopilot](#autopilot), or anything else is chosen
@@ -171,9 +190,10 @@ before the run changes anything:
   different AI tool is the safer choice.");
 - an [update notice](guidance-updates.md): its required answers first, then
   any recommended change with the current and the proposed setting, then
-  what matters in a line and the same choices the standard notice offers, in
-  short form ("Simple Changes was updated: `<what matters>`. Your settings
-  are the same. Carry on, hear more, or decide later?");
+  what matters in a line and every choice the standard notice offers, each
+  under a short label of its own ("Simple Changes was updated: `<what
+  matters>`. Your settings are the same. **Carry on**, **Quick tour**,
+  **Full tour**, **Release notes**, or **Decide later**?");
 - a one-time offer, such as the turn-end guard or a refreshed instruction
   rule, in one line the person can decline.
 
@@ -199,15 +219,16 @@ changed: "Checking your change." "Checks passed. Getting it a second look."
 content: it is sent before the first step that changes anything shared, it
 presents the recorded scope, and it names the reviewer as the standard brief
 does: the agent, its model and effort, whether it must differ from the
-author, and which setting chose it. Only the opening changes. Lead with each
-change by what it does, how far it will go, and anything left out, then give
-the recorded scope and the reviewer:
+author, and the setting that chose it with the file it is saved in. Only the
+opening changes. Lead with each change by what it does, how far it will go,
+and anything left out, then give the recorded scope and the reviewer:
 
 > I'm adding two changes to the project: the new pricing table and the footer
 > fix. Sam's gallery work stays as it is. Nothing goes live.
 >
 > A second look comes from Codex (gpt-6.1-sol, high effort), a different
-> agent from the one that wrote these, as this project's review setting asks.
+> agent from the one that wrote these. This project's review setting asks
+> for that (`<path>/.simple-changes-authoring.json`).
 > `<the recorded scope, as the standard brief lists it>`
 
 It is a chance to interrupt, not a request for permission that already
@@ -326,10 +347,13 @@ worked." The same update on any other target asks.
 
 Autopilot is the plain name for two settings Simple Changes already has:
 the **Ship when approved** finish with **Deploy automatically**. With both
-saved, a request to ship, or finished work handed over with no other
-instruction, is checked, given a second look, added to the project, put
-live, and confirmed live without a question about going live. A request
-that asks for less, such as "put this up", still stops where it says.
+saved, a request to ship is checked, given a second look, added to the
+project, put live, and confirmed live without a question about going live.
+So is finished work handed over with no other instruction, once it passes
+the saved [handoff check](setup-and-policy.md#completed-work-handoff-checkpoint):
+the person confirms it is ready, or says so first, exactly as that setting
+asks. A request that asks for less, such as "put this up", still stops where
+it says.
 
 It is a permission, not a way of talking, so it is separate from this mode
 and never part of it. Nothing turns it on by implication: not Ultra-Simple
@@ -337,11 +361,12 @@ Mode, not **Use this setup**, not "ship it", not urgency. Offer it only when
 the owner asks for it by name or asks for changes to go live without being
 asked, and say first what it means:
 
-> With Autopilot, when you ask me to ship, or hand me finished work without
-> saying how far to take it, I put it live once checks and a second look
-> pass, without asking about going live. Database changes, removing work,
-> and anything that looks wrong keep their own rules. Each person turns it
-> on for their own computer. Turn it on for this project?
+> With Autopilot, when you ask me to ship, I put it live once checks and a
+> second look pass, without asking about going live. The same goes for
+> finished work you hand me without saying how far to take it, once you've
+> told me it's ready. Database changes, removing work, and anything that
+> looks wrong keep their own rules. Each person turns it on for their own
+> computer. Turn it on for this project?
 
 On yes, save those two answers through the standard `setup`, with
 [the choices and confirmations](onboarding.md#customized-questions) it
@@ -352,7 +377,8 @@ grants permission to deploy; until then that person's agent asks before going
 live, as before. "Turn off Autopilot" saves **Ask me first** again.
 
 Autopilot removes one question, the one about going live, and nothing else.
-A saved **At major steps** setting still confirms each major step. Database
+The handoff check still decides when finished work is ready to hand over. A
+saved **At major steps** setting still confirms each major step. Database
 changes follow the saved database setting and the section above. Secrets,
 domains, store releases, and removing work keep their own questions.
 Break-glass shipping is a different, advanced choice and is never offered

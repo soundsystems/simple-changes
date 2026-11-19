@@ -39,6 +39,12 @@ const HOLD_PAYLOAD_PATH = "hold.json";
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const HOLD_ID_PATTERN = /^hold-[a-z0-9-]+$/u;
 const UNRESOLVED_REFERENCE = /unable to resolve reference '([^']+)'(:?)/giu;
+// ` ! [remote rejected] <ref> (<reason>)`: the remote received the delete
+// and refused it. Only Git's own status line counts, never the same words
+// in a message a remote hook printed, which arrives behind `remote:`.
+const REMOTE_REJECTION =
+  /^[ \t]*![ \t]+\[remote rejected\][ \t]+(\S+)[ \t]+\(([^\n]*)\)[ \t\r]*$/gmu;
+const ALREADY_GONE_REASON = "reference does not exist";
 const REGEX_SPECIAL = /[\\^$.|?*+()[\]{}]/gu;
 const WHITESPACE = /\s+/u;
 const SENTENCE_END = /[.!?]$/u;
@@ -1093,17 +1099,27 @@ const pushAuthorizationNever = (inventory: RepositoryInventory): boolean =>
   inventory.policy.value.gitPushAuthorization === "never";
 
 /**
- * True when Git says the remote still has this exact ref but will not delete
- * it: unreadable, as in "unable to resolve reference '<ref>': reference
- * broken" (the bare form without the suffix is a lost delete race), or
- * hidden from this client by `transfer.hideRefs`, which also hides it from
- * every listing.
+ * True when the failed push itself says this exact ref was already gone
+ * when the delete arrived, as after a lost delete race: Git 2.53 and later
+ * reject the delete with "reference does not exist", and older Git prints a
+ * bare "unable to resolve reference '<ref>'". The suffixed form, "...:
+ * reference broken", is an unreadable ref the remote still has. Every other
+ * answer leaves the ref where it was as far as this push knows: a hook or a
+ * rule that declined the delete, a ref hidden by `transfer.hideRefs`, a
+ * connection that failed, or wording this copy does not know.
  */
-const refKept = (detail: string, ref: string): boolean =>
-  detail.includes(`${ref} (deny deleting a hidden ref)`) ||
-  [...detail.matchAll(UNRESOLVED_REFERENCE)].some(
-    ([, name, suffix]) => name === ref && suffix === ":"
+const goneBeforeDelete = (detail: string, ref: string): boolean => {
+  const unresolved = [...detail.matchAll(UNRESOLVED_REFERENCE)].filter(
+    ([, name]) => name === ref
   );
+  if (unresolved.some(([, , suffix]) => suffix === ":")) {
+    return false;
+  }
+  const reasons = [...detail.matchAll(REMOTE_REJECTION)]
+    .filter(([, name]) => name === ref)
+    .map(([, , reason]) => reason);
+  return reasons.includes(ALREADY_GONE_REASON) || unresolved.length > 0;
+};
 
 // A configuration value as an extended regular expression matching only it.
 const exactValuePattern = (value: string): string =>
@@ -1159,13 +1175,15 @@ const pushDestinationProblem = (
 };
 
 /**
- * Delete a hold ref. A failed delete still counts as withdrawn when the
- * remote's one destination no longer has the ref, as after a lost delete
- * race: Git words that differently across versions (2.53 says "reference
- * does not exist"), so the outcome comes from the remote, not the message.
- * Absence is proven only by `ls-remote --exit-code` exiting 2 for this exact
- * ref; an answer that exits 0 but was lost or cut short could otherwise
- * read as absent. A ref Git reports as unreadable or hidden stays a failure.
+ * Delete a hold ref. A failed delete still counts as withdrawn after a lost
+ * delete race, and only on two proofs. The push must itself say the ref was
+ * already gone: a remote can hide a ref from every listing and still refuse
+ * to delete it, so a declined delete is never settled by a listing alone.
+ * And the remote's one destination must no longer list the ref, proven by
+ * `ls-remote --exit-code` exiting 2 for this exact ref; an answer that exits
+ * 0 but was lost or cut short could otherwise read as absent. Any other
+ * failed delete stays pending, and the next release retries it: deleting a
+ * ref that is by then absent succeeds.
  */
 const deleteRemoteRef = (
   root: string,
@@ -1186,7 +1204,7 @@ const deleteRemoteRef = (
     error: redactSecrets(error.trim()) || "push failed",
     ok: false,
   });
-  if (refKept(detail, ref)) {
+  if (!goneBeforeDelete(detail, ref)) {
     return failure(detail);
   }
   const problem = pushDestinationProblem(root, remote);

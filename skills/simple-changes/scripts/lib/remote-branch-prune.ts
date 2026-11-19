@@ -416,17 +416,18 @@ const providerBranchName = (ref: string | null): string | null =>
       null;
 
 /**
- * The provider branches a local branch may track on the target remote,
- * read the way Git resolves its upstream. A remote that is neither the
- * target, this repository (`.`), nor one of the configured `remotes` is
- * unknown, so the branch it names is held as if it were the target's.
- * When Git gives no upstream, the configuration still decides: any
- * `branch.<name>.remote` value that is the target or unknown holds every
- * `branch.<name>.merge` value, so an older Git, a merge value Git does not
- * use, or one it cannot map to a remote-tracking branch holds too many
- * branches, never too few. A read that fails, unless a Git older than 2.16
- * refuses the atoms, and an answer that cannot be read throw, so an unknown
- * upstream never reads as none.
+ * The provider branches a local branch may track on the target remote: the
+ * upstream Git resolves for it, and every `branch.<name>.merge` value its
+ * configuration lists. Git uses one merge value where several are set, and
+ * a pull merges them all, so each is held; an older Git, a merge value Git
+ * does not use, or one it cannot map to a remote-tracking branch holds too
+ * many branches, never too few. A remote that is neither the target, this
+ * repository (`.`), nor one of the configured `remotes` is unknown, so the
+ * branch it names is held as if it were the target's: Git's upstream holds
+ * when its remote is the target or unknown, and the merge values hold when
+ * any `branch.<name>.remote` value is. A read that fails, unless a Git
+ * older than 2.16 refuses the atoms, and an answer that cannot be read
+ * throw, so an unknown upstream never reads as none.
  */
 const trackedProviderBranches = (
   repositoryPath: string,
@@ -440,20 +441,17 @@ const trackedProviderBranches = (
     remote === targetRemote ||
     !(remote === "." || remotes().includes(remote));
   const upstream = canonicalUpstream(repositoryPath, branch);
-  if (upstream) {
-    const tracked = providerBranchName(upstream.ref);
-    return tracked && targets(upstream.remote) ? [tracked] : [];
-  }
   const values = (key: "merge" | "remote") =>
     configuration()
       .filter((entry) => entry.key === `branch.${branch}.${key}`)
       .map((entry) => entry.value);
-  if (!values("remote").some(targets)) {
-    return [];
-  }
-  return values("merge")
+  const tracked = [
+    upstream && targets(upstream.remote) ? upstream.ref : null,
+    ...(values("remote").some(targets) ? values("merge") : []),
+  ]
     .map(providerBranchName)
-    .filter((tracked): tracked is string => tracked !== null);
+    .filter((name): name is string => name !== null);
+  return [...new Set(tracked)];
 };
 
 /**

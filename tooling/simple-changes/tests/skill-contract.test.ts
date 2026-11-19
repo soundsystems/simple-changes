@@ -1673,7 +1673,10 @@ describe("Simple Changes skill contract", () => {
       "**Show options**",
       "I'll check your change, get it a second look, and add it to the project once it's approved. Nothing will go live.",
       "I'll check your change, get it a second look, add it to the project, and ask you before anything goes live.",
-      "**Use this setup** is the recommended setup with its answers fixed to the safe defaults, followed by `setup --communication ultra-simple` for the same storage",
+      "**Use this setup** is the recommended setup with its answers fixed to the safe defaults, plus the Ultra-Simple style, saved together by one `setup --first-use` command.",
+      "The command saves only while nothing is saved, asks nothing, writes no review settings, and leaves instruction files alone.",
+      // The first screen belongs to the conversation, not the terminal.
+      "This screen is a step in the conversation. `simple-changes setup` run in a terminal opens with the full choices under [Show options](#show-options).",
       "Whatever `initialize` reports as required is still asked, once and in plain words",
       "Offer this screen only at first use.",
       "so it can never replace settings someone already chose or promise what a saved setting does not do",
@@ -1691,8 +1694,19 @@ describe("Simple Changes skill contract", () => {
       "I stop at a review link unless you ask for more.",
       "I ask before anything goes live, and before any database change.",
       "`<path>/.simple-changes.json` and > `<path>/.simple-changes-communication.json`",
-      // The save is two existing commands whose flags are the receipt.
-      "--git-push-authorization ask --production ask --shipping-mode standard \\ --migration-handling ask-after-review --changelog <handling> \\ --instruction-pointer leave --yes",
+      // The save is one command whose flags are the receipt.
+      "simple-changes setup --first-use --communication ultra-simple \\ --finish <review|integrate|ship> --questions blocking-only \\ --scope repository --git-push-authorization ask --production ask \\ --shipping-mode standard --migration-handling ask-after-review \\ --changelog <handling> --instruction-pointer leave --yes",
+      // It never replaces what someone saved meanwhile, and never prompts.
+      "`--first-use` saves only while nothing is saved, and checks that again at the moment it writes",
+      "a setup is already saved for the project or for the person;",
+      "the person keeps the standard wording for themselves, which would outrank the project's and make the receipt untrue.",
+      "It asks nothing, so a missing answer is an error and never a prompt, and it writes no review settings.",
+      "Never drop the flag to get past a refusal.",
+      // The changelog answer follows what initialize reports, and proves nothing.
+      "`<handling>` follows `changelogCoordination.capabilityAvailable` from `initialize`: `delegate-if-available` when it is true, `preserve-and-report` otherwise.",
+      "I hand release notes to Simple Changelogs when it can take them here, and otherwise leave them alone and tell you what still needs writing.",
+      "The saved answer proves nothing about the provider: confirm what it supports before each handoff",
+      // Turning the mode on by itself stays a one-file command.
       "simple-changes setup --communication ultra-simple --scope repository --confirm",
       "never record an answer the person did not give",
       "This path changes no answer above and adds none.",
@@ -1710,11 +1724,13 @@ describe("Simple Changes skill contract", () => {
       // The saved questions preference and required stops still govern.
       "**At major steps** keeps its confirmations, and **Don't interrupt me** means work that lacks permission is skipped and reported, not asked about",
       "Everything `initialize` requires is still presented, in plain words and before the run changes anything",
-      "its required answers first, then any recommended change with the current and the proposed setting, then what matters in a line and the same choices the standard notice offers, in short form",
+      "its required answers first, then any recommended change with the current and the proposed setting, then what matters in a line and every choice the standard notice offers, each under a short label of its own",
+      "**Carry on**, **Quick tour**, **Full tour**, **Release notes**, or **Decide later**?",
       "a one-time offer, such as the turn-end guard or a refreshed instruction rule, in one line the person can decline",
       "Never ask twice for the same thing while nothing has changed",
       // The brief keeps its timing, its scope, and the reviewer.
-      "it is sent before the first step that changes anything shared, it presents the recorded scope, and it names the reviewer as the standard brief does: the agent, its model and effort, whether it must differ from the author, and which setting chose it",
+      "it is sent before the first step that changes anything shared, it presents the recorded scope, and it names the reviewer as the standard brief does: the agent, its model and effort, whether it must differ from the author, and the setting that chose it with the file it is saved in",
+      "This project's review setting asks > for that (`<path>/.simple-changes-authoring.json`).",
       // The three finished states, and honesty about what was checked.
       "Open with one of these labels and no other",
       "Ready for review: the new pricing table. `<link>`. Checks passed. Nothing is live.",
@@ -1750,6 +1766,10 @@ describe("Simple Changes skill contract", () => {
       "Autopilot is the plain name for two settings Simple Changes already has: the **Ship when approved** finish with **Deploy automatically**.",
       // It reaches only work that reaches Ship, and removes one question.
       'A request that asks for less, such as "put this up", still stops where it says.',
+      // Handed-over work still passes the saved readiness check first.
+      "So is finished work handed over with no other instruction, once it passes the saved [handoff check](setup-and-policy.md#completed-work-handoff-checkpoint): the person confirms it is ready, or says so first, exactly as that setting asks.",
+      "once you've > told me it's ready",
+      "The handoff check still decides when finished work is ready to hand over.",
       "It is a permission, not a way of talking, so it is separate from this mode and never part of it.",
       'Nothing turns it on by implication: not Ultra-Simple Mode, not **Use this setup**, not "ship it", not urgency.',
       "it takes effect on each computer only after that person confirms the saved setup there through `setup`, because a project file alone never grants permission to deploy",
@@ -1763,7 +1783,11 @@ describe("Simple Changes skill contract", () => {
 
     for (const rule of [
       "It writes that one file and refuses any other setup option in the same command",
-      "interactive setup offers that choice only when no policy is saved, checks again before its first write, and saves the style last",
+      "and never rewrites one holding members this version does not know",
+      "`--first-use` is the one place another setup option joins it.",
+      "it writes only while no repository or personal policy exists, checks that again under the setup lock, and installs the policy first, without replacing a file that appeared meanwhile",
+      "Before writing anything it refuses a style destination that holds a different style or cannot be read, and an Ultra-Simple style the person's own `standard` setting would outrank.",
+      "It never prompts, in a terminal or out of one, never writes the authoring sidecar, takes `--scope repository` or `--scope personal` only, and saves the style last.",
       "The personal file outranks the repository's, unlike policy, because the style grants nothing",
       "in any layer, is listed in `communication.errors` and skipped",
       "no rule may read it to decide what is allowed",

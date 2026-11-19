@@ -256,10 +256,19 @@
   choices, **Use this setup** and **Show options**; the walkthrough,
   customization, and run-only setup stay available under the second. The
   first is the recommended setup with its answers fixed to the safe defaults
-  plus the communication style, saved through the existing setup
-  transactions; no command of its own exists. It is offered only when no
-  policy is saved, never with another setup choice, and never to someone who
-  saved the standard style for themselves.
+  plus the communication style. It is offered only when no policy is saved,
+  never with another setup choice, and never to someone who saved the
+  standard style for themselves. It is a conversation step: terminal `setup`
+  has no such screen and opens with the full choices.
+- `setup --first-use` saves that choice through the one setup writer, as one
+  conditional save. It writes only while no repository or personal policy
+  exists, checked before the setup is built and again under the setup lock;
+  installs the policy first, without replacing a file that appeared
+  meanwhile;
+  refuses, before any write, a style destination holding a different style or
+  an unreadable file, and a style the person's own setting would outrank;
+  never prompts; never writes the authoring sidecar; and saves the style
+  last.
 - The communication style (`ultra-simple` or `standard`) lives in its own
   sidecar and is reported by `initialize`. It changes wording and how often
   questions are asked. `setup --communication` writes only that sidecar, and
@@ -497,7 +506,8 @@
 - Turning on Autopilot by implication, offering it on the first screen, or
   treating it as database, secret, DNS, store-release, or cleanup authority.
 - Showing a plain setup receipt whose lines the saved policy does not make
-  true, or offering **Use this setup** over a saved policy.
+  true, offering **Use this setup** over a saved policy, or dropping
+  `--first-use` to save over a setup the flag refused to replace.
 - Treating Autopilot as covering a request that asks for less than Ship, or
   as removing any question but the one about going live.
 - Holding independent units, or other agents, while one unit waits for the

@@ -2,22 +2,24 @@
 
 ## 0.34.0 - 2026-11-18
 
-- **Ultra-Simple Mode**
+- **Ultra-Simple Mode**:
   - New Ultra-Simple Mode for people who want the result and not the
     tooling. In it, your agent uses no Git or tool terms unless you use
     them first, keeps updates short, and asks only when your answer changes
-    what happens. It opens every result with one of three labels, so "done"
-    always means the same thing: ready for review, added to the project, or
-    live. Say "details" at any time for the exact branches, revisions, and
-    commands.
+    what happens. It opens every finished delivery with one of three
+    labels, so "done" always means the same thing: ready for review, added
+    to the project, or live. A run that finished only part of the request
+    says exactly what did and did not happen. Say "details" at any time for
+    the exact branches, revisions, and commands.
   - Turn it on for a project with `simple-changes setup --communication
     ultra-simple --scope repository --confirm`, then commit the new
-    `.simple-changes-communication.json`. Everyone working in the project
-    then gets the mode with no setup of their own. `--scope personal` saves
-    it for you in every project, and `--communication standard` turns it
-    off. Your own setting outranks the project's, so you can set a project
-    to Ultra-Simple for a team and keep full detail yourself.
-  - The mode never changes what Simple Changes may do. The command writes
+    `.simple-changes-communication.json` to make it the project's default.
+    Teammates then get the mode with no setup of their own, unless their
+    own setting says otherwise. `--scope personal` saves it for you in
+    every project, and `--communication standard` turns it off. Your own
+    setting outranks the project's, so you can set a project to
+    Ultra-Simple for a team and keep full detail yourself.
+  - The mode never changes what Simple Changes may do. That command writes
     only that one file and refuses any other setup option in the same call,
     so it cannot change your policy or its trust receipt. Checks and review
     run as before, and going live, database changes, removing work, and
@@ -33,14 +35,21 @@
     setting, it follows the project's Simple Changelogs setting
     (`.simple-changelogs-communication.json`). Copies of Simple Changes
     before 0.34.0 ignore the new file and keep the standard voice.
-- **Setup**
-  - First-use setup now opens with one sentence about the outcome ("I'll
-    check your change and give you a link to review. Nothing will go
+- **Setup**:
+  - On first use, an agent now opens with one sentence about the outcome
+    ("I'll check your change and give you a link to review. Nothing will go
     live.") and two choices. **Use this setup** saves the recommended setup
     with its answers fixed to the safe defaults, plus Ultra-Simple Mode,
     after showing what will be saved and where. **Show options** has the
-    walkthrough, customization, and run-only setup as before. The new
-    screen appears only when nothing is saved yet.
+    walkthrough, customization, and run-only setup as before. The agent
+    offers the two choices only when nothing is saved yet. Running `setup`
+    yourself in a terminal is unchanged and opens with the full choices.
+  - New `setup --first-use` is how that choice is saved: one command that
+    carries every answer and writes only while nothing is saved. If a
+    teammate finishes a different setup while you are still deciding, or
+    the project or you already have another style saved, it writes nothing
+    and says what it found, so it can never replace a setup someone chose.
+    It asks no questions and never writes review settings.
   - **Autopilot** is now the plain name for two settings you already had:
     the **Ship when approved** finish with **Deploy automatically**. With
     both saved, a request to ship goes live once checks and review pass,
@@ -49,7 +58,7 @@
     Ultra-Simple Mode and never turned on by it, and each person confirms
     it on their own computer before it takes effect there. Database
     changes keep their own setting.
-- **Shorter messages, fewer questions**
+- **Shorter messages, fewer questions**:
   - Agents following the skill now say less. A message is sent only when it
     would change what you do or think, and it skips the request restated,
     plans the agent can simply carry out, steps that worked, repeated
@@ -74,27 +83,28 @@
   - Branches an agent names itself follow one default,
     `<kind>/<short-outcome>` such as `fix/contact-form-email`, unless your
     repository has its own convention.
-- **Bug Fixes & Improvements**
+- **Bug Fixes & Improvements**:
   - Releasing a shipment hold now records the withdrawal correctly under
     Git 2.53 and later, which word a lost delete race differently. Before,
-    a hold whose ref was already gone was reported as a failed withdrawal
-    and never retried. A rejected delete now counts as withdrawn only when
-    `git ls-remote --exit-code` proves the ref gone, and only for a remote
-    with one destination for fetch and push; anything else stays pending,
-    so a later release retries it.
+    a hold whose ref was already gone was reported as a failed withdrawal.
+    A rejected delete now counts as withdrawn only when Git itself says the
+    ref was already gone and `git ls-remote --exit-code` then proves it,
+    and only for a remote with one destination for fetch and push. Anything
+    else stays pending, a delete your host declined included, and the next
+    `hold release` retries it.
   - The final remote inventory no longer proposes deleting a host branch
     that live local work still tracks. It read a local branch's upstream
     from the last `branch.<name>.merge` value, while Git uses the first.
-    Now it asks Git for the upstream Git uses, takes live branches from
-    the worktree listing, the branch listing, and unreleased claims
-    together, and holds every merged branch when those disagree or an
-    upstream cannot be read.
+    Now it holds the upstream Git uses and every merge value the branch
+    lists, takes live branches from the worktree listing, the branch
+    listing, and unreleased claims together, and holds every merged branch
+    when those disagree or an upstream cannot be read.
   - Removing a reworked checkout now keeps it whenever its own refs cannot
     be confirmed, and refuses a filter driver whose name is empty, is not
     valid UTF-8, or holds a line break or `=`, since it could not switch
     that driver off exactly.
   - Guidance stays 33, so no repository is asked anything by this update.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-18T17:29:50-06:00" -->
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-18T22:09:00-06:00" -->
 
 ## 0.33.0 - 2026-10-24
 

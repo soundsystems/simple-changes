@@ -17,16 +17,19 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "bun";
 import {
-  assertCommunicationWritable,
+  assertCommunicationUnsetOrSame,
   CHANGELOGS_REPOSITORY_COMMUNICATION_FILENAME,
   communicationPaths,
   REPOSITORY_COMMUNICATION_FILENAME,
   resolveCommunication,
   writeCommunication,
 } from "../../../skills/simple-changes/scripts/lib/communication.ts";
+import { installWithoutReplacing } from "../../../skills/simple-changes/scripts/lib/path-safety.ts";
 import {
   DEFAULT_POLICY,
   policyEntryExists,
+  resolvePersonalPolicyPath,
+  writePolicyFile,
   writeRepositoryPolicyTrustReceipt,
 } from "../../../skills/simple-changes/scripts/lib/policy.ts";
 import { resolveTestTimeoutMs } from "../../test-timeout.ts";
@@ -253,6 +256,48 @@ describe("communication sidecar writes", () => {
     expect(readdirSync(join(directory, "nested"))).toEqual([
       "communication.json",
     ]);
+  });
+
+  test("never rewrites a file a newer copy extended", () => {
+    const directory = temporary("members");
+    const path = join(directory, "communication.json");
+    // A number this runtime cannot hold exactly: parsing and writing it back
+    // would change it, so the file is left to the copy that knows it.
+    const extended =
+      '{ "schemaVersion": 1, "style": "ultra-simple", "lastId": 9007199254740993 }\n';
+    writeFileSync(path, extended);
+    expect(() => writeCommunication(path, "standard", false)).toThrow(
+      "holds settings this version cannot safely rewrite (lastId), so it was left as it is"
+    );
+    expect(readFileSync(path, "utf8")).toBe(extended);
+    // Saving the style it already has still changes nothing.
+    expect(writeCommunication(path, "ultra-simple", false).changed).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(extended);
+    expect(readdirSync(directory)).toEqual(["communication.json"]);
+  });
+
+  test("installs a new file only where nothing is, a dangling link included", () => {
+    const directory = temporary("install");
+    const staged = join(directory, "staged");
+    const path = join(directory, "communication.json");
+    writeFileSync(staged, sidecar("ultra-simple"));
+    expect(installWithoutReplacing(staged, path)).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(sidecar("ultra-simple"));
+    // Installed means saved: the staged name is gone with it.
+    expect(existsSync(staged)).toBe(false);
+
+    // Someone else's file is never replaced, and the staged one is left for
+    // the caller to remove.
+    writeFileSync(staged, sidecar("standard"));
+    expect(installWithoutReplacing(staged, path)).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(sidecar("ultra-simple"));
+    expect(existsSync(staged)).toBe(true);
+
+    rmSync(path);
+    symlinkSync(join(directory, "missing.json"), path);
+    expect(installWithoutReplacing(staged, path)).toBe(false);
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(directory, "missing.json"))).toBe(false);
   });
 
   test("never replaces a file it cannot read or that is not a regular file", () => {
@@ -608,6 +653,39 @@ describe("setup --communication and initialize", () => {
         ],
         "standalone transaction that changes no other setting",
       ],
+      [
+        [
+          "--communication",
+          "ultra-simple",
+          "--scope",
+          "repository",
+          "--confirm",
+          "--ui-artifacts",
+        ],
+        "standalone transaction that changes no other setting",
+      ],
+      [
+        [
+          "--communication",
+          "ultra-simple",
+          "--scope",
+          "repository",
+          "--confirm",
+          "--acknowledge-push-scope",
+        ],
+        "standalone transaction that changes no other setting",
+      ],
+      [
+        [
+          "--communication",
+          "ultra-simple",
+          "--scope",
+          "repository",
+          "--confirm",
+          "--dry-run",
+        ],
+        "has no --dry-run",
+      ],
     ];
     for (const [args, message] of cases) {
       const refused = run(...args);
@@ -621,78 +699,69 @@ describe("setup --communication and initialize", () => {
   });
 });
 
-describe("Use this setup, as two existing commands", () => {
-  // The exact commands references/ultra-simple-mode.md gives for the first
-  // screen's "Use this setup": the recommended setup with its answers
-  // fixed, then the style. No command of its own exists for it.
-  const useThisSetup = (
-    fixture: TestRepository,
-    env: Record<string, string>,
-    finish: string
-  ) => ({
-    setup: runCli(
-      [
-        "setup",
-        "--finish",
-        finish,
-        "--questions",
-        "blocking-only",
-        "--scope",
-        "repository",
-        "--git-push-authorization",
-        "ask",
-        "--production",
-        "ask",
-        "--shipping-mode",
-        "standard",
-        "--migration-handling",
-        "ask-after-review",
-        "--changelog",
-        "preserve-and-report",
-        "--instruction-pointer",
-        "leave",
-        "--yes",
-        "--json",
-        "--repo",
-        fixture.root,
-      ],
-      env
-    ),
-    style: runCli(
-      [
-        "setup",
-        "--communication",
-        "ultra-simple",
-        "--scope",
-        "repository",
-        "--confirm",
-        "--json",
-        "--repo",
-        fixture.root,
-      ],
-      env
-    ),
+describe("setup --first-use", () => {
+  // The exact command references/ultra-simple-mode.md gives for "Use this
+  // setup": the recommended setup with its answers fixed and the style, in
+  // one save that happens only when nothing is saved yet.
+  const firstUseArgs = (
+    root: string,
+    finish = "review",
+    scope = "repository"
+  ): string[] => [
+    "setup",
+    "--first-use",
+    "--communication",
+    "ultra-simple",
+    "--finish",
+    finish,
+    "--questions",
+    "blocking-only",
+    "--scope",
+    scope,
+    "--git-push-authorization",
+    "ask",
+    "--production",
+    "ask",
+    "--shipping-mode",
+    "standard",
+    "--migration-handling",
+    "ask-after-review",
+    "--changelog",
+    "preserve-and-report",
+    "--instruction-pointer",
+    "leave",
+    "--yes",
+    "--json",
+    "--repo",
+    root,
+  ];
+  // No changelog provider, whatever this machine has installed.
+  const environment = (): Record<string, string> => ({
+    SIMPLE_CHANGES_CONFIG_DIR: temporary("config"),
+    SIMPLE_CHANGES_SKILL_ROOTS: "",
+  });
+  const without = (args: string[], ...flags: string[]): string[] =>
+    args.filter((argument) => !flags.includes(argument));
+  const paths = (root: string, env: Record<string, string>) => ({
+    personalPolicy: resolvePersonalPolicyPath({ environment: env }),
+    personalStyle: communicationPaths(null, { environment: env }).personal,
+    policy: join(root, ".simple-changes.json"),
+    style: join(root, REPOSITORY_COMMUNICATION_FILENAME),
   });
 
-  test("saves exactly what the plain receipt promises, for every finish", () => {
+  test("saves exactly what the plain receipt promises, in one command, for every finish", () => {
     for (const [finish, saved] of [
       ["review", "open-change-request"],
       ["integrate", "integrate"],
       ["ship", "ship"],
     ] as const) {
       const fixture = repository();
-      // No changelog provider, whatever this machine has installed.
-      const env = {
-        SIMPLE_CHANGES_CONFIG_DIR: temporary("config"),
-        SIMPLE_CHANGES_SKILL_ROOTS: "",
-      };
-      const { setup, style } = useThisSetup(fixture, env, finish);
+      const env = environment();
+      const setup = runCli(firstUseArgs(fixture.root, finish), env);
       expect(setup.stderr).toBe("");
-      expect(style.stderr).toBe("");
+      const output = JSON.parse(setup.stdout) as Record<string, unknown>;
       // Nothing here can go live or touch a database without a question.
-      expect(
-        (JSON.parse(setup.stdout) as { policy: unknown }).policy
-      ).toMatchObject({
+      expect(output.policy).toMatchObject({
         defaultFinish: saved,
         gitPushAuthorization: "ask",
         migrationHandling: "ask-after-review",
@@ -700,6 +769,18 @@ describe("Use this setup, as two existing commands", () => {
         productionDeploy: "ask",
         questions: "blocking-only",
         shippingMode: "standard",
+      });
+      const { style } = paths(fixture.root, env);
+      expect(output).toMatchObject({
+        authoring: null,
+        communication: {
+          effective: { path: style, source: "repository" },
+          path: style,
+          scope: "repository",
+          style: "ultra-simple",
+          written: true,
+        },
+        written: true,
       });
       const status = JSON.parse(
         runCli(
@@ -713,6 +794,7 @@ describe("Use this setup, as two existing commands", () => {
         policySource: "repository",
         productionDeploy: "ask",
       });
+      // Two files, and no review settings file the receipt does not name.
       expect(git(fixture.root, ["status", "--porcelain"]).split("\n")).toEqual([
         "?? .simple-changes-communication.json",
         "?? .simple-changes.json",
@@ -720,20 +802,158 @@ describe("Use this setup, as two existing commands", () => {
     }
   });
 
-  test("no quick-start command exists to run over a saved setup", () => {
+  test("writes nothing when a setup is already saved at either layer", () => {
+    for (const layer of ["repository", "personal"] as const) {
+      const fixture = repository();
+      const env = environment();
+      const { personalPolicy, policy, style } = paths(fixture.root, env);
+      // Someone finished a different setup first: never push.
+      const existing = layer === "repository" ? policy : personalPolicy;
+      mkdirSync(resolve(existing, ".."), { recursive: true });
+      writePolicyFile(existing, {
+        ...DEFAULT_POLICY,
+        gitPushAuthorization: "never",
+      });
+      const before = readFileSync(existing);
+      const refused = runCli(firstUseArgs(fixture.root), env);
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr).toContain(
+        `A setup is already saved at ${existing}`
+      );
+      expect(readFileSync(existing).equals(before)).toBe(true);
+      expect(existsSync(style)).toBe(false);
+      expect(existsSync(policy)).toBe(layer === "repository");
+    }
+  });
+
+  test("a dangling policy link is a saved setup, and stays a link", () => {
     const fixture = repository();
-    const env = { SIMPLE_CHANGES_CONFIG_DIR: temporary("config") };
-    const refused = runCli(
-      ["setup", "--quick-start", "--yes", "--repo", fixture.root],
-      env
+    const env = environment();
+    const { policy, style } = paths(fixture.root, env);
+    symlinkSync(join(fixture.root, "missing.json"), policy);
+    const refused = runCli(firstUseArgs(fixture.root), env);
+    expect(refused.exitCode).not.toBe(0);
+    expect(refused.stderr).toContain(`A setup is already saved at ${policy}`);
+    expect(lstatSync(policy).isSymbolicLink()).toBe(true);
+    expect(existsSync(style)).toBe(false);
+  });
+
+  test("never changes a style someone saved, and saves nothing beside it", () => {
+    const cases: [string, (p: ReturnType<typeof paths>) => string, string][] = [
+      // The project chose the standard voice.
+      ["standard", (p) => p.style, "already sets the standard style"],
+      // This person chose it for themselves; it would outrank the promise.
+      ["standard", (p) => p.personalStyle, "keeps the standard wording"],
+      ["{ not json", (p) => p.style, "repair or remove it"],
+    ];
+    for (const [content, target, message] of cases) {
+      const fixture = repository();
+      const env = environment();
+      const all = paths(fixture.root, env);
+      const path = target(all);
+      const text = content === "standard" ? sidecar("standard") : content;
+      mkdirSync(resolve(path, ".."), { recursive: true });
+      writeFileSync(path, text);
+      const refused = runCli(firstUseArgs(fixture.root), env);
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr).toContain(message);
+      expect(readFileSync(path, "utf8")).toBe(text);
+      // The setup itself was not saved either: nothing is half done.
+      expect(existsSync(all.policy)).toBe(false);
+      expect(existsSync(all.personalPolicy)).toBe(false);
+    }
+  });
+
+  test("finds the same style already saved and leaves that file alone", () => {
+    const fixture = repository();
+    const env = environment();
+    const { policy, style } = paths(fixture.root, env);
+    const committed = sidecar("ultra-simple", { later: true });
+    writeFileSync(style, committed);
+    const setup = runCli(firstUseArgs(fixture.root), env);
+    expect(setup.stderr).toBe("");
+    expect(JSON.parse(setup.stdout)).toMatchObject({
+      communication: { path: style, written: false },
+      written: true,
+    });
+    expect(readFileSync(style, "utf8")).toBe(committed);
+    expect(existsSync(policy)).toBe(true);
+  });
+
+  test("guards a first setup that saves no style", () => {
+    const fixture = repository();
+    const env = environment();
+    const { policy, style } = paths(fixture.root, env);
+    const args = without(
+      firstUseArgs(fixture.root),
+      "--communication",
+      "ultra-simple"
     );
-    expect(refused.exitCode).toBe(2);
-    expect(refused.stderr).toContain("Unknown option: --quick-start");
-    expect(existsSync(join(fixture.root, ".simple-changes.json"))).toBe(false);
+    const setup = runCli(args, env);
+    expect(setup.stderr).toBe("");
+    expect(JSON.parse(setup.stdout)).toMatchObject({
+      communication: null,
+      written: true,
+    });
+    expect(existsSync(style)).toBe(false);
+    const again = runCli(args, env);
+    expect(again.exitCode).not.toBe(0);
+    expect(again.stderr).toContain(`A setup is already saved at ${policy}`);
+  });
+
+  test("saves for the person, outside a repository or in one", () => {
+    const outside = temporary("outside");
+    for (const root of [outside, repository().root]) {
+      const env = environment();
+      const { personalPolicy, personalStyle, policy, style } = paths(root, env);
+      const setup = runCli(firstUseArgs(root, "review", "personal"), env);
+      expect(setup.stderr).toBe("");
+      expect(JSON.parse(setup.stdout)).toMatchObject({
+        communication: {
+          path: personalStyle,
+          scope: "personal",
+          written: true,
+        },
+        path: personalPolicy,
+      });
+      expect(readFileSync(personalStyle, "utf8")).toBe(sidecar("ultra-simple"));
+      expect(existsSync(policy)).toBe(false);
+      expect(existsSync(style)).toBe(false);
+    }
+    const refused = runCli(firstUseArgs(outside), environment());
+    expect(refused.exitCode).not.toBe(0);
+    expect(refused.stderr).toContain("use --scope personal outside one");
+  });
+
+  test("asks nothing and refuses what it cannot save in one step", () => {
+    const fixture = repository();
+    const env = environment();
+    const all = paths(fixture.root, env);
+    const args = firstUseArgs(fixture.root);
+    const cases: [string[], string][] = [
+      [without(args, "--yes"), "requires --yes"],
+      [[...args, "--dry-run"], "has no --dry-run"],
+      [[...args, "--authoring", "{}"], "never the review settings"],
+      [
+        args.map((argument) => (argument === "repository" ? "run" : argument)),
+        "--scope repository or --scope personal",
+      ],
+      // A missing answer is never asked for, in a terminal or out of one.
+      [without(args, "--questions", "blocking-only"), "asks nothing"],
+    ];
+    for (const [invocation, message] of cases) {
+      const refused = runCli(invocation, env);
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr).toContain(message);
+    }
+    for (const path of Object.values(all)) {
+      expect(existsSync(path)).toBe(false);
+    }
+    expect(git(fixture.root, ["status", "--porcelain"])).toBe("");
   });
 });
 
-describe("destination checks for a setup that also saves the style", () => {
+describe("destination checks for a first-use save", () => {
   test("a dangling policy link counts as a saved policy", () => {
     const directory = temporary("policy");
     const path = join(directory, ".simple-changes.json");
@@ -747,14 +967,42 @@ describe("destination checks for a setup that also saves the style", () => {
     expect(policyEntryExists(path)).toBe(true);
   });
 
-  test("an unusable style file is refused before anything is written", () => {
+  test("a create-only policy write never replaces a setup saved meanwhile", () => {
+    const directory = temporary("create-only");
+    const path = join(directory, "nested", ".simple-changes.json");
+    writePolicyFile(path, DEFAULT_POLICY, false, true);
+    const first = readFileSync(path);
+    // The other setup won the race: this one reports it and keeps its file.
+    expect(() =>
+      writePolicyFile(
+        path,
+        { ...DEFAULT_POLICY, gitPushAuthorization: "never" },
+        false,
+        true
+      )
+    ).toThrow("while this one was open, so it was not replaced");
+    expect(readFileSync(path).equals(first)).toBe(true);
+    expect(readdirSync(join(directory, "nested"))).toEqual([
+      ".simple-changes.json",
+    ]);
+  });
+
+  test("a style is created or found the same, never changed or guessed at", () => {
     const directory = temporary("precheck");
     const path = join(directory, "communication.json");
-    expect(() => assertCommunicationWritable(path)).not.toThrow();
+    expect(() =>
+      assertCommunicationUnsetOrSame(path, "ultra-simple")
+    ).not.toThrow();
+    writeFileSync(path, sidecar("ultra-simple"));
+    expect(() =>
+      assertCommunicationUnsetOrSame(path, "ultra-simple")
+    ).not.toThrow();
     writeFileSync(path, sidecar("standard"));
-    expect(() => assertCommunicationWritable(path)).not.toThrow();
+    expect(() => assertCommunicationUnsetOrSame(path, "ultra-simple")).toThrow(
+      "already sets the standard style"
+    );
     writeFileSync(path, "{ not json");
-    expect(() => assertCommunicationWritable(path)).toThrow(
+    expect(() => assertCommunicationUnsetOrSame(path, "ultra-simple")).toThrow(
       "repair or remove it"
     );
     expect(readFileSync(path, "utf8")).toBe("{ not json");
@@ -763,9 +1011,9 @@ describe("destination checks for a setup that also saves the style", () => {
 
 describe("the style is display only", () => {
   test("no rule reads the communication style to decide what is allowed", () => {
-    // Only setup's first screen writes it and `initialize` reports it. Any
-    // other module importing it would let a display preference steer what
-    // Simple Changes may do.
+    // Only `setup` writes it, from the command itself, and `initialize`
+    // reports it. Any other module importing it would let a display
+    // preference steer what Simple Changes may do.
     const importers = readdirSync(libraryDirectory)
       .filter((name) => name.endsWith(".ts") && name !== "communication.ts")
       .filter((name) =>
@@ -774,7 +1022,7 @@ describe("the style is display only", () => {
         )
       )
       .sort();
-    expect(importers).toEqual(["initialization.ts", "onboarding.ts"]);
+    expect(importers).toEqual(["initialization.ts"]);
     const initialization = readFileSync(
       join(libraryDirectory, "initialization.ts"),
       "utf8"

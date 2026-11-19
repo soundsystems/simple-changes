@@ -811,7 +811,7 @@ exit 0
     expect(failed.hold.publication?.withdrawnAt).toBeNull();
   });
 
-  test("decide a rejected delete from the remote's listing, not Git's message", () => {
+  test("keep a declined delete pending whatever the listing shows, and settle it on retry", () => {
     const fixture = repository();
     const origin = withOrigin(fixture);
     const publish = (reason: string) => {
@@ -841,25 +841,35 @@ exit 1
     const listed = () =>
       git(fixture.root, ["ls-remote", "origin", `${HOLD_REF_PREFIX}*`]);
 
-    // The hook declines the push, but the ref is gone by then: whatever Git
-    // prints, the listing shows the hold withdrawn.
+    // The hook declines the delete, and the ref is gone by then. Git prints
+    // the same "hook declined" for a ref the remote kept and hides from
+    // listings, so neither the message nor the empty listing proves
+    // anything: the withdrawal stays pending.
     const gone = publish("Gone anyway.");
     hook(true);
     const released = releaseShipHold(fixture.root, {
       agentId: "owner",
       holdId: gone.holdId,
     });
-    expect(released.withdrawal).toEqual({
+    expect(released.withdrawal.ok).toBe(false);
+    expect(released.withdrawal.error).toContain("pre-receive hook declined");
+    expect(released.hold.publication?.withdrawnAt).toBeNull();
+    expect(listed()).toBe("");
+    // The retry deletes a ref that is already absent, which succeeds.
+    rmSync(join(origin, "hooks", "pre-receive"));
+    const settled = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: gone.holdId,
+    });
+    expect(settled.withdrawal).toEqual({
       attempted: true,
       error: null,
       ok: true,
     });
-    expect(released.hold.publication?.withdrawnAt).not.toBeNull();
-    expect(listed()).toBe("");
+    expect(settled.hold.publication?.withdrawnAt).not.toBeNull();
 
     // A declined delete that leaves the ref listed stays a failure, and the
     // next release retries it.
-    rmSync(join(origin, "hooks", "pre-receive"));
     const kept = publish("Still listed.");
     hook(false);
     const declined = releaseShipHold(fixture.root, {
@@ -893,11 +903,17 @@ exit 1
     });
     publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
     const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
-    // Decline every delete and keep the ref, so only a lost answer about it
-    // could make it look withdrawn.
-    writeFileSync(join(origin, "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n", {
-      mode: 0o755,
-    });
+    // Decline every delete and keep the ref, in the words an older Git uses
+    // for a lost delete race. The push then reads as "already gone", so only
+    // the listing stands between this ref and a recorded withdrawal.
+    writeFileSync(
+      join(origin, "hooks", "pre-receive"),
+      `#!/bin/sh
+echo "error: cannot lock ref '${ref}': unable to resolve reference '${ref}'" >&2
+exit 1
+`,
+      { mode: 0o755 }
+    );
     git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
     const body = `import { releaseShipHold } from ${JSON.stringify(libraryPath("ship-holds.ts"))};
 const released = releaseShipHold(${JSON.stringify(fixture.root)}, {
@@ -962,8 +978,23 @@ console.log(JSON.stringify({
     const hold = publish("Published twice.");
     const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
     expect(git(fixture.root, ["ls-remote", mirror, ref])).toContain(ref);
-    // The mirror declines the delete and keeps the ref; origin deletes it,
-    // so origin's listing alone would read as withdrawn.
+    // Origin loses a delete race, so the push says the ref was already gone
+    // and origin no longer lists it. The mirror declines the delete and keeps
+    // the ref, so origin's listing alone would read as withdrawn.
+    const loseRace = () => {
+      writeFileSync(
+        join(origin, "hooks", "pre-receive"),
+        `#!/bin/sh
+while read old new ref; do
+  git update-ref -d "$ref"
+done
+exit 0
+`,
+        { mode: 0o755 }
+      );
+      git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+    };
+    loseRace();
     writeFileSync(join(mirror, "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n", {
       mode: 0o755,
     });
@@ -993,18 +1024,9 @@ console.log(JSON.stringify({
       "origin",
       mirror,
     ]);
+    rmSync(join(origin, "hooks", "pre-receive"));
     const raced = publish("Pushed once.");
-    writeFileSync(
-      join(origin, "hooks", "pre-receive"),
-      `#!/bin/sh
-while read old new ref; do
-  git update-ref -d "$ref"
-done
-exit 1
-`,
-      { mode: 0o755 }
-    );
-    git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+    loseRace();
     const released = releaseShipHold(fixture.root, {
       agentId: "owner",
       holdId: raced.holdId,
@@ -1049,6 +1071,57 @@ exit 1
     });
     expect(retried.withdrawal).toMatchObject({ attempted: true, ok: true });
     expect(retried.hold.publication?.withdrawnAt).not.toBeNull();
+  });
+
+  test("keep a declined delete pending when the remote only hides the ref from listings", () => {
+    const fixture = repository();
+    const origin = withOrigin(fixture);
+    const hold = addShipHold(fixture.root, {
+      adapter: "claude-code",
+      agentId: "owner",
+      reason: "Unlisted and kept.",
+      scope: "ship",
+      severity: "delay",
+    });
+    publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
+    const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
+    // The host accepts pushes to the ref but leaves it out of every listing,
+    // and a hook declines the delete. The ref stays, the listing is empty, and
+    // Git's own status line never says the ref was gone, so nothing proves a
+    // withdrawal. The hook's message borrowing those words changes nothing.
+    git(origin, ["config", "uploadpack.hideRefs", "refs/simple-changes"]);
+    writeFileSync(
+      join(origin, "hooks", "pre-receive"),
+      `#!/bin/sh
+echo " ! [remote rejected] ${ref} (reference does not exist)" >&2
+exit 1
+`,
+      { mode: 0o755 }
+    );
+    git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+    expect(git(fixture.root, ["ls-remote", "origin", ref])).toBe("");
+    const declined = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    expect(declined.withdrawal.ok).toBe(false);
+    expect(declined.withdrawal.error).toContain("pre-receive hook declined");
+    expect(declined.hold.publication?.withdrawnAt).toBeNull();
+    expect(git(origin, ["show-ref", ref])).toContain(ref);
+    expect(
+      checkShipHolds(fixture.root, { localOnly: true }).pendingWithdrawals.map(
+        (item) => item.holdId
+      )
+    ).toEqual([hold.holdId]);
+
+    rmSync(join(origin, "hooks", "pre-receive"));
+    const retried = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    expect(retried.withdrawal).toMatchObject({ attempted: true, ok: true });
+    expect(retried.hold.publication?.withdrawnAt).not.toBeNull();
+    expect(git(origin, ["for-each-ref", ref])).toBe("");
   });
 
   test("republish a hold whose ref was withdrawn elsewhere", () => {

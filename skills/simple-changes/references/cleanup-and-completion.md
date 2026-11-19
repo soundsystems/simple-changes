@@ -427,18 +427,25 @@ every worktree it created with `prepare-agent` is in one of two states,
 whether or not its checkout still exists:
 
 - **Queued.** The worktree is clean, and the remote itself confirms that its
-  branch holds exactly the worktree's head: finalization asks the push
-  destination for that one `refs/heads/<branch>` (the branch's upstream, or
-  its namesake on the target remote). A remote-tracking ref alone is not
-  proof, and a remote that gives no answer keeps the run open. The
-  controller names the branch's proposal with `--queued-proposal
-  <branch>=<id>`, once per branch, and the review ledger records that
-  proposal's latest head as exactly the queued head, on a base the target
-  contains: `proposal record-authors` for the pushed head, the step
+  branch holds exactly the worktree's head: finalization asks the remote's
+  one push destination for that one `refs/heads/<branch>` (the branch's
+  upstream, or its namesake on the target remote). A remote-tracking ref
+  alone is not proof, and a remote that gives no answer, or has more than
+  one push URL, keeps the run open. Its proposal is found without a flag
+  from what `proposal record-authors` recorded for the pushed head, the step
   [change proposals](change-requests.md#create-and-audit-proposals) already
-  requires. One proposal carries one branch.
+  requires: the source branch it wrote beside the ledger must be this
+  branch at this exact head, and the ledger must record the proposal's
+  latest head as exactly that head, on a base the target contains. Exactly
+  one such proposal is accepted. None, or several, keeps the run open with
+  the command that settles it; `--queued-proposal <branch>=<id>` names one,
+  and a named proposal must pass the same checks.
 - **Nothing to queue.** The worktree is clean and the target already contains
   its head.
+
+Clean means more than status: every file is compared with the head itself,
+so an edit under an assume-unchanged or skip-worktree entry keeps the run
+open, and so does a comparison that cannot be read.
 
 Where the remote has nowhere to open a proposal, finalize with `--no-proposal
 "<why>"` instead; the receipt then reports each such branch as pushed without
@@ -453,8 +460,8 @@ nonzero:
 - commits that are not pushed, including commits on the branch of a
   run-created worktree that is already gone;
 - a pushed branch the remote no longer holds at that head, or cannot confirm;
-- a pushed branch with no proposal named, or one the ledger records at
-  another head or against another base;
+- a pushed branch with no recorded proposal, with several, or with one
+  recorded from another branch, at another head, or against another base;
 - a target that cannot be resolved, or that moved since `loop start` so that
   the branch no longer merges into it, checked with `git merge-tree`, which
   changes no checkout;
@@ -480,39 +487,16 @@ Everything stays where it is:
   uncommitted and untracked work: never stashed, reset, normalized, switched,
   or fast-forwarded, and never a blocker.
 - **The run's own worktrees are kept**, with their branches, ignored files,
-  and anything else in them, and listed in `keptWorktrees`. An entry's `note`
-  says when the worktree holds files Git ignores. Tell the owner they can
-  remove one later with `git worktree remove <path>`, which refuses a
-  checkout that holds changes.
+  and anything else in them, and each path is listed in `keptWorktrees`.
+  They stay until the owner asks to clean the repository: Reconcile or
+  `prune`, which ask first. Nothing in a Queue or Sweep start or finalize
+  removes one.
 - **Earlier branches and worktrees stay.** A clean worktree or local branch
   the target already contains is not removed and does not block. Each is
   named in the cleanup `notes`, and `cleanupStatus` is `pending` until one of
   those runs, or `prune`, cleans it. Only those modes run automatic cleanup,
   which is why earlier runtimes reported such a branch as a Queue blocker
   instead of deleting it.
-
-Kept worktrees do not pile up. A closed run records them in
-`queued-worktrees/<run-id>.json` beside the loop state
-(`evals/schemas/queued-worktrees.schema.json`), and `loop start --mode queue`
-or `--mode sweep` first removes each one whose work the target now contains,
-with the same unforced removal `prune` uses, reporting the result as
-`earlierQueuedWorktrees`. A worktree is removed only when every one of these
-is proven; anything that fails or cannot be read keeps it, and never stops
-the run:
-
-- no loop record exists, and the worktree is still that run's checkout on
-  the same branch, with no claim on it;
-- the freshly read target contains its head, by ancestry or patch
-  equivalence (one that is not merged yet simply waits, unreported);
-- its status is clean and no Git operation is in progress in it;
-- its files equal its commit even where status is told not to look
-  (assume-unchanged and skip-worktree entries);
-- nothing is on disk that its commit does not track, so no file Git ignores.
-
-Report every kept worktree with its reason. For ignored files, say it as the
-runtime does: "This copy holds files Git ignores (`<names, up to five>`), so I
-left it in place. Remove it by hand, or with computer use, once you have what
-you need from them: `<path>`".
 
 Before reporting completion:
 

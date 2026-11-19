@@ -175,10 +175,6 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
-import {
-  type QueuedRetirementReport,
-  retireMergedQueuedWorktrees,
-} from "./lib/queued-retirement.ts";
 import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
@@ -569,6 +565,7 @@ Usage:
     [--base REF --head REF] [--changelog-receipt FILE] [--json] [--repo PATH]
   simple-changes proposal audit --file FILE [--template FILE] [--json]
   simple-changes proposal record-authors --proposal ID --base SHA --head SHA
+    [--source-branch BRANCH]
     [--receipt COPY_AUTHORS_FILE] [--instance ID] [--agent MODEL_ID]
     [--harness ID | --identity-receipt JSON|@FILE]
     [--wait-lock [--timeout-ms N]] [--json] [--repo PATH]
@@ -781,6 +778,9 @@ interface CliOptions {
   shippingMode?: RepoPolicy["shippingMode"];
   signatureRole?: ProposalSignatureRole;
   skillDirectory?: string;
+  // proposal record-authors --source-branch: the branch the proposal was
+  // opened from, when the head alone does not identify it.
+  sourceBranch?: string;
   staleLease: boolean;
   statePath?: string;
   statusDigest?: string;
@@ -852,6 +852,7 @@ const VALUED_OPTIONS = new Set([
   "--mode",
   "--no-proposal",
   "--queued-proposal",
+  "--source-branch",
   "--observation-digest",
   "--owner-ref",
   "--opening-remote-inventory",
@@ -1363,6 +1364,7 @@ const applyLoopValuedOption = (
     "--request": "requestPath",
     "--run-id": "runId",
     "--skill-dir": "skillDirectory",
+    "--source-branch": "sourceBranch",
     "--state": "statePath",
     "--status-digest": "statusDigest",
     "--template": "templatePath",
@@ -3882,7 +3884,7 @@ const renderGaps = (gaps: Record<string, CommitGaps>): string =>
     .join("");
 
 const renderRecordedAuthors = (result: RecordAuthorsResult): string =>
-  `${result.status === "unchanged" ? "Already recorded" : "Recorded"} authors for ${result.proposalId} at ${result.head} (${result.commits.length} commits, ${result.fullyCovered ? "fully covered" : "partial coverage"}).\nAuthors digest: ${result.authorsDigest}\n${
+  `${result.status === "unchanged" ? "Already recorded" : "Recorded"} authors for ${result.proposalId} at ${result.head} (${result.commits.length} commits, ${result.fullyCovered ? "fully covered" : "partial coverage"}).\nAuthors digest: ${result.authorsDigest}\n${result.sourceBranch ? `Source branch: ${result.sourceBranch}\n` : "Source branch: not recorded; no single local branch points at this head, so pass --source-branch to name it.\n"}${
     result.unattributed.length > 0
       ? `Unattributed: ${result.unattributed.join(", ")}\n`
       : ""
@@ -3934,6 +3936,9 @@ const runProposalLedgerCommand = (
       head,
       proposalId,
       repositoryPath: options.repo,
+      ...(options.sourceBranch === undefined
+        ? {}
+        : { sourceBranch: options.sourceBranch }),
       ...(options.receiptPath === undefined
         ? {}
         : { copyAuthorsReceipt: readJsonFile(options.receiptPath) }),
@@ -4351,9 +4356,7 @@ const renderQueuedClose = (
             : `proposal ${unit.proposalId}`
         }.\n`
     ),
-    ...queued.keptWorktrees.map(
-      ({ note, path }) => `Kept worktree ${path}.${note ? ` ${note}` : ""}\n`
-    ),
+    ...queued.keptWorktrees.map((path) => `Kept worktree ${path}.\n`),
   ].join("");
 
 // A cleanup's non-fatal notes, one per line.
@@ -4624,21 +4627,6 @@ const runLoopRebaseline = (
   return true;
 };
 
-// A Queue or Sweep run first clears what earlier ones left behind once it
-// is merged. It never throws, and what it keeps it says; null when there
-// was nothing to do or say.
-const earlierQueuedWorktrees = (
-  options: CliOptions
-): QueuedRetirementReport | null => {
-  if (!(options.mode === "queue" || options.mode === "sweep")) {
-    return null;
-  }
-  const retired = retireMergedQueuedWorktrees(options.repo);
-  return retired.removed.length + retired.kept.length + retired.notes.length > 0
-    ? retired
-    : null;
-};
-
 const runLoopStart = (options: CliOptions): void => {
   const agentId = requireCliOption(options.agentId, "--agent-id");
   if (!options.mode) {
@@ -4713,7 +4701,6 @@ const runLoopStart = (options: CliOptions): void => {
   let reviewLedger: ReviewLedgerResumeState | null = null;
   let workDir: string | null = null;
   let removedWorkDirectories: string[] = [];
-  const retired = earlierQueuedWorktrees(options);
   const lease = startLoop(
     options.repo,
     agentId,
@@ -4751,7 +4738,6 @@ const runLoopStart = (options: CliOptions): void => {
   const resumedQuestions = resumedAwaitingUser(lease);
   writeOutput(
     {
-      ...(retired ? { earlierQueuedWorktrees: retired } : {}),
       holds,
       inheritedAwaitingUser: resumedQuestions,
       lease,
@@ -4767,25 +4753,9 @@ const runLoopStart = (options: CliOptions): void => {
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
-    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}${renderQueuedRetirement(retired)}`
+    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
   );
 };
-
-// What a Queue or Sweep start did with earlier runs' merged worktrees.
-const renderQueuedRetirement = (
-  retired: QueuedRetirementReport | null
-): string =>
-  [
-    ...(retired?.removed ?? []).map(
-      (path) =>
-        `Removed an earlier run's worktree, now that its work is merged: ${path}\n`
-    ),
-    ...(retired?.kept ?? []).map(
-      ({ path, reason }) =>
-        `Kept an earlier run's merged worktree ${path}: ${reason}\n`
-    ),
-    ...(retired?.notes ?? []).map((note) => `Note: ${note}\n`),
-  ].join("");
 
 // Accepted reviews that no longer pass the gate on resume need a fresh review,
 // after any identity repair the reason calls for.

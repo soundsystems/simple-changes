@@ -102,8 +102,8 @@ Takeover requires the exact current run ID and manifest digest plus approver and
 A relinquished Queue or Sweep run does not need a replan before the next
 request can start, including one an older runtime left behind. Resume it,
 satisfy what its finalization named (push the branch, record its proposal with
-`proposal record-authors`, or commit what is uncommitted), and finalize with
-`--queued-proposal <branch>=<id>` for each pushed branch: it closes as
+`proposal record-authors`, or commit what is uncommitted), and finalize: it
+closes as
 [queued for review, not merged](cleanup-and-completion.md#queue-and-sweep-end-queued-not-merged)
 with the primary checkout untouched and nothing deleted.
 

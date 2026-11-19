@@ -1457,9 +1457,11 @@ describe("Simple Changes skill contract", () => {
       "A Queue or Sweep run never merges, so `loop finalize` does not hold it to a merged target or a clean primary checkout, and it deletes nothing: no checkout, branch, or file.",
       // Pushed means the remote says so, and the proposal is bound to the branch.
       "the remote itself confirms that its branch holds exactly the worktree's head",
-      "A remote-tracking ref alone is not proof, and a remote that gives no answer keeps the run open.",
-      "The controller names the branch's proposal with `--queued-proposal <branch>=<id>`, once per branch, and the review ledger records that proposal's latest head as exactly the queued head, on a base the target contains",
-      "One proposal carries one branch.",
+      "A remote-tracking ref alone is not proof, and a remote that gives no answer, or has more than one push URL, keeps the run open.",
+      "Its proposal is found without a flag from what `proposal record-authors` recorded for the pushed head",
+      "the source branch it wrote beside the ledger must be this branch at this exact head, and the ledger must record the proposal's latest head as exactly that head, on a base the target contains. Exactly one such proposal is accepted.",
+      "None, or several, keeps the run open with the command that settles it; `--queued-proposal <branch>=<id>` names one, and a named proposal must pass the same checks.",
+      "Clean means more than status: every file is compared with the head itself, so an edit under an assume-unchanged or skip-worktree entry keeps the run open, and so does a comparison that cannot be read.",
       'Where the remote has nowhere to open a proposal, finalize with `--no-proposal "<why>"` instead; the receipt then reports each such branch as pushed without a proposal.',
       "a missing proposal there is unfinished work.",
       // What still keeps the run open.
@@ -1467,7 +1469,7 @@ describe("Simple Changes skill contract", () => {
       "- uncommitted changes in a run-created worktree;",
       "- commits that are not pushed, including commits on the branch of a run-created worktree that is already gone;",
       "- a pushed branch the remote no longer holds at that head, or cannot confirm;",
-      "- a pushed branch with no proposal named, or one the ledger records at another head or against another base;",
+      "- a pushed branch with no recorded proposal, with several, or with one recorded from another branch, at another head, or against another base;",
       "- a target that cannot be resolved, or that moved since `loop start` so that the branch no longer merges into it",
       "- an `--awaiting-user` pause.",
       "A Queue or Sweep run that did record a shipment scope, the only kind that can hold a unit, keeps the scoped rules below.",
@@ -1476,15 +1478,8 @@ describe("Simple Changes skill contract", () => {
       "Report it as queued for review, never as merged, delivered, or shipped.",
       // Nothing is deleted.
       "**The primary checkout stays exactly as it is**, on its branch, with its uncommitted and untracked work: never stashed, reset, normalized, switched, or fast-forwarded, and never a blocker.",
-      "**The run's own worktrees are kept**, with their branches, ignored files, and anything else in them, and listed in `keptWorktrees`.",
-      "Tell the owner they can remove one later with `git worktree remove <path>`, which refuses a checkout that holds changes.",
-      // Kept worktrees are cleared by a later Queue start, on proof only.
-      "Kept worktrees do not pile up.",
-      "`loop start --mode queue` or `--mode sweep` first removes each one whose work the target now contains, with the same unforced removal `prune` uses, reporting the result as `earlierQueuedWorktrees`.",
-      "A worktree is removed only when every one of these is proven; anything that fails or cannot be read keeps it, and never stops the run:",
-      "- its files equal its commit even where status is told not to look (assume-unchanged and skip-worktree entries);",
-      "- nothing is on disk that its commit does not track, so no file Git ignores.",
-      '"This copy holds files Git ignores (`<names, up to five>`), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: `<path>`"',
+      "**The run's own worktrees are kept**, with their branches, ignored files, and anything else in them, and each path is listed in `keptWorktrees`.",
+      "They stay until the owner asks to clean the repository: Reconcile or `prune`, which ask first. Nothing in a Queue or Sweep start or finalize removes one.",
       "A clean worktree or local branch the target already contains is not removed and does not block.",
     ]) {
       expect(normalizedCleanup).toContain(sentence);
@@ -1494,7 +1489,7 @@ describe("Simple Changes skill contract", () => {
       "A relinquished Queue or Sweep run does not need a replan before the next request can start, including one an older runtime left behind."
     );
     expect(changeRequests.replace(/\s+/g, " ")).toContain(
-      "name each pushed branch's proposal with `--queued-proposal <branch>=<id>`. A pushed branch whose named proposal is not recorded at its exact head keeps the run open. Record the authors again whenever the pushed head moves."
+      "the command also records which local branch the proposal came from, in `proposal-sources.json` beside the ledger, and finalization accepts the one proposal recorded from a pushed branch at its exact head. The branch is taken from `--head` when exactly one local branch points there; otherwise pass `--source-branch <branch>`. Record the authors again whenever the pushed head moves."
     );
   });
 

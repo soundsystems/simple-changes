@@ -27,7 +27,6 @@ import {
   QUEUED_FOR_REVIEW,
   queuedDeclarations,
 } from "../../../skills/simple-changes/scripts/lib/queued-completion.ts";
-import { retireMergedQueuedWorktrees } from "../../../skills/simple-changes/scripts/lib/queued-retirement.ts";
 import { recordProposalAuthors } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
@@ -134,15 +133,16 @@ const recordProposal = (
   run: OpenRun,
   head: string,
   proposalId = PROPOSAL,
-  base = run.lease.targetRevision
-): void => {
+  base = run.lease.targetRevision,
+  sourceBranch?: string
+) =>
   recordProposalAuthors({
     base,
     head,
     proposalId,
     repositoryPath: run.root,
+    ...(sourceBranch === undefined ? {} : { sourceBranch }),
   });
-};
 
 interface FinalizeOptions {
   noProposal?: string;
@@ -165,7 +165,10 @@ const finalize = (
     }
   );
 
-/** A unit pushed with its proposal recorded, ready to be named at finalize. */
+/**
+ * A unit pushed with its proposal recorded. Its branch is the only one at
+ * that head, so the record names it as the proposal's source by itself.
+ */
 const proposedUnit = (run: OpenRun, options: QueuedUnitOptions = {}) => {
   const unit = queueUnit(run, options);
   recordProposal(run, unit.head);
@@ -194,12 +197,13 @@ const moveTarget = (run: OpenRun, file: string, contents: string): void => {
 };
 
 describe("Queue and Sweep finalization", () => {
-  test("closes a Queue run whose branch is pushed with its proposal named, and the next request starts", () => {
+  test("closes a Queue run whose branch is pushed with its proposal recorded, with no flag, and the next request starts", () => {
     const run = openRun({ forge: true });
-    const unit = proposedUnit(run);
+    const unit = queueUnit(run);
+    expect(recordProposal(run, unit.head).sourceBranch).toBe(unit.branch);
     const before = primaryState(run.root);
 
-    const result = finalize(run, { proposals: unit.named });
+    const result = finalize(run);
 
     expect(result.blockers).toEqual([]);
     expect(result.outcome).toBe("completed");
@@ -212,7 +216,7 @@ describe("Queue and Sweep finalization", () => {
       targetRevision: null,
     });
     expect(result.receipt.queued).toMatchObject({
-      keptWorktrees: [{ note: null, path: unit.path }],
+      keptWorktrees: [unit.path],
       status: QUEUED_FOR_REVIEW,
       units: [
         {
@@ -229,7 +233,9 @@ describe("Queue and Sweep finalization", () => {
     expect(result.receipt.queued?.summary).toContain(
       "Queued for review, not merged"
     );
-    expect(result.receipt.queued?.summary).toContain("git worktree remove");
+    expect(result.receipt.queued?.summary).toContain(
+      `stays until the owner asks to clean the repository, which asks first: ${unit.path}.`
+    );
     // The person's uncommitted source is exactly as they left it.
     expect(primaryState(run.root)).toEqual(before);
     expect(before.status).toBe("M README.md");
@@ -288,9 +294,8 @@ describe("Queue and Sweep finalization", () => {
     const unit = queueUnit(run);
     const first = finalize(run);
     expect(first.outcome).toBe("relinquished");
-    expect(first.blockers.join("\n")).toContain("proposal record-authors");
     expect(first.blockers.join("\n")).toContain(
-      `--queued-proposal ${unit.branch}=<id>`
+      `proposal record-authors --proposal <id> --base ${run.lease.targetRevision} --head ${unit.head} --source-branch ${unit.branch}`
     );
     expect(() => startLoop(run.root, "second-agent", "queue")).toThrow(
       "was relinquished"
@@ -303,8 +308,7 @@ describe("Queue and Sweep finalization", () => {
       run.root,
       run.lease.runId,
       "second-agent",
-      "The proposal is recorded now.",
-      { queuedProposals: [`${unit.branch}=${PROPOSAL}`] }
+      "The proposal is recorded now."
     );
     expect(second.outcome).toBe("completed");
     expect(second.receipt.queued?.units).toHaveLength(1);
@@ -335,12 +339,7 @@ describe("Queue and Sweep finalization", () => {
     const result = finalize(run, { proposals: unit.named });
 
     expect(result.outcome).toBe("completed");
-    expect(result.receipt.queued?.keptWorktrees).toEqual([
-      {
-        note: `This copy holds files Git ignores (.env.local), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: ${unit.path}`,
-        path: unit.path,
-      },
-    ]);
+    expect(result.receipt.queued?.keptWorktrees).toEqual([unit.path]);
     expect(readFileSync(join(unit.path, ".env.local"), "utf8")).toBe(
       "TOKEN=only-copy\n"
     );
@@ -354,12 +353,7 @@ describe("Queue and Sweep finalization", () => {
     recordProposal(run, first.head, "example/project!1");
     recordProposal(run, second.head, "example/project!2");
 
-    const result = finalize(run, {
-      proposals: [
-        `${first.branch}=example/project!1`,
-        `${second.branch}=example/project!2`,
-      ],
-    });
+    const result = finalize(run);
 
     expect(result.outcome).toBe("completed");
     expect(result.receipt.queued?.units.map((unit) => unit.proposalId)).toEqual(
@@ -378,9 +372,7 @@ describe("Queue and Sweep finalization", () => {
 
     expect(result.outcome).toBe("completed");
     expect(result.receipt.queued?.units).toEqual([]);
-    expect(result.receipt.queued?.keptWorktrees).toEqual([
-      { note: null, path: unit.path },
-    ]);
+    expect(result.receipt.queued?.keptWorktrees).toEqual([unit.path]);
     expect(result.receipt.queued?.summary).toContain("nothing was queued");
     expect(existsSync(unit.path)).toBe(true);
     expect(git(run.root, ["rev-parse", unit.branch])).toBe(
@@ -529,8 +521,14 @@ describe("what still blocks a Queue run", () => {
 
     blocked(
       run,
+      {},
+      `No proposal is recorded from queued branch ${unit.branch}`
+    );
+    startLoop(run.root, "controller", "resume");
+    blocked(
+      run,
       { proposals: unit.named },
-      `is recorded at ${unit.head}, not at the queued head`
+      `(it is recorded from ${unit.branch} at ${unit.head})`
     );
   });
 
@@ -541,7 +539,7 @@ describe("what still blocks a Queue run", () => {
     blocked(
       run,
       { proposals: [`${unit.branch}=${PROPOSAL}`] },
-      "has no recorded head in the review ledger"
+      `Proposal ${PROPOSAL} is not recorded as opened from ${unit.branch}`
     );
   });
 
@@ -563,8 +561,8 @@ describe("what still blocks a Queue run", () => {
     );
   });
 
-  test("one proposal for two branches at the same commit", () => {
-    const run = openRun({ forge: true, mode: "sweep" });
+  /** Two prepared branches at one commit, both pushed. */
+  const twinBranches = (run: OpenRun) => {
     const first = queueUnit(run, { agentId: "first" });
     const second = prepareAgentWorktree(
       run.root,
@@ -579,26 +577,134 @@ describe("what still blocks a Queue run", () => {
       "origin",
       `${second.branch}:${second.branch}`,
     ]);
-    recordProposal(run, first.head);
+    return { first, head: first.head, second };
+  };
 
-    // Naming it for one branch leaves the other without a proposal.
-    const one = finalize(run, { proposals: [`${first.branch}=${PROPOSAL}`] });
-    expect(one.outcome).toBe("relinquished");
-    expect(one.blockers.join("\n")).toContain(
-      `No proposal is named for queued branch ${second.branch}`
+  test("a proposal whose source branch the head alone cannot name", () => {
+    const run = openRun({ forge: true, mode: "sweep" });
+    const { first, head } = twinBranches(run);
+
+    // Two branches point at the head, so nothing is recorded as the source.
+    expect(recordProposal(run, head).sourceBranch).toBeNull();
+
+    blocked(
+      run,
+      {},
+      `No proposal is recorded from queued branch ${first.branch}`
     );
+  });
 
-    startLoop(run.root, "controller", "resume");
+  test("two proposals at one head cannot be swapped between their branches", () => {
+    const run = openRun({ forge: true, mode: "sweep" });
+    const { first, head, second } = twinBranches(run);
+    const base = run.lease.targetRevision;
+    recordProposal(run, head, "example/project!7", base, first.branch);
+    recordProposal(run, head, "example/project!8", base, second.branch);
+
     blocked(
       run,
       {
         proposals: [
-          `${first.branch}=${PROPOSAL}`,
-          `${second.branch}=${PROPOSAL}`,
+          `${first.branch}=example/project!8`,
+          `${second.branch}=example/project!7`,
         ],
       },
-      "one proposal carries one branch"
+      `Proposal example/project!8 is not recorded as opened from ${first.branch}`
     );
+
+    // With no flag, each branch finds its own proposal.
+    startLoop(run.root, "controller", "resume");
+    const result = finalize(run);
+    expect(result.outcome).toBe("completed");
+    expect(
+      result.receipt.queued?.units.map((unit) => [unit.branch, unit.proposalId])
+    ).toEqual([
+      [first.branch, "example/project!7"],
+      [second.branch, "example/project!8"],
+    ]);
+  });
+
+  test("two proposals recorded from one branch at one head, until one is named", () => {
+    const run = openRun({ forge: true });
+    const unit = queueUnit(run);
+    recordProposal(run, unit.head, "example/project!7");
+    recordProposal(run, unit.head, "example/project!8");
+
+    blocked(
+      run,
+      {},
+      `2 proposals are recorded from queued branch ${unit.branch} at ${unit.head} (example/project!7, example/project!8)`
+    );
+
+    startLoop(run.root, "controller", "resume");
+    const result = finalize(run, {
+      proposals: [`${unit.branch}=example/project!8`],
+    });
+    expect(result.outcome).toBe("completed");
+    expect(result.receipt.queued?.units[0]?.proposalId).toBe(
+      "example/project!8"
+    );
+  });
+
+  test("a source branch named at a commit it does not point at is refused", () => {
+    const run = openRun({ forge: true });
+    const unit = queueUnit(run);
+
+    expect(() =>
+      recordProposal(
+        run,
+        unit.head,
+        PROPOSAL,
+        run.lease.targetRevision,
+        "old-merged"
+      )
+    ).toThrow("--source-branch old-merged does not point at --head");
+  });
+
+  test("an edit Git's status is told not to see, in a queued worktree", () => {
+    const run = openRun({ forge: true });
+    const unit = proposedUnit(run);
+    git(unit.path, ["update-index", "--assume-unchanged", "README.md"]);
+    writeFixture(unit.path, "README.md", "An edit status does not show.\n");
+    expect(git(unit.path, ["status", "--porcelain=v1"])).toBe("");
+
+    blocked(run, {}, "holds changes Git's status does not show (README.md)");
+
+    expect(readFileSync(join(unit.path, "README.md"), "utf8")).toBe(
+      "An edit status does not show.\n"
+    );
+  });
+
+  test("the same hidden edit in a worktree that queued nothing", () => {
+    const run = openRun({ forge: true });
+    const unit = queueUnit(run, { commit: false });
+    git(unit.path, ["update-index", "--skip-worktree", "README.md"]);
+    expect(git(unit.path, ["status", "--porcelain=v1"])).toBe("");
+
+    blocked(run, {}, "holds changes Git's status does not show (README.md)");
+  });
+
+  test("a remote with more than one push destination", () => {
+    const run = openRun({ forge: true });
+    queueUnit(run);
+    git(run.root, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      run.remote,
+    ]);
+    git(run.root, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      `${run.remote}.second`,
+    ]);
+
+    blocked(run, {}, "origin has no single push destination to ask");
   });
 
   test("a proposal named for a branch the run did not create", () => {
@@ -725,124 +831,22 @@ describe("Ship and Integrate finalization of the same situation", () => {
   }
 });
 
-describe("worktrees that earlier Queue runs kept", () => {
-  /** A closed Queue run whose kept worktree is still there. */
-  const closedRun = () => {
-    const run = openRun({ forge: true });
-    appendFileSync(join(run.root, ".git", "info", "exclude"), ".env.local\n");
-    const unit = proposedUnit(run);
-    expect(finalize(run, { proposals: unit.named }).outcome).toBe("completed");
-    return { run, unit };
-  };
-  /** The proposal is merged, and the repository has fetched the target. */
-  const merge = (run: OpenRun, head: string): void => {
-    git(run.root, ["push", "origin", `${head}:main`]);
-    git(run.root, ["fetch", "origin"]);
-  };
-
-  test("a merged, clean one is removed with its branch when the next run starts", () => {
-    const { run, unit } = closedRun();
-    merge(run, unit.head);
-
-    const report = retireMergedQueuedWorktrees(run.root);
-
-    expect(report).toEqual({ kept: [], notes: [], removed: [unit.path] });
-    expect(existsSync(unit.path)).toBe(false);
-    expect(git(run.root, ["branch", "--list", unit.branch])).toBe("");
-    // The person's checkout and the pushed branch are untouched.
-    expect(readFileSync(join(run.root, "README.md"), "utf8")).toBe(PERSON_EDIT);
-    expect(git(run.remote, ["rev-parse", unit.branch])).toBe(unit.head);
-    // Nothing is left to check a second time.
-    expect(retireMergedQueuedWorktrees(run.root)).toEqual({
-      kept: [],
-      notes: [],
-      removed: [],
-    });
-  });
-
-  test("one that holds a file Git ignores is kept, with what to do about it", () => {
-    const { run, unit } = closedRun();
-    writeFixture(unit.path, ".env.local", "TOKEN=only-copy\n");
-    merge(run, unit.head);
-
-    const report = retireMergedQueuedWorktrees(run.root);
-
-    expect(report.removed).toEqual([]);
-    expect(report.kept).toEqual([
-      {
-        path: unit.path,
-        reason: `This copy holds files Git ignores (.env.local), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: ${unit.path}`,
-      },
-    ]);
-    expect(readFileSync(join(unit.path, ".env.local"), "utf8")).toBe(
-      "TOKEN=only-copy\n"
-    );
-  });
-
-  test("one with an edit Git's status is told not to see is kept", () => {
-    const { run, unit } = closedRun();
-    git(unit.path, ["update-index", "--assume-unchanged", "README.md"]);
-    writeFixture(unit.path, "README.md", "An edit status does not show.\n");
-    expect(git(unit.path, ["status", "--porcelain=v1"])).toBe("");
-    merge(run, unit.head);
-
-    const report = retireMergedQueuedWorktrees(run.root);
-
-    expect(report.removed).toEqual([]);
-    expect(report.kept).toMatchObject([{ path: unit.path }]);
-    expect(report.kept[0]?.reason).toContain(
-      "changes Git's status does not show (README.md)"
-    );
-    expect(readFileSync(join(unit.path, "README.md"), "utf8")).toBe(
-      "An edit status does not show.\n"
-    );
-  });
-
-  test("one whose work is not merged yet is kept and not reported", () => {
-    const { run, unit } = closedRun();
-
-    expect(retireMergedQueuedWorktrees(run.root)).toEqual({
-      kept: [],
-      notes: [],
-      removed: [],
-    });
-    expect(existsSync(unit.path)).toBe(true);
-  });
-
-  test("a target that cannot be read removes nothing", () => {
-    const { run, unit } = closedRun();
-    merge(run, unit.head);
-    git(run.root, ["update-ref", "-d", "refs/remotes/origin/main"]);
-
-    const report = retireMergedQueuedWorktrees(run.root);
-
-    expect(report.removed).toEqual([]);
-    expect(report.notes).toHaveLength(1);
-    expect(existsSync(unit.path)).toBe(true);
-  });
-
-  test("nothing is removed while a loop record exists", () => {
-    const { run, unit } = closedRun();
-    merge(run, unit.head);
-    startLoop(run.root, "second-agent", "integrate");
-
-    expect(retireMergedQueuedWorktrees(run.root).removed).toEqual([]);
-    expect(existsSync(unit.path)).toBe(true);
-  });
-});
-
 describe("loop status for a Queue run", () => {
-  test("says the run ends queued for review, not merged, and how to name its proposal", () => {
+  test("says the run ends queued for review, not merged, and what to record", () => {
     const run = openRun({ forge: true });
-    const unit = queueUnit(run);
+    queueUnit(run);
 
     const { guidance } = loopStatus(run.root);
 
     expect(guidance.headline).toContain("queued for review, not merged");
     expect(guidance.headline).not.toContain("record its outcome");
-    expect(guidance.nextCommands.join("\n")).toContain(
-      `loop finalize --run-id ${run.lease.runId} --agent-id controller --reason <why> --queued-proposal ${unit.branch}=<id>`
+    expect(guidance.headline).toContain(
+      "Finalize finds each branch's proposal from that record"
     );
+    expect(guidance.nextCommands).toEqual([
+      "simple-changes proposal record-authors --proposal <id> --base <sha> --head <sha>",
+      `simple-changes loop finalize --run-id ${run.lease.runId} --agent-id controller --reason <why>`,
+    ]);
   });
 });
 
@@ -916,23 +920,5 @@ describe("the command line", () => {
     expect(closed.stdout).toContain(
       `Queued, not merged: ${unit.branch} at ${unit.head} on origin, proposal ${PROPOSAL}.`
     );
-
-    // Once that proposal is merged, the next Queue run clears the worktree.
-    git(run.root, ["push", "origin", `${unit.head}:main`]);
-    git(run.root, ["fetch", "origin"]);
-    const next = cli(run, [
-      "loop",
-      "start",
-      "--mode",
-      "queue",
-      "--agent-id",
-      "second-agent",
-      "--json",
-    ]);
-    expect(next.exitCode).toBe(0);
-    expect(JSON.parse(next.stdout)).toMatchObject({
-      earlierQueuedWorktrees: { kept: [], removed: [unit.path] },
-    });
-    expect(existsSync(unit.path)).toBe(false);
   });
 });

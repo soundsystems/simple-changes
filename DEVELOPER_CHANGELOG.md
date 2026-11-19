@@ -40,12 +40,23 @@
   `pushedBranch`; a remote-tracking ref only decides whether to ask, and
   no answer keeps the run open); when the target moved since `loop
   start`, a clean `git merge-tree --write-tree` (`movedTargetBlocker`);
-  and a proposal bound to the unit (`proposalMismatch`). The controller
-  names it with `loop finalize --queued-proposal <branch>=<id>`
-  (`queuedDeclarations`), which ties it to that source branch and no
-  other, and the review ledger must record that proposal's
-  `latestRecordedHead` as exactly the queued head on a base the target
-  contains, so no proposal matches by SHA alone or by descent.
+  and a proposal bound to the unit (`proposalMismatch`). A live checkout
+  must also equal its commit under `sourceWorktreeDelta`
+  (`hiddenChanges`), which sees assume-unchanged and skip-worktree edits,
+  and the remote must have exactly one push URL (`get-url --push --all`).
+  Proposal binding needs no flag. The review ledger binds a proposal to
+  commits only, and its head records are closed to unknown members, so
+  `proposal record-authors` now also writes the source branch to a new
+  file, `proposal-sources.json` (`lib/proposal-sources.ts`,
+  `proposal-sources.schema.json`): the one local branch at the recorded
+  head, or `--source-branch`, which must point at exactly that head, with
+  the remote branch it tracked. `boundProposals` accepts the single
+  proposal whose source is the queued branch at the queued head, whose
+  `latestRecordedHead` in the ledger is exactly that head, and whose
+  recorded base the target contains; none or several keeps the run open.
+  `loop finalize --queued-proposal <branch>=<id>` (`queuedDeclarations`)
+  names one explicitly and must pass the same checks, so two proposals at
+  one head cannot be swapped and nothing matches by SHA alone or descent.
   `--no-proposal TEXT` covers a remote with nowhere to open one and is
   ignored when `proposalForge` finds a `github`, `gitlab`, or `codeberg`
   provider. An unresolved target is a blocker in the assessment itself.
@@ -57,39 +68,31 @@
   close the second becomes cleanup `notes` and `cleanupStatus: pending`
   (`queuedLeftovers`, `housekeepingPending`), and the first does not
   apply, so the primary checkout is never touched or required clean.
-  Design choice: Queue finalization deletes nothing. The run's own
-  worktrees are kept and listed in the receipt's `queued.keptWorktrees`
-  with how to remove one, so an ignored file, an edit Git's status hides,
-  or a stopped Git operation in one is never lost. No existing state file
-  changes shape: the lease is untouched, and the receipt gains an
-  optional `queued` member (`status: queued-for-review-not-merged`, with
-  `deliveryStatus` still `unverified`). `queuedRunGuidance` replaces
-  "record its outcome" in `loop status` for these runs and prints the
-  finalize command with each branch to name. Kept worktrees are cleared
-  later: a closed run writes `queued-worktrees/<run-id>.json`
-  (`queued-worktrees.schema.json`), and `retireMergedQueuedWorktrees`
-  (`lib/queued-retirement.ts`), run by `loop start --mode queue|sweep`
-  before the lease exists, hands the existing `removeProvenWorktrees` of
-  `worktree-maintenance.ts` only checkouts that are still that run's, on
-  the same branch, unclaimed, target-contained, clean, free of a Git
-  operation (`assertNoGitOperation`), equal to their commit
-  (`sourceWorktreeDelta`), and with nothing on disk beyond it
-  (`filesBeyondHead`); it never throws. Known gap: a later run can
+  Design choice: nothing in a Queue or Sweep start or finalize deletes a
+  worktree, branch, or file. The run's own worktrees are kept and listed
+  in the receipt's `queued.keptWorktrees`; they stay until the owner asks
+  to clean the repository through Reconcile or `prune`, which ask first.
+  Automatic clearing of merged queued copies was built twice (at
+  finalize, then at the next `loop start`), failed review both times, and
+  is deferred. No existing state file changes shape: the lease and the
+  ledger are untouched, and the receipt gains an optional `queued` member
+  (`status: queued-for-review-not-merged`, with `deliveryStatus` still
+  `unverified`). `queuedRunGuidance` replaces "record its outcome" in
+  `loop status` for these runs. Known gap: a later run can
   propose the same unchanged content from the primary checkout again
   without being told it is already queued. Ship, Integrate, Reconcile, a
   scoped Queue run, and `loop end` are unchanged. Covered by
   `queued-finalization.test.ts`: the Queue close and a second `loop
-  start`, every case that still blocks, a kept worktree that holds an
-  ignored file, and Integrate and Ship still relinquishing on the same
-  repository.
+  start`, a proposal found with no flag, every case that still blocks, a
+  kept worktree that holds an ignored file, and Integrate and Ship still
+  relinquishing on the same repository.
 - Review: the text rules above were not independently reviewed, because
-  the owner ended review rounds for this line on 2026-11-18. The Queue
-  finalization commit had one review by gpt-6.2-astra at high effort that
-  found 2 blocking and 9 should-fix defects, answered by removing
-  automatic removal and the already-queued notice and fixing the rest;
-  the result, and the later clearing of merged worktrees at `loop start`,
-  were not re-reviewed. Guidance stays 33.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T13:57:00-06:00" -->
+  the owner ended review rounds for this line on 2026-11-18. Queue
+  finalization had two reviews by gpt-6.2-astra at high effort; the first
+  found 2 blocking and 9 should-fix, the second 3 blocking and 4
+  should-fix, all blocking findings were in automatic removal, which was
+  removed; the remaining fixes were not re-reviewed. Guidance stays 33.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T15:50:00-06:00" -->
 
 ## 0.33.1 - 2026-11-18
 

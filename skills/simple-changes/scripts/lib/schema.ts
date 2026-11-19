@@ -33,7 +33,7 @@ export const SCHEMA_NAMES = [
   "preserved-source-handoff",
   "changelog-author",
   "held-units",
-  "queued-worktrees",
+  "proposal-sources",
   "remote-branch-reconciliation",
   "remote-branch-ancestry",
   "remote-branch-supersession",

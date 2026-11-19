@@ -19,17 +19,16 @@
     edit cleaned up, its own working copy removed, and old merged branches
     deleted, and every later request was refused until the owner cleared
     it. Now a Queue or Sweep run closes once each branch it made is on the
-    remote, confirmed by the remote itself, and the agent has named and
-    recorded its proposal. It reports the work as queued for review, not
+    remote, confirmed by the remote itself, and its proposal is recorded;
+    the run finds that proposal by itself. It reports the work as queued
+    for review, not
     merged, and it deletes nothing: your unsaved work, the run's working
     copy, and older branches all stay where they are. Unpushed or
     uncommitted work, a proposal that was never opened where one can be,
-    and a question waiting on you still keep the run open. Those working
-    copies do not pile up: the next such request removes an earlier one
-    once its change is merged, and leaves it with a plain note when it
-    holds anything that exists only there, such as a file Git ignores.
+    and a question waiting on you still keep the run open. The run's
+    working copy stays until you ask to clean the repository.
   - Guidance stays 33, so no repository is asked anything by this update.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T13:57:00-06:00" -->
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T15:50:00-06:00" -->
 
 ## 0.33.1 - 2026-11-18
 

@@ -70,7 +70,7 @@ const CLEANUP_LIVE_CLAIM_STATES = new Set<WorktreeCoordinationState>([
   "resume-ready",
 ]);
 
-export const withCleanupLocks = <T>(
+const withCleanupLocks = <T>(
   commonGitDirectory: string,
   operationName: string,
   operation: () => T
@@ -265,7 +265,7 @@ const liveClaimPaths = (commonGitDirectory: string): Map<string, string> => {
   );
 };
 
-export interface CleanupClassification {
+interface CleanupClassification {
   preserved: WorktreeCleanupPreserved[];
   prunable: WorktreeInventory[];
   removable: Array<{
@@ -570,13 +570,7 @@ const deleteContainedBranch = (
   return true;
 };
 
-/**
- * Removes exactly the given checkouts with Git's unforced removal, after
- * re-reading each one's head, digest, and clean status, and deletes a
- * branch only while it still points at the removed head. Every caller
- * proves its own candidates and holds the cleanup locks.
- */
-export const removeProvenWorktrees = (
+const removeProvenWorktrees = (
   repositoryPath: string,
   targetRef: string,
   removable: CleanupClassification["removable"],

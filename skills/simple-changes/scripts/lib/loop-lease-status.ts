@@ -134,22 +134,17 @@ const relinquishedGuidance = (lease: LoopLease): LoopGuidance =>
   });
 
 // A Queue or Sweep run never merges or records a shipment outcome: it ends
-// with its own branches pushed and their proposals recorded and named.
-const queuedRunGuidance = (lease: LoopLease): LoopGuidance | null => {
-  if (!closesAsQueued(lease) || lease.shipmentOutcome) {
-    return null;
-  }
-  const branches = lease.worktrees.flatMap((worktree) =>
-    worktree.createdByRun && worktree.branch ? [worktree.branch] : []
-  );
-  return {
-    headline: `Loop ${lease.runId} is healthy. It is a ${lease.mode} run, so it ends queued for review, not merged: push each unit's own branch, open its proposal, record it with \`proposal record-authors\`, then finalize, naming each branch's proposal with \`--queued-proposal <branch>=<id>\`. Finalize closes the run when every run-created branch is committed and on the remote at its exact head with that proposal recorded. It merges nothing, deletes nothing, and leaves uncommitted work in the primary checkout exactly as it is.`,
-    nextCommands: [
-      "simple-changes proposal record-authors --proposal <id> --base <sha> --head <sha>",
-      `simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>${branches.map((branch) => ` --queued-proposal ${branch}=<id>`).join("")}`,
-    ],
-  };
-};
+// with its own branches pushed and their proposals recorded.
+const queuedRunGuidance = (lease: LoopLease): LoopGuidance | null =>
+  closesAsQueued(lease) && !lease.shipmentOutcome
+    ? {
+        headline: `Loop ${lease.runId} is healthy. It is a ${lease.mode} run, so it ends queued for review, not merged: push each unit's own branch, open its proposal, record it with \`proposal record-authors\`, then finalize. Finalize finds each branch's proposal from that record and closes the run when every run-created branch is committed and on the remote at its exact head. It merges nothing, deletes nothing, and leaves uncommitted work in the primary checkout exactly as it is.`,
+        nextCommands: [
+          "simple-changes proposal record-authors --proposal <id> --base <sha> --head <sha>",
+          `simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>`,
+        ],
+      }
+    : null;
 
 const loopGuidanceFor = (
   lease: LoopLease | null,

@@ -1,31 +1,22 @@
-import { randomUUID } from "node:crypto";
-import {
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { resolve } from "node:path";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { completeLine } from "./git-complete.ts";
-import { ensureStateDirectory } from "./git-location.ts";
 import { isLossyName } from "./inventory.ts";
 import {
   resolvedCurrentTargetRevision,
   retirementForRegistration,
-  STATE_DIRECTORY,
   targetBranchForRef,
 } from "./loop-lease-core.ts";
+import { worktreeSourceEntry } from "./loop-lease-shipment.ts";
 import { runGit, runGitRemote } from "./process.ts";
+import { readProposalSources } from "./proposal-sources.ts";
 import { redactSecrets } from "./redact.ts";
 import {
   isProposalId,
   latestRecordedHead,
   readReviewLedger,
 } from "./review-ledger.ts";
-import { validateSchema } from "./schema.ts";
+import { sourceWorktreeDelta } from "./source-worktree-delta.ts";
 import type {
   BranchInventory,
   LoopLease,
@@ -80,128 +71,21 @@ export interface QueuedUnit {
   worktree: string | null;
 }
 
-/**
- * A run-created checkout finalization kept, with the reason a later
- * clean-up will still leave it when there already is one: files in it that
- * Git ignores, which exist nowhere else.
- */
-export interface KeptQueuedWorktree {
-  note: string | null;
-  path: string;
-}
-
 export interface QueuedAssessment {
   blockers: string[];
   /** Every live run-created checkout. Finalization keeps them all. */
-  keptWorktrees: KeptQueuedWorktree[];
+  keptWorktrees: string[];
   units: QueuedUnit[];
 }
-
-const MAX_NAMED_FILES = 5;
-
-/** Every directory that holds a tracked path. */
-const trackedDirectories = (tracked: ReadonlySet<string>): Set<string> => {
-  const directories = new Set<string>();
-  for (const path of tracked) {
-    for (
-      let end = path.lastIndexOf("/");
-      end > 0 && !directories.has(path.slice(0, end));
-      end = path.lastIndexOf("/", end - 1)
-    ) {
-      directories.add(path.slice(0, end));
-    }
-  }
-  return directories;
-};
-
-interface TrackedShape {
-  directories: ReadonlySet<string>;
-  root: string;
-  tracked: ReadonlySet<string>;
-}
-
-// Adds what `relative` holds beyond the tracked shape, up to five names. A
-// directory with no tracked path under it is named and not descended into.
-const collectExtras = (
-  shape: TrackedShape,
-  relative: string,
-  extras: string[]
-): void => {
-  const entries = readdirSync(resolve(shape.root, relative), {
-    withFileTypes: true,
-  });
-  for (const entry of entries) {
-    if (extras.length >= MAX_NAMED_FILES) {
-      return;
-    }
-    const path = relative ? `${relative}/${entry.name}` : entry.name;
-    if (path === ".git" || shape.tracked.has(path)) {
-      continue;
-    }
-    if (entry.isDirectory() && shape.directories.has(path)) {
-      collectExtras(shape, path, extras);
-    } else {
-      extras.push(entry.isDirectory() ? `${path}/` : path);
-    }
-  }
-};
-
-/**
- * Up to five entries on disk in a checkout that its head does not track,
- * which in a checkout with clean status are files Git ignores. The disk is
- * walked and compared with the head's own file list, so a list Git lost or
- * cut short shows more extra files, never fewer. Null when either side
- * cannot be read.
- */
-export const filesBeyondHead = (
-  worktreePath: string,
-  headSha: string
-): string[] | null => {
-  const listed = runGit(
-    worktreePath,
-    ["ls-tree", "-r", "-z", "--name-only", headSha],
-    true
-  );
-  const tracked = new Set(listed.stdout.split("\0").filter(Boolean));
-  if (listed.exitCode !== 0 || tracked.size === 0) {
-    return null;
-  }
-  const extras: string[] = [];
-  try {
-    collectExtras(
-      { directories: trackedDirectories(tracked), root: worktreePath, tracked },
-      "",
-      extras
-    );
-  } catch {
-    return null;
-  }
-  return extras;
-};
-
-/** What to tell the owner about a kept checkout that holds ignored files. */
-export const ignoredFilesNote = (
-  path: string,
-  names: readonly string[]
-): string =>
-  `This copy holds files Git ignores (${names.join(", ")}), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: ${path}`;
-
-const keptWorktree = (worktree: WorktreeInventory): KeptQueuedWorktree => {
-  const extras =
-    worktree.headSha && worktree.changes.length === 0 && !worktree.prunable
-      ? filesBeyondHead(worktree.path, worktree.headSha)
-      : null;
-  return {
-    note: extras?.length ? ignoredFilesNote(worktree.path, extras) : null,
-    path: worktree.path,
-  };
-};
 
 /** What the controller told `loop finalize` about its pushed branches. */
 export interface QueuedDeclarations {
   /** `--no-proposal`: why no proposal can be opened; null when not given. */
   noProposal: string | null;
-  /** `--queued-proposal <branch>=<id>`: the proposal each branch is in. */
+  /**
+   * `--queued-proposal <branch>=<id>`: the proposal named for a branch,
+   * when the recorded ones do not settle it. It must still bind.
+   */
   proposals: ReadonlyMap<string, string>;
 }
 
@@ -280,12 +164,14 @@ const remoteBranchHead = (
   const ref = `refs/heads/${branch}`;
   let destination: string | null;
   try {
-    // One whole line: a remote with several push URLs has no single
-    // destination to ask, and is refused below as no answer.
+    // Every push URL, which must be one whole line: Git pushes to each
+    // of several, so a remote with more has no single destination to ask,
+    // and is refused below as no answer.
     destination = completeLine(repositoryPath, [
       "remote",
       "get-url",
       "--push",
+      "--all",
       remote,
     ]).line;
   } catch {
@@ -333,6 +219,13 @@ const remoteBranchHead = (
 interface PushDestination {
   name: string;
   remote: string;
+}
+
+/** A branch whose exact head its push destination confirmed. */
+interface PushedUnit {
+  branch: string;
+  headSha: string;
+  pushed: PushDestination;
 }
 
 /**
@@ -482,24 +375,35 @@ const proposalForge = (
     .find((provider) => PROPOSAL_FORGES.has(provider)) ?? null;
 
 /**
- * Why the proposal the controller named for this branch does not bind to
- * it, or null when it does. The name ties the proposal to this source
- * branch and to no other; the review ledger must record that proposal's
- * latest head as exactly the queued head, never an ancestor or descendant,
- * with a base the run's target contains.
+ * Why a proposal does not bind to this pushed branch, or null when it does.
+ * Three records must agree, and none matches by commit alone:
+ *
+ * - its source, written by `proposal record-authors` beside the ledger,
+ *   names this exact branch at this exact head, on this remote branch when
+ *   the branch had an upstream then;
+ * - the review ledger records the proposal's latest head as exactly the
+ *   queued head, never an ancestor or descendant;
+ * - that head's recorded base is contained in the run's target.
  */
 const proposalMismatch = (
   context: QueuedContext,
-  branch: string,
-  headSha: string,
+  unit: PushedUnit,
   proposalId: string
 ): string | null => {
-  const { declared, lease } = context;
-  const shared = [...declared.proposals].find(
-    ([other, id]) => id === proposalId && other !== branch
-  )?.[0];
-  if (shared) {
-    return `Proposal ${proposalId} is named for both ${branch} and ${shared}; one proposal carries one branch.`;
+  const { lease } = context;
+  const { branch, headSha, pushed } = unit;
+  const source = readProposalSources(lease.commonGitDirectory).find(
+    (item) => item.proposalId === proposalId
+  );
+  const recordAuthors = `\`simple-changes proposal record-authors --proposal ${proposalId} --base ${lease.targetRevision} --head ${headSha} --source-branch ${branch}\``;
+  if (source?.sourceBranch !== branch || source.headSha !== headSha) {
+    return `Proposal ${proposalId} is not recorded as opened from ${branch} at ${headSha}${source ? ` (it is recorded from ${source.sourceBranch} at ${source.headSha})` : ""}. If it is that branch's proposal, run ${recordAuthors}.`;
+  }
+  if (
+    source.remote !== null &&
+    !(source.remote === pushed.remote && source.remoteBranch === pushed.name)
+  ) {
+    return `Proposal ${proposalId} is recorded from ${source.remote}/${source.remoteBranch}, but ${branch} is pushed as ${pushed.remote}/${pushed.name}.`;
   }
   const ledger = readReviewLedger(lease.commonGitDirectory);
   const record =
@@ -508,12 +412,8 @@ const proposalMismatch = (
       ? ledger.ledger.proposals[proposalId]
       : undefined;
   const recorded = record ? latestRecordedHead(record) : null;
-  const recordAuthors = `\`simple-changes proposal record-authors --proposal ${proposalId} --base ${lease.targetRevision} --head ${headSha}\``;
-  if (!(record && recorded)) {
-    return `Proposal ${proposalId} has no recorded head in the review ledger. Run ${recordAuthors}.`;
-  }
-  if (recorded !== headSha) {
-    return `Proposal ${proposalId} is recorded at ${recorded}, not at the queued head ${headSha} of ${branch}. Run ${recordAuthors}.`;
+  if (!(record && recorded === headSha)) {
+    return `Proposal ${proposalId} is recorded at ${recorded ?? "no head"} in the review ledger, not at the queued head ${headSha} of ${branch}. Run ${recordAuthors}.`;
   }
   const base = record.heads[recorded]?.base;
   return base &&
@@ -522,38 +422,63 @@ const proposalMismatch = (
     : `Proposal ${proposalId} is recorded against a base that ${lease.targetRef} does not contain, so it is not a proposal into this run's target. Run ${recordAuthors}.`;
 };
 
+/** Every recorded proposal that binds to this pushed branch. */
+const boundProposals = (context: QueuedContext, unit: PushedUnit): string[] =>
+  readProposalSources(context.lease.commonGitDirectory)
+    .filter(
+      (source) =>
+        source.sourceBranch === unit.branch && source.headSha === unit.headSha
+    )
+    .map((source) => source.proposalId)
+    .filter(
+      (proposalId) => proposalMismatch(context, unit, proposalId) === null
+    )
+    .sort((left, right) => left.localeCompare(right));
+
 /**
- * The proposal state of one pushed branch: the proposal bound to it, the
- * declared reason it has none, or why neither holds.
+ * The proposal state of one pushed branch. A proposal the controller named
+ * must bind to the branch. Without a name, the one recorded proposal that
+ * binds to it is found; none, or several, keeps the run open with the
+ * command that settles it. A remote with nowhere to open one may instead
+ * carry the declared reason.
  */
 const proposalState = (
   context: QueuedContext,
-  branch: string,
-  headSha: string,
-  pushedRemote: string
+  unit: PushedUnit
 ):
   | { blocker: string }
   | { proposalId: string | null; withoutProposal: string | null } => {
+  const { branch, headSha, pushed } = unit;
   const again = "then resume and finalize again";
-  const proposalId = context.declared.proposals.get(branch);
-  if (proposalId) {
-    const mismatch = proposalMismatch(context, branch, headSha, proposalId);
+  const named = context.declared.proposals.get(branch);
+  if (named) {
+    const mismatch = proposalMismatch(context, unit, named);
     return mismatch
       ? { blocker: `${mismatch} Nothing was removed; ${again}.` }
-      : { proposalId, withoutProposal: null };
+      : { proposalId: named, withoutProposal: null };
   }
-  const name = `No proposal is named for queued branch ${branch} at ${headSha}. Open its proposal, run \`simple-changes proposal record-authors --proposal <id> --base ${context.lease.targetRevision} --head ${headSha}\`, ${again} with \`--queued-proposal ${branch}=<id>\``;
-  const forge = proposalForge(context, pushedRemote);
+  const bound = boundProposals(context, unit);
+  const [only] = bound;
+  if (bound.length === 1 && only) {
+    return { proposalId: only, withoutProposal: null };
+  }
+  if (bound.length > 1) {
+    return {
+      blocker: `${bound.length} proposals are recorded from queued branch ${branch} at ${headSha} (${bound.join(", ")}). Name the one that carries it: resume and finalize again with \`--queued-proposal ${branch}=<id>\`.`,
+    };
+  }
+  const record = `No proposal is recorded from queued branch ${branch} at ${headSha}. Open its proposal, run \`simple-changes proposal record-authors --proposal <id> --base ${context.lease.targetRevision} --head ${headSha} --source-branch ${branch}\`, ${again}`;
+  const forge = proposalForge(context, pushed.remote);
   if (forge) {
     return {
-      blocker: `${name}. ${forge} can open proposals, so \`--no-proposal\` does not apply to ${pushedRemote}.`,
+      blocker: `${record}. ${forge} can open proposals, so \`--no-proposal\` does not apply to ${pushed.remote}.`,
     };
   }
   if (context.declared.noProposal) {
     return { proposalId: null, withoutProposal: context.declared.noProposal };
   }
   return {
-    blocker: `${name}; or, only when ${pushedRemote} has nowhere to open one, finalize with \`--no-proposal "<why>"\` so the receipt reports the branch as pushed without a proposal.`,
+    blocker: `${record}; or, only when ${pushed.remote} has nowhere to open one, finalize with \`--no-proposal "<why>"\` so the receipt reports the branch as pushed without a proposal.`,
   };
 };
 
@@ -582,7 +507,11 @@ const branchVerdict = (
   if (moved) {
     return { blocker: moved };
   }
-  const proposal = proposalState(context, branch.name, headSha, pushed.remote);
+  const proposal = proposalState(context, {
+    branch: branch.name,
+    headSha,
+    pushed,
+  });
   if ("blocker" in proposal) {
     return proposal;
   }
@@ -599,6 +528,27 @@ const branchVerdict = (
   };
 };
 
+/**
+ * Why a checkout with clean status still differs from its commit, or null.
+ * Status skips a path marked assume-unchanged or skip-worktree, so every
+ * file is compared with the head itself; a comparison that cannot be read
+ * proves nothing and blocks.
+ */
+const hiddenChanges = (worktree: WorktreeInventory): string | null => {
+  if (!worktree.headSha) {
+    return `Queued worktree ${worktree.path} has no commit to check.`;
+  }
+  const delta = sourceWorktreeDelta(worktree.path, worktree.headSha, (path) =>
+    worktreeSourceEntry(worktree.path, path)
+  );
+  if ("failure" in delta) {
+    return `Queued worktree ${worktree.path} could not be compared with its commit (${delta.failure}), so its work is not proven committed. Nothing in it was removed.`;
+  }
+  return delta.entries.size > 0
+    ? `Queued worktree ${worktree.path} holds changes Git's status does not show (${[...delta.entries.keys()].slice(0, 5).join(", ")}). Commit and push them, or restore those files; nothing in it was removed.`
+    : null;
+};
+
 /** A live run-created checkout: it must be clean and on its exact branch. */
 const liveVerdict = (
   context: QueuedContext,
@@ -613,6 +563,10 @@ const liveVerdict = (
     return {
       blocker: `Queued worktree ${worktree.path} has uncommitted changes. Commit and push them, or keep them and pause for the user; nothing in it was removed.`,
     };
+  }
+  const hidden = hiddenChanges(worktree);
+  if (hidden) {
+    return { blocker: hidden };
   }
   const branch = context.inventory.branches.find(
     (item) =>
@@ -697,7 +651,7 @@ export const assessQueuedWork = (
       (item) => item.path === registered.path
     );
     if (worktree) {
-      assessment.keptWorktrees.push(keptWorktree(worktree));
+      assessment.keptWorktrees.push(worktree.path);
     }
     branches.add(worktree ? worktree.branch : registered.branch);
     const verdict = worktree
@@ -746,107 +700,6 @@ export const queuedSummary = (
   const kept =
     keptWorktrees.length === 0
       ? ""
-      : ` The run's ${keptWorktrees.length === 1 ? "worktree was" : `${keptWorktrees.length} worktrees were`} kept. The next Queue or Sweep run removes one once its work is merged and nothing in it exists only there; or remove one yourself with \`git worktree remove <path>\`, which refuses a checkout that holds changes. Its branch keeps the work.`;
+      : ` The run's ${keptWorktrees.length === 1 ? "worktree stays" : "worktrees stay"} until the owner asks to clean the repository, which asks first: ${keptWorktrees.join(", ")}.`;
   return `Queued for review, not merged: ${counts}. Nothing was added to ${lease.targetRef}, and finalization deleted no checkout, branch, or file. Uncommitted work in the primary checkout was left exactly as it was.${kept}`;
-};
-
-// ---------------------------------------------------------------------------
-// The worktrees a closed Queue or Sweep run kept
-
-/**
- * The record a closed Queue or Sweep run leaves beside the loop state, in
- * its own file so older runtimes never meet it: the worktrees it created
- * and kept, each with its branch. A later Queue or Sweep start reads it to
- * know which checkouts it may clean up once their work is in the target;
- * it proves nothing by itself.
- */
-export interface QueuedWorktreesRecord {
-  closedAt: string;
-  kind: "queued-worktrees";
-  mode: "queue" | "sweep";
-  runId: string;
-  schemaVersion: 1;
-  worktrees: { branch: string; path: string }[];
-}
-
-const queuedWorktreesDirectory = (commonGitDirectory: string): string =>
-  resolve(commonGitDirectory, STATE_DIRECTORY, "queued-worktrees");
-
-/** Writes the record, or deletes it once no worktree is left in it. */
-export const writeQueuedWorktreesRecord = (
-  commonGitDirectory: string,
-  record: QueuedWorktreesRecord
-): void => {
-  const path = resolve(
-    queuedWorktreesDirectory(commonGitDirectory),
-    `${record.runId}.json`
-  );
-  if (record.worktrees.length === 0) {
-    rmSync(path, { force: true });
-    return;
-  }
-  const validated = validateSchema<QueuedWorktreesRecord>(
-    "queued-worktrees",
-    record
-  );
-  ensureStateDirectory(
-    commonGitDirectory,
-    queuedWorktreesDirectory(commonGitDirectory)
-  );
-  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
-  renameSync(temporaryPath, path);
-};
-
-/** The kept worktrees of a run that just closed, on their exact branches. */
-export const keptQueuedWorktreesRecord = (
-  lease: LoopLease,
-  inventory: RepositoryInventory,
-  assessment: QueuedAssessment,
-  closedAt: string
-): QueuedWorktreesRecord => ({
-  closedAt,
-  kind: "queued-worktrees",
-  mode: lease.mode === "sweep" ? "sweep" : "queue",
-  runId: lease.runId,
-  schemaVersion: 1,
-  worktrees: assessment.keptWorktrees.flatMap(({ path }) => {
-    const branch = inventory.worktrees.find(
-      (worktree) => worktree.path === path
-    )?.branch;
-    return branch && !isLossyName(branch) ? [{ branch, path }] : [];
-  }),
-});
-
-// A record that is missing, unreadable, or not this shape is skipped: it
-// only ever allows a clean-up, so skipping it keeps its worktrees.
-export const readQueuedWorktreesRecords = (
-  commonGitDirectory: string
-): QueuedWorktreesRecord[] => {
-  const directory = queuedWorktreesDirectory(commonGitDirectory);
-  let names: string[];
-  try {
-    names = readdirSync(directory).filter((name) => name.endsWith(".json"));
-  } catch {
-    return [];
-  }
-  const records: QueuedWorktreesRecord[] = [];
-  for (const name of names.sort((left, right) => left.localeCompare(right))) {
-    try {
-      const record = validateSchema<QueuedWorktreesRecord>(
-        "queued-worktrees",
-        JSON.parse(readFileSync(resolve(directory, name), "utf8")) as unknown
-      );
-      if (name === `${record.runId}.json`) {
-        records.push(record);
-      }
-    } catch {
-      // Skipped, as above.
-    }
-  }
-  return records;
 };

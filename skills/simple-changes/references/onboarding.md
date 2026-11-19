@@ -21,10 +21,8 @@ quick walkthrough of everything it can do.**
 
 ## Explain before asking
 
-The [first screen](#first-screen) leads with the outcome and explains nothing
-else. When the user chooses **Show options**, do not open with internal terms
-such as initialization, mutation, policy source, or preference scope. Start by
-saying, in plain language:
+Do not open with internal terms such as initialization, mutation, policy source,
+or preference scope. Start by saying, in plain language:
 
 - Simple Changes first inventories the repository, separates stable work into
   focused units, checks and reviews those units, then stops, merges, or ships
@@ -75,50 +73,6 @@ when one sentence is clearer.
 
 ## First screen
 
-At first use, when no repository or personal policy is saved, lead with the
-outcome, not the workflow. Say in one sentence what will happen to the
-current request and what will not, then offer two choices:
-
-> I'll check your change and give you a link to review. Nothing will go live.
-
-1. **Use this setup (Recommended)**: Take the finish implied by the current
-   request, ask only when blocked, keep going live and database changes
-   behind confirmation, and turn on
-   [Ultra-Simple Mode](ultra-simple-mode.md). Show what will be saved and
-   where before writing.
-2. **Show options**: Explain the workflow and offer the full setup choices
-   below, including the walkthrough and setup for this run only.
-
-Match the sentence to the request's finish. For merge: "I'll check your
-change, get it a second look, and add it to the project once it's approved.
-Nothing will go live." For ship: "I'll check your change, get it a second
-look, add it to the project, and ask you before anything goes live."
-
-**Use this setup** is the recommended setup with its answers fixed to the
-safe defaults, plus the Ultra-Simple style, saved together by one
-`setup --first-use` command. Show the plain receipt in
-[first use](ultra-simple-mode.md#first-use) and run the command it gives
-only after the person confirms it. The command saves only while nothing is
-saved, asks nothing, writes no review settings, and leaves instruction files
-alone. Whatever `initialize` reports as required is still asked, once and in
-plain words: a pending Simple Changelogs install offer before the save, and
-the pending review question when two or more agents are detected, recorded
-with `setup --authoring` as
-[agents, models, and reviews](#agents-models-and-reviews) describes.
-Choosing it grants nothing the recommended setup does not: the mode is a
-display preference, never a permission.
-
-This screen is a step in the conversation. `simple-changes setup` run in a
-terminal opens with the full choices under [Show options](#show-options).
-
-Offer this screen only at first use. When a policy is already saved, the
-request names a setup choice, or the person saved the standard style for
-themselves, skip it and go to [Show options](#show-options), so it can never
-replace settings someone already chose or promise what a saved setting does
-not do.
-
-### Show options
-
 Show the recommended workflow for the current request before asking the first
 question. For example:
 
@@ -147,10 +101,11 @@ ready**, **Merge what's ready**, **Ship what's ready**, **Clean up the repo**,
 **Show me what you would do**, **Continue**, or **Leave this work alone**) and
 that Simple Changes coordinates with Simple Changelogs when available but does
 not author changelogs itself. Save the full per-use catalog for **Walk me
-through it**; do not turn this screen into a wall of text.
+through it**; do not turn the first screen into a wall of text.
 
-These four choices keep the standard voice. Any of them can add Ultra-Simple
-Mode afterwards with `setup --communication ultra-simple`.
+Setup is the same under [Ultra-Simple Mode](ultra-simple-mode.md), said in
+its words. After any of these choices is saved, the mode can be added with
+`setup --communication ultra-simple`.
 
 Outside Git, the recommended durable scope is private personal preferences
 because repository policy is unavailable. An explicit current request always
@@ -218,8 +173,7 @@ break-glass mode exists and requires automatic production deployment.
 
 **Ship when approved** with **Deploy automatically** is what
 [Ultra-Simple Mode calls Autopilot](ultra-simple-mode.md#autopilot). It is
-chosen here, with these questions and their confirmations, and never by the
-first screen.
+chosen here, with these questions and their confirmations.
 
 Then, only when this run will actually produce more than one independent
 change proposal, ask **When there are multiple independent change proposals,
@@ -382,11 +336,11 @@ only with its cost, the slowest and most expensive setting), or **Do not guide
 this** (`null`).
 
 **Reviews.** With two or more detected agents, ask the review questions in
-every setup style, **Use this setup** and run-only included, whatever the
-agent list selected; otherwise ask them in Customize and the walkthrough, or
-when a second model name was recorded. Explain that a review from a
-different agent catches what the author's model tends to miss, and
-self-review never counts. Ask **Who should perform independent reviews?**
+every setup style, run-only included, whatever the agent list selected;
+otherwise ask them in Customize and the walkthrough, or when a second model
+name was recorded. Explain that a review from a different agent catches what
+the author's model tends to miss, and self-review never counts. Ask **Who
+should perform independent reviews?**
 
 1. **A different agent (Recommended when more than one agent is recorded)**:
    offered only with two or more recorded agents.

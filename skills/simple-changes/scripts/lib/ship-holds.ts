@@ -1100,13 +1100,15 @@ const pushAuthorizationNever = (inventory: RepositoryInventory): boolean =>
 
 /**
  * True when the failed push itself says this exact ref was already gone
- * when the delete arrived, as after a lost delete race: Git 2.53 and later
- * reject the delete with "reference does not exist", and older Git prints a
- * bare "unable to resolve reference '<ref>'". The suffixed form, "...:
- * reference broken", is an unreadable ref the remote still has. Every other
- * answer leaves the ref where it was as far as this push knows: a hook or a
- * rule that declined the delete, a ref hidden by `transfer.hideRefs`, a
- * connection that failed, or wording this copy does not know.
+ * when the delete arrived, as after a lost delete race. Git's own status
+ * line for the ref decides whenever there is one: "reference does not
+ * exist" (Git 2.53 and later) is the only reason that counts, so a hook or
+ * a rule that declined the delete, a ref hidden by `transfer.hideRefs`, and
+ * any wording this copy does not know all leave the ref where it was as
+ * far as this push knows, whatever else the remote printed. Only when Git
+ * gave no status line for the ref may an older Git's bare "unable to
+ * resolve reference '<ref>'" count. The suffixed form, "...: reference
+ * broken", is an unreadable ref the remote still has.
  */
 const goneBeforeDelete = (detail: string, ref: string): boolean => {
   const unresolved = [...detail.matchAll(UNRESOLVED_REFERENCE)].filter(
@@ -1118,7 +1120,10 @@ const goneBeforeDelete = (detail: string, ref: string): boolean => {
   const reasons = [...detail.matchAll(REMOTE_REJECTION)]
     .filter(([, name]) => name === ref)
     .map(([, , reason]) => reason);
-  return reasons.includes(ALREADY_GONE_REASON) || unresolved.length > 0;
+  if (reasons.length > 0) {
+    return reasons.every((reason) => reason === ALREADY_GONE_REASON);
+  }
+  return unresolved.length > 0;
 };
 
 // A configuration value as an extended regular expression matching only it.

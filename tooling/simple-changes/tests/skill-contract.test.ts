@@ -1665,51 +1665,22 @@ describe("Simple Changes skill contract", () => {
       "Under `communication.style: ultra-simple`, follow [Ultra-Simple Mode](references/ultra-simple-mode.md)"
     );
 
-    // The first screen is an outcome and two choices, at first use only.
+    // Setup is unchanged by the mode: onboarding only points at it.
     for (const copy of [
-      "At first use, when no repository or personal policy is saved, lead with the outcome, not the workflow.",
-      "> I'll check your change and give you a link to review. Nothing will go live.",
-      "**Use this setup (Recommended)**",
-      "**Show options**",
-      "I'll check your change, get it a second look, and add it to the project once it's approved. Nothing will go live.",
-      "I'll check your change, get it a second look, add it to the project, and ask you before anything goes live.",
-      "**Use this setup** is the recommended setup with its answers fixed to the safe defaults, plus the Ultra-Simple style, saved together by one `setup --first-use` command.",
-      "The command saves only while nothing is saved, asks nothing, writes no review settings, and leaves instruction files alone.",
-      // The first screen belongs to the conversation, not the terminal.
-      "This screen is a step in the conversation. `simple-changes setup` run in a terminal opens with the full choices under [Show options](#show-options).",
-      "Whatever `initialize` reports as required is still asked, once and in plain words",
-      "Offer this screen only at first use.",
-      "so it can never replace settings someone already chose or promise what a saved setting does not do",
-      "the mode is a display preference, never a permission",
-      "### Show options",
-      // Reviews are a required question in every setup style.
-      "ask the review questions in every setup style, **Use this setup** and run-only included",
+      "Setup is the same under [Ultra-Simple Mode](ultra-simple-mode.md), said in its words.",
+      "After any of these choices is saved, the mode can be added with `setup --communication ultra-simple`.",
       "**Ship when approved** with **Deploy automatically** is what [Ultra-Simple Mode calls Autopilot](ultra-simple-mode.md#autopilot)",
     ]) {
       expect(onboarding).toContain(copy);
     }
-    // The plain receipt names what is saved and where, before saving.
     for (const copy of [
-      "Show what will be remembered and where, with the real paths, and save only after a yes",
-      "I stop at a review link unless you ask for more.",
-      "I ask before anything goes live, and before any database change.",
-      "`<path>/.simple-changes.json` and > `<path>/.simple-changes-communication.json`",
-      // The save is one command whose flags are the receipt.
-      "simple-changes setup --first-use --communication ultra-simple \\ --finish <review|integrate|ship> --questions blocking-only \\ --scope repository --git-push-authorization ask --production ask \\ --shipping-mode standard --migration-handling ask-after-review \\ --changelog <handling> --instruction-pointer leave --yes",
-      // It never replaces what someone saved meanwhile, and never prompts.
-      "`--first-use` saves only while nothing is saved, and checks that again at the moment it writes",
-      "a setup is already saved for the project or for the person;",
-      "the person keeps the standard wording for themselves, which would outrank the project's and make the receipt untrue.",
-      "It asks nothing, so a missing answer is an error and never a prompt, and it writes no review settings.",
-      "Never drop the flag to get past a refusal.",
-      // The changelog answer follows what initialize reports, and proves nothing.
-      "`<handling>` follows `changelogCoordination.capabilityAvailable` from `initialize`: `delegate-if-available` when it is true, `preserve-and-report` otherwise.",
-      "I hand release notes to Simple Changelogs when it can take them here, and otherwise leave them alone and tell you what still needs writing.",
-      "The saved answer proves nothing about the provider: confirm what it supports before each handoff",
-      // Turning the mode on by itself stays a one-file command.
+      "The mode does not change setup.",
+      "the same choices, the same receipt, and the same confirmation before anything is saved, said in this mode's words when the mode is already in effect",
+      "Nothing is chosen for the person because the mode is on.",
+      "Inside setup, the path the owner chose decides what is asked.",
+      // Turning the mode on is a one-file command.
       "simple-changes setup --communication ultra-simple --scope repository --confirm",
-      "never record an answer the person did not give",
-      "This path changes no answer above and adds none.",
+      "it is the project's default: teammates get the mode with no setup of their own, unless their own setting says otherwise",
     ]) {
       expect(mode).toContain(copy);
     }
@@ -1766,12 +1737,15 @@ describe("Simple Changes skill contract", () => {
       "Autopilot is the plain name for two settings Simple Changes already has: the **Ship when approved** finish with **Deploy automatically**.",
       // It reaches only work that reaches Ship, and removes one question.
       'A request that asks for less, such as "put this up", still stops where it says.',
-      // Handed-over work still passes the saved readiness check first.
-      "So is finished work handed over with no other instruction, once it passes the saved [handoff check](setup-and-policy.md#completed-work-handoff-checkpoint): the person confirms it is ready, or says so first, exactly as that setting asks.",
-      "once you've > told me it's ready",
-      "The handoff check still decides when finished work is ready to hand over.",
+      // Handed-over work starts when the saved handoff setting lets it.
+      "So is finished work handed over with no other instruction, when the saved [handoff setting](setup-and-policy.md#completed-work-handoff-checkpoint) lets it start: after the person confirms it is ready, after they say so themselves, or straight away when handoff is automatic.",
+      "`<after you confirm > it's ready | once you tell me it's ready | as soon as it's built and > checked, without asking>`",
+      "The handoff setting still decides when finished work is handed over.",
+      // The shipping order decides what precedes going live, break-glass included.
+      "Under a saved break-glass order a Ship request can go live before the second look.",
+      "never promise a second look first to a project that saved break-glass",
       "It is a permission, not a way of talking, so it is separate from this mode and never part of it.",
-      'Nothing turns it on by implication: not Ultra-Simple Mode, not **Use this setup**, not "ship it", not urgency.',
+      'Nothing turns it on by implication: not Ultra-Simple Mode, not "ship it", not urgency.',
       "it takes effect on each computer only after that person confirms the saved setup there through `setup`, because a project file alone never grants permission to deploy",
       "Autopilot removes one question, the one about going live, and nothing else.",
       "A saved **At major steps** setting still confirms each major step.",
@@ -1784,10 +1758,6 @@ describe("Simple Changes skill contract", () => {
     for (const rule of [
       "It writes that one file and refuses any other setup option in the same command",
       "and never rewrites one holding members this version does not know",
-      "`--first-use` is the one place another setup option joins it.",
-      "it writes only while no repository or personal policy exists, checks that again under the setup lock, and installs the policy first, without replacing a file that appeared meanwhile",
-      "Before writing anything it refuses a style destination that holds a different style or cannot be read, and an Ultra-Simple style the person's own `standard` setting would outrank.",
-      "It never prompts, in a terminal or out of one, never writes the authoring sidecar, takes `--scope repository` or `--scope personal` only, and saves the style last.",
       "The personal file outranks the repository's, unlike policy, because the style grants nothing",
       "in any layer, is listed in `communication.errors` and skipped",
       "no rule may read it to decide what is allowed",

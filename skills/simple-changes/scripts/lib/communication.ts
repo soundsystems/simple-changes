@@ -186,26 +186,6 @@ const replaceableCommunication = (path: string): FileState => {
   return current;
 };
 
-/**
- * Refuses, before anything else is written, when a first-use save could not
- * record `style` at `path`: the file cannot be read, or it already holds the
- * other style. A first-use setup creates the setting or finds it already
- * there; it never changes a style someone chose. A setup that also saves the
- * style checks this first, so it never stops half saved.
- */
-export const assertCommunicationUnsetOrSame = (
-  path: string,
-  style: CommunicationStyle
-): void => {
-  const current = replaceableCommunication(path);
-  if (current.state === "valid" && current.style !== style) {
-    throw new SimpleChangesError(
-      `${path} already sets the ${current.style} style, and a first-use setup never changes a saved one, so nothing was written. Change it with setup --communication.`,
-      EXIT_CODES.unsafe
-    );
-  }
-};
-
 const installCommunication = (
   stagedPath: string,
   path: string,

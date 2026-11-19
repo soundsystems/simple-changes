@@ -893,7 +893,7 @@ exit 1
 
   test("keep a rejected delete pending when the remote's answer is lost or cut short", () => {
     const fixture = repository();
-    const origin = withOrigin(fixture);
+    withOrigin(fixture);
     const hold = addShipHold(fixture.root, {
       adapter: "claude-code",
       agentId: "owner",
@@ -903,18 +903,13 @@ exit 1
     });
     publishShipHold(fixture.root, { agentId: "owner", holdId: hold.holdId });
     const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
-    // Decline every delete and keep the ref, in the words an older Git uses
-    // for a lost delete race. The push then reads as "already gone", so only
-    // the listing stands between this ref and a recorded withdrawal.
-    writeFileSync(
-      join(origin, "hooks", "pre-receive"),
-      `#!/bin/sh
-echo "error: cannot lock ref '${ref}': unable to resolve reference '${ref}'" >&2
-exit 1
-`,
-      { mode: 0o755 }
-    );
-    git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+    // The remote keeps the ref, and the push is made to answer as Git does
+    // for a lost delete race. It then reads as "already gone", so only the
+    // listing stands between this ref and a recorded withdrawal.
+    const alreadyGone = {
+      exitCode: 1,
+      stderr: ` ! [remote rejected] ${ref} (reference does not exist)`,
+    };
     const body = `import { releaseShipHold } from ${JSON.stringify(libraryPath("ship-holds.ts"))};
 const released = releaseShipHold(${JSON.stringify(fixture.root)}, {
   agentId: "owner",
@@ -933,7 +928,14 @@ console.log(JSON.stringify({
       `bytes:${40 + 1 + ref.length - 1}`,
     ] as const) {
       const { remaining, reply } = runWithFakeGit(
-        { body, flag: ref, lost: 1, mode },
+        {
+          body,
+          failFlag: `:${ref}`,
+          failure: alreadyGone,
+          flag: ref,
+          lost: 1,
+          mode,
+        },
         (cleanup) => cleanups.push(cleanup)
       );
       expect(remaining).toBe(0);
@@ -978,12 +980,13 @@ console.log(JSON.stringify({
     const hold = publish("Published twice.");
     const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
     expect(git(fixture.root, ["ls-remote", mirror, ref])).toContain(ref);
-    // Origin loses a delete race, so the push says the ref was already gone
-    // and origin no longer lists it. The mirror declines the delete and keeps
-    // the ref, so origin's listing alone would read as withdrawn.
-    const loseRace = () => {
+    // Origin loses a delete race, so its answer says the ref was already
+    // gone and it no longer lists it. The mirror declines the delete and
+    // keeps the ref. Git's status line for the mirror says so, so origin's
+    // answer and listing prove nothing.
+    const loseRace = (remote: string) => {
       writeFileSync(
-        join(origin, "hooks", "pre-receive"),
+        join(remote, "hooks", "pre-receive"),
         `#!/bin/sh
 while read old new ref; do
   git update-ref -d "$ref"
@@ -992,9 +995,9 @@ exit 0
 `,
         { mode: 0o755 }
       );
-      git(origin, ["config", "core.hooksPath", join(origin, "hooks")]);
+      git(remote, ["config", "core.hooksPath", join(remote, "hooks")]);
     };
-    loseRace();
+    loseRace(origin);
     writeFileSync(join(mirror, "hooks", "pre-receive"), "#!/bin/sh\nexit 1\n", {
       mode: 0o755,
     });
@@ -1004,15 +1007,34 @@ exit 0
       holdId: hold.holdId,
     });
     expect(partial.withdrawal.ok).toBe(false);
-    expect(partial.withdrawal.error).toContain(
-      "may push to more than the one destination it lists"
-    );
+    expect(partial.withdrawal.error).toContain("pre-receive hook declined");
     expect(partial.hold.publication?.withdrawnAt).toBeNull();
     expect(git(fixture.root, ["ls-remote", "origin", ref])).toBe("");
     expect(git(fixture.root, ["ls-remote", mirror, ref])).toContain(ref);
     expect(
       checkShipHolds(fixture.root).pendingWithdrawals.map((item) => item.holdId)
     ).toEqual([hold.holdId]);
+
+    // Now the mirror loses the race too, so every rejection says "already
+    // gone". Origin's listing still speaks for origin alone: with two push
+    // destinations the withdrawal stays pending, and the retry settles it.
+    loseRace(mirror);
+    const twoDestinations = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    expect(twoDestinations.withdrawal.ok).toBe(false);
+    expect(twoDestinations.withdrawal.error).toContain(
+      "may push to more than the one destination it lists"
+    );
+    expect(twoDestinations.hold.publication?.withdrawnAt).toBeNull();
+    rmSync(join(mirror, "hooks", "pre-receive"));
+    const settled = releaseShipHold(fixture.root, {
+      agentId: "owner",
+      holdId: hold.holdId,
+    });
+    expect(settled.withdrawal).toMatchObject({ attempted: true, ok: true });
+    expect(git(fixture.root, ["ls-remote", mirror, ref])).toBe("");
 
     // A push URL that is the fetch URL is still one destination, so a lost
     // delete race there counts as withdrawn.
@@ -1026,7 +1048,7 @@ exit 0
     ]);
     rmSync(join(origin, "hooks", "pre-receive"));
     const raced = publish("Pushed once.");
-    loseRace();
+    loseRace(origin);
     const released = releaseShipHold(fixture.root, {
       agentId: "owner",
       holdId: raced.holdId,
@@ -1087,13 +1109,15 @@ exit 0
     const ref = `${HOLD_REF_PREFIX}${hold.holdId}`;
     // The host accepts pushes to the ref but leaves it out of every listing,
     // and a hook declines the delete. The ref stays, the listing is empty, and
-    // Git's own status line never says the ref was gone, so nothing proves a
-    // withdrawal. The hook's message borrowing those words changes nothing.
+    // Git's own status line says the hook declined, so nothing proves a
+    // withdrawal. The hook's message borrowing Git's words for a lost race,
+    // the current ones and an older Git's, changes nothing.
     git(origin, ["config", "uploadpack.hideRefs", "refs/simple-changes"]);
     writeFileSync(
       join(origin, "hooks", "pre-receive"),
       `#!/bin/sh
 echo " ! [remote rejected] ${ref} (reference does not exist)" >&2
+echo "error: cannot lock ref '${ref}': unable to resolve reference '${ref}'" >&2
 exit 1
 `,
       { mode: 0o755 }

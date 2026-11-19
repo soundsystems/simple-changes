@@ -745,16 +745,14 @@
       ]
     },
     {
-      "id": "queue-first-use-outcome-led-setup",
+      "id": "queue-ultra-simple-setup-unchanged",
       "prompt": "Put this up.",
       "mode": "queue",
       "authority": ["local-write", "proposal-write"],
       "expectedBehaviors": [
-        "Open with one sentence about the outcome: the change will be checked, a review link returned, and nothing will go live",
-        "Offer exactly two choices, Use this setup and Show options, and keep the walkthrough, customization, and run-only setup under Show options",
-        "After Use this setup, show the plain receipt with its exact files and save only after the person confirms, with one setup --first-use command that carries the recommended setup's safe answers and the style",
-        "When setup --first-use refuses because a setup or a different style was saved meanwhile, say what is saved and work from it, without retrying the save another way",
-        "Ask no setup preference, but still ask what initialize reports as required, such as a pending review question or install offer, in plain words",
+        "With the project's communication style already ultra-simple and no setup saved, follow onboarding as written: the same choices, the same receipt, and the same confirmation before anything is saved",
+        "Say those choices in plain words, without tool terms the person did not use",
+        "Choose no setup path and no setup answer for the person because the mode is on",
         "Treat the mode as a display preference that adds no push, merge, production, or migration authority"
       ]
     },
@@ -845,7 +843,7 @@
       "expectedBehaviors": [
         "Deploy without a go-live question only because the saved setup is Ship with automatic deployment, this person confirmed it on this computer, and the request reaches Ship",
         "Still send the brief before the first shared step, with the recorded scope and the reviewer's agent, model, effort, and source",
-        "Run checks and independent review before going live, and verify the live result",
+        "Under the saved standard shipping order, run checks and independent review before going live, and verify the live result",
         "Follow the saved database setting for any migration, and still confirm major steps when the saved questions setting says so",
         "Open the report with the Live label, what changed, and the check that actually ran"
       ]

@@ -1,14 +1,14 @@
 # Developer changelog
 
-## 0.34.0 - 2026-11-18
+## 0.33.1 - 2026-11-18
 
 - Scope and numbering (issue soundsystems/simple-changes#35): this release
   ships from `main` ahead of the unmerged `release/0.34.0` branch, which
-  dates from 2026-10-29 and whose work continues as 0.40.0
-  (soundsystems/simple-changes#33). That branch's name, its "0.34.0"
-  changelog section, and the GitLab milestone are now stale and must be
-  renumbered when that work merges `main`. It also defines guidance 34;
-  guidance here stays 33.
+  dates from 2026-10-29. Releases are numbered `0.<guidance>.<patch>` and
+  guidance stays 33 here, so this is 0.33.1 whatever it adds; the entry
+  was drafted as 0.34.0 until a review pointed at that rule. The unmerged
+  branch keeps its number and its guidance 34 and picks up this release
+  when it merges `main`.
 - Communication sidecar (new `lib/communication.ts`):
   `.simple-changes-communication.json` at the primary checkout or a
   personal `communication.json` beside `preferences.json`, holding
@@ -37,9 +37,10 @@
   exclusive copy where links are unavailable), so two first saves cannot
   both win; once installed the file is saved, and a failure to remove the
   staged name is not reported as a failed save. The command also refuses
-  `--dry-run`,
-  `--ui-artifacts`, and `--acknowledge-push-scope` before it resolves a
-  destination or takes a lock. A repository write holds the same setup
+  `--dry-run`, `--ui-artifacts`, and `--acknowledge-push-scope` before it
+  resolves a destination or takes a lock, and every other command refuses
+  `--communication` (`assertCommunicationApplies`), so `initialize` can
+  never carry it into the setup writer. A repository write holds the same setup
   lock as `setup --authoring`; a personal write touches no repository
   state and takes none. Its summary says what was saved for the scope and,
   when another file decides, which one.
@@ -49,68 +50,54 @@
   `initialization.ts` (a type import) is the only library module that
   imports `lib/communication.ts`, so no rule can use it to decide what is
   allowed.
-- First use (`setup --first-use` in `simple-changes.ts`): the first screen
-  is guidance text, and the one setup writer gained a precondition. Review
-  found defects in a second setup path three rounds running: a
-  `setup --quick-start` command, then a terminal first screen with its own
-  receipt and recheck, then a two-command chat recipe that could replace a
-  setup saved meanwhile or save half of itself. Both were removed, and
-  `lib/onboarding.ts` is byte-identical to 0.33.0. `assertFirstUseInvocation`
-  refuses `--authoring`, `--dry-run`, a run-only scope, and a missing
-  `--yes`; `resolveSetupInputs` refuses a missing answer instead of
-  prompting, in a terminal too. `firstUseSave` returns the three checks
-  that make the save conditional: `assertNoSavedSetup` (the repository
-  policy when inside a repository, and the personal policy, by `lstat`, so
-  a dangling link counts as saved), `assertPlainWordingApplies` (a personal
-  `standard` sidecar would outrank the receipt), and
-  `assertCommunicationUnsetOrSame` (the style destination holds another
-  style or cannot be read). They run before the setup is built and again
-  inside `applyWrites`, under the setup lock. `writePolicyFile` takes
-  `createOnly` and then installs with `installWithoutReplacing`, so a
-  policy saved after the check is never replaced. A first-use save writes
-  the policy before the instruction files, so losing that race leaves
-  nothing else written; an ordinary setup keeps its order. The style is
-  written last, to a destination already checked. `performSetup` treats a
-  first-use run as non-interactive whatever the terminal, so it builds no
-  authoring answer and writes no authoring sidecar.
+- No first-time shortcut. An outcome-led first screen whose one yes saved
+  the recommended setup and the style was built three ways (a
+  `setup --quick-start` command, a terminal first screen with a
+  two-command recipe, then a `setup --first-use` precondition on the setup
+  writer), and four review rounds found the same three kinds of defect in
+  each: replacing a setup saved meanwhile, a partial save, and a failed
+  Git probe read as "not a repository". A fresh claude-opus-5-5 decider at
+  high effort judged the approach the problem: the setup writer saves the
+  policy, its trust receipt, instruction files, and the style with no
+  transaction, and personal saves share no lock, so no precondition makes
+  that sequence all-or-nothing. The owner cut it. `lib/onboarding.ts`,
+  `lib/policy.ts`, and the setup path of `simple-changes.ts` are
+  byte-identical to 0.33.0, and soundsystems/simple-changes#37 records
+  what a second attempt needs first.
 - Guidance text: new `references/ultra-simple-mode.md`.
   `references/user-communication.md` gains Say less, Keep work moving, and
   Messages to other agents, its questions rules defer to the saved
   `questions` preference, and final responses report an existing preview
-  link and a before and after picture. `references/onboarding.md` leads
-  with the outcome screen at first use, as a conversation step, and moves
-  the four setup styles under `### Show options`. `references/setup-and-policy.md` gains
-  Communication preference, `change-requests.md` a default naming
-  paragraph, and `migrations-and-high-risk-actions.md`,
-  `ship-communication.md`, and `inventory-and-concurrency.md` one pointer
-  each. Autopilot is text only: a name for `defaultFinish: "ship"` with
-  `productionDeploy: "allow"`, saved through the existing setup and its
-  trust receipt. In the mode the database question saves the existing
+  link and a before and after picture. `references/onboarding.md` gains two
+  pointers and is otherwise unchanged: setup is the same under the mode.
+  `references/setup-and-policy.md` gains Communication preference,
+  `change-requests.md` a default naming paragraph, and
+  `migrations-and-high-risk-actions.md`, `ship-communication.md`, and
+  `inventory-and-concurrency.md` one pointer each. Autopilot is text only: a
+  name for `defaultFinish: "ship"` with `productionDeploy: "allow"`, saved
+  through the existing setup and its trust receipt. Its text describes the
+  saved `handoffTiming` (including `automatic`, which asks nothing) and the
+  saved `shippingMode` (a break-glass order can deploy before review), and
+  never promises more. In the mode the database question saves the existing
   `auto-apply-reviewed-routine` setting for one exact target; it offers no
   one-time apply, because `migration apply` accepts only an `auto-apply`
   decision. No decision or apply code changed.
-- `SKILL.md` budget: 17,495 of 17,500 bytes. The Communicate section
+- `SKILL.md` budget: 17,499 of 17,500 bytes. The Communicate section
   gained two sentences, paid for by shorter wording of the command alias
   in the introduction, the two anchor links in workflow step 2, the
-  permission-checklist sentence, the onboarding sentence (which now says
-  to lead with the outcome), and by dropping "(see onboarding)" after the
-  run-only `--policy-request` rule. No pinned sentence changed.
+  permission-checklist sentence, and by dropping "(see onboarding)" after
+  the run-only `--policy-request` rule. No pinned sentence changed.
 - Tests: new `communication.test.ts` covers resolution, unusable files,
-  writes, and the command line. With a trusted policy that allows
-  production and routine automatic migrations, turning the mode on leaves
-  the policy and its trust receipt byte-identical and every authority
-  field `initialize` reports unchanged; with the same policy untrusted, no
-  trust receipt appears and authority stays reduced. It runs the exact
-  `setup --first-use` command of the reference for all three finishes, and
-  covers every refusal: a setup saved at either layer, a dangling policy
-  link, another saved style, a personal `standard` style, an unreadable
-  style file, a missing answer, and each flag it rejects, with nothing
-  written in any of them.
-  `skill-contract.test.ts` pins the new copy in two tests, and nine
-  journeys in `evals/cases.json` cover first and repeat use, a routine
-  database update on a saved and on an unapproved target, a partial run,
-  one unit waiting for approval, Autopilot reaching and not reaching Ship,
-  and a visible change with a preview.
+  writes, and the command line. With a trusted policy that allows production
+  and routine automatic migrations, turning the mode on leaves the policy
+  and its trust receipt byte-identical and every authority field
+  `initialize` reports unchanged; with the same policy untrusted, no trust
+  receipt appears and authority stays reduced. `skill-contract.test.ts` pins
+  the new copy in two tests, and nine journeys in `evals/cases.json` cover
+  setup with the mode on, repeat use, a routine database update on a saved
+  and on an unapproved target, a partial run, one unit waiting for approval,
+  Autopilot reaching and not reaching Ship, and a visible change with a
+  preview.
 - Guidance stays 33. A bump would stop the next write-capable run in every
   configured repository with an update notice for a mode that is off by
   default and rules that need no decision.
@@ -123,13 +110,17 @@
   same `main` commit as this release. Each makes cleanup keep more, never
   delete more. Without d83bd03, `bun run check` cannot pass on Git 2.53
   or later.
-- Two lifted fixes changed after the full-range review, and the 0.40.0
-  line needs both changes when it merges `main`:
+- Two lifted fixes changed during review, and the unmerged 0.34.0 line
+  needs both changes when it merges `main`:
   - `deleteRemoteRef` (`lib/ship-holds.ts`): `goneBeforeDelete` replaces
     `refKept`. A failed delete is considered withdrawn only when the push
-    itself says this exact ref was already gone: Git's own status line
-    `! [remote rejected] <ref> (reference does not exist)`, or an older
-    Git's bare `unable to resolve reference '<ref>'`. The lifted rule
+    itself says this exact ref was already gone. Git's own status line for
+    the ref decides whenever there is one: `! [remote rejected] <ref>
+    (reference does not exist)` is the only reason that counts, and any
+    other reason, such as a declined hook, keeps the withdrawal pending
+    whatever else the remote printed. Only without a status line may an
+    older Git's bare `unable to resolve reference '<ref>'` count. The
+    lifted rule
     treated every rejection except a short list as possibly gone and let
     `ls-remote` settle it, but a host can hide a ref from listings
     (`uploadpack.hideRefs`) and still decline its deletion, which read as
@@ -151,9 +142,11 @@
 - Review: gpt-6.2-astra at high effort. Round 1 found 2 blocking and 10
   should-fix defects. Round 2 found 1 blocking and 12 should-fix and
   reopened five round 1 items. Round 3, over the full range, found 12
-  should-fix defects, eight of them in first-use setup, so that approach
-  was replaced as described above instead of patched again.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-18T22:09:00-06:00" -->
+  should-fix defects, eight of them in first-use setup. Round 4 found 9,
+  five of them there again, which led to the decider and the cut above;
+  the other four (the status-line rule, two Autopilot sentences, and the
+  receipt wording that left with the cut) are fixed as described.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-18T23:07:00-06:00" -->
 
 ## 0.33.0 - 2026-10-24
 

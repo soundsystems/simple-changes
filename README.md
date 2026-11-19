@@ -518,41 +518,23 @@ The mode changes the words and how often Simple Changes asks. It never changes
 what Simple Changes may do: the command cannot write policy, checks and review
 run as before, and going live, database changes, and removing work still ask.
 
-On first use, an agent opens with one sentence about the outcome ("I'll check
-your change and give you a link to review. Nothing will go live.") and two
-choices. **Use this setup** saves the recommended setup with its answers fixed
-to the safe defaults, together with the mode, in one command that writes only
-while nothing is saved yet:
-
-```sh
-bun run simple-changes setup --first-use --communication ultra-simple \
-  --finish review --questions blocking-only --scope repository \
-  --git-push-authorization ask --production ask --shipping-mode standard \
-  --migration-handling ask-after-review --changelog preserve-and-report \
-  --instruction-pointer leave --yes
-```
-
-**Show options** has every other choice, and running `setup` yourself in a
-terminal opens there.
-
 **Autopilot** is the plain name for the existing **Ship when approved** finish
-with **Deploy automatically**: a request to ship goes live once checks and
-review pass, without a question about going live, while a request that asks
-for less still stops where it says. It is a permission, not part of
-Ultra-Simple Mode, it is never turned on by implication, each person confirms
-it on their own computer before it takes effect there, and database changes
-keep their own setting.
+with **Deploy automatically**: a request to ship goes live without a question
+about going live, while a request that asks for less still stops where it
+says. What happens before going live follows your saved shipping order: checks
+and review first under the standard and expedited orders. It is a permission,
+not part of Ultra-Simple Mode, it is never turned on by implication, each
+person confirms it on their own computer before it takes effect there, and
+database changes keep their own setting.
 
-Under **Show options**, setup explains why onboarding appeared, shows the
-exact recommended workflow, and makes clear that nothing has been pushed,
-merged, deployed, or saved yet. The choices are:
+Setup itself is the same with the mode on. On first use, it explains why
+onboarding appeared, shows the exact recommended workflow, and makes clear that
+nothing has been pushed, merged, deployed, or saved yet. The first choice is:
 
 1. **Use recommended setup**: Apply the safe, request-aware defaults and show a
    receipt before saving them.
-2. **Walk me through it**: Explain every main workflow and each preference,
-   one at a time, before saving anything.
-3. **Customize**: Explain and ask only unresolved preferences, one at a time.
-4. **Use recommended setup for this run only**: Continue without a preference
+2. **Customize**: Explain and ask only unresolved preferences, one at a time.
+3. **Use recommended setup for this run only**: Continue without a preference
    file and ask again next time.
 
 Customized setup uses small workflow and storage diagrams where they make a

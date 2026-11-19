@@ -5,7 +5,7 @@ Contents:
 - What it changes
 - Turn it on or off
 - Words
-- First use
+- Setup
 - Questions
 - Messages
 - Other people's work
@@ -106,68 +106,13 @@ Proposal titles and descriptions, commit messages, and every machine-readable
 record are written exactly as the standard rules say. The mode changes what
 Simple Changes says to the person, not what it writes for reviewers and tools.
 
-## First use
+## Setup
 
-When setup is needed and nothing is saved yet, open with
-[the first screen](onboarding.md#first-screen): one sentence and two
-choices. **Use this setup** is the recommended setup with its answers fixed,
-plus this mode. Show what will be remembered and where, with the real paths,
-and save only after a yes:
-
-> Here's what I'll remember for this project:
->
-> - I stop at a review link unless you ask for more.
-> - I ask before anything goes live, and before any database change.
-> - I keep updates short and skip the technical terms. Say "details" any time.
->
-> I'll save that in `<path>/.simple-changes.json` and
-> `<path>/.simple-changes-communication.json`, so anyone working on this
-> project gets the same setup. OK to save?
-
-Change the first line to match the request's finish: "I add your change to
-the project once it's approved" for merge, and "I take your change live
-after I ask you" for ship. Then save all of it with one command, so every
-line above is what was saved:
-
-```sh
-simple-changes setup --first-use --communication ultra-simple \
-  --finish <review|integrate|ship> --questions blocking-only \
-  --scope repository --git-push-authorization ask --production ask \
-  --shipping-mode standard --migration-handling ask-after-review \
-  --changelog <handling> --instruction-pointer leave --yes
-```
-
-`--first-use` saves only while nothing is saved, and checks that again at
-the moment it writes, so an answer given a minute ago never replaces a setup
-someone finished meanwhile. It writes nothing when:
-
-- a setup is already saved for the project or for the person;
-- the project or the person already has a different style saved, or a style
-  file it cannot read;
-- the person keeps the standard wording for themselves, which would outrank
-  the project's and make the receipt untrue.
-
-It asks nothing, so a missing answer is an error and never a prompt, and it
-writes no review settings. When it refuses, say what is already saved, work
-from that, and offer **Show options** if the person wants a change. Never
-drop the flag to get past a refusal.
-
-Outside a Git repository use `--scope personal` and say so in the receipt.
-`<handling>` follows `changelogCoordination.capabilityAvailable` from
-`initialize`: `delegate-if-available` when it is true, `preserve-and-report`
-otherwise. When the project has release notes, add a line that is true
-either way: "I hand release notes to Simple Changelogs when it can take them
-here, and otherwise leave them alone and tell you what still needs writing."
-The saved answer proves nothing about the provider: confirm what it supports
-before each handoff, as
-[changelog coordination](changelog-coordination.md) requires. When
-`initialize` reports a pending install offer (`changelogInstall`), make that
-offer first, in one line, and pass the answer as `--changelog-install`;
-never record an answer the person did not give.
-
-This path changes no answer above and adds none. A different stopping
-point, automatic pushes, [Autopilot](#autopilot), or anything else is chosen
-under **Show options**. Carry on with the original request once it is saved.
+The mode does not change setup. When a request that needs setup meets a
+project with nothing saved, follow [onboarding](onboarding.md) as written:
+the same choices, the same receipt, and the same confirmation before
+anything is saved, said in this mode's words when the mode is already in
+effect. Nothing is chosen for the person because the mode is on.
 
 ## Questions
 
@@ -178,9 +123,11 @@ each choice. The saved `questions` setting still governs, as
 **At major steps** keeps its confirmations, and **Don't interrupt me** means
 work that lacks permission is skipped and reported, not asked about.
 
-Optional setup choices are not asked in this mode: scheduling, signatures,
-artifact naming, and adding the instruction pointer or either instruction
-rule. Use what is saved, or the recommended default, and save nothing.
+Outside setup, optional choices that would otherwise come up when they first
+matter are not asked in this mode: scheduling, signatures, artifact naming,
+and adding the instruction pointer or either instruction rule. Use what is
+saved, or the recommended default, and save nothing. Inside setup, the path
+the owner chose decides what is asked.
 
 Everything `initialize` requires is still presented, in plain words and
 before the run changes anything:
@@ -273,7 +220,9 @@ the preview when there is one. Say so in a few words when a picture could not
 be taken; it never holds anything up.
 
 For a merge or a go-live, the progress checklist is these four lines, ticked
-as each is proven: checked, second look, added to the project, live.
+as each is proven: checked, second look, added to the project, live. Add a
+line for anything else the run still owes, such as release notes or
+clean-up, and never report the run finished while a line is open.
 
 ## Other people's work
 
@@ -347,26 +296,38 @@ worked." The same update on any other target asks.
 
 Autopilot is the plain name for two settings Simple Changes already has:
 the **Ship when approved** finish with **Deploy automatically**. With both
-saved, a request to ship is checked, given a second look, added to the
-project, put live, and confirmed live without a question about going live.
-So is finished work handed over with no other instruction, once it passes
-the saved [handoff check](setup-and-policy.md#completed-work-handoff-checkpoint):
-the person confirms it is ready, or says so first, exactly as that setting
-asks. A request that asks for less, such as "put this up", still stops where
-it says.
+saved, a request to ship is taken all the way live and confirmed live
+without a question about going live. So is finished work handed over with no
+other instruction, when the saved
+[handoff setting](setup-and-policy.md#completed-work-handoff-checkpoint)
+lets it start: after the person confirms it is ready, after they say so
+themselves, or straight away when handoff is automatic. A request that asks
+for less, such as "put this up", still stops where it says.
+
+The saved shipping order decides what happens before going live, and
+Autopilot does not change it. Under the standard and expedited orders the
+change is checked, given a second look, and added to the project first.
+Under a saved break-glass order a Ship request can go live before the second
+look. Read both settings before describing Autopilot, and never promise a
+second look first to a project that saved break-glass.
 
 It is a permission, not a way of talking, so it is separate from this mode
 and never part of it. Nothing turns it on by implication: not Ultra-Simple
-Mode, not **Use this setup**, not "ship it", not urgency. Offer it only when
-the owner asks for it by name or asks for changes to go live without being
-asked, and say first what it means:
+Mode, not "ship it", not urgency. Offer it only when the owner asks for it
+by name or asks for changes to go live without being asked, and say first
+what it means, with the handoff line that matches the saved setting:
 
 > With Autopilot, when you ask me to ship, I put it live once checks and a
-> second look pass, without asking about going live. The same goes for
-> finished work you hand me without saying how far to take it, once you've
-> told me it's ready. Database changes, removing work, and anything that
-> looks wrong keep their own rules. Each person turns it on for their own
-> computer. Turn it on for this project?
+> second look pass, without asking about going live. Finished work you hand
+> me without saying how far to take it goes the same way `<after you confirm
+> it's ready | once you tell me it's ready | as soon as it's built and
+> checked, without asking>`. Database changes, removing work, and anything
+> that looks wrong keep their own rules. Each person turns it on for their
+> own computer. Turn it on for this project?
+
+When break-glass is saved, replace the first sentence with what that order
+does: "when you ask me to ship, I can put it live before the second look,
+and finish the checks right after."
 
 On yes, save those two answers through the standard `setup`, with
 [the choices and confirmations](onboarding.md#customized-questions) it
@@ -377,7 +338,7 @@ grants permission to deploy; until then that person's agent asks before going
 live, as before. "Turn off Autopilot" saves **Ask me first** again.
 
 Autopilot removes one question, the one about going live, and nothing else.
-The handoff check still decides when finished work is ready to hand over. A
+The handoff setting still decides when finished work is handed over. A
 saved **At major steps** setting still confirms each major step. Database
 changes follow the saved database setting and the section above. Secrets,
 domains, store releases, and removing work keep their own questions.
@@ -386,9 +347,9 @@ under this name.
 
 ## What never changes
 
-- What Simple Changes may do. Turning the mode on, or choosing **Use this
-  setup**, grants no push, merge, go-live, database, or cleanup permission
-  beyond what saved setup and the request already give.
+- What Simple Changes may do. Turning the mode on grants no push, merge,
+  go-live, database, or cleanup permission beyond what saved setup and the
+  request already give.
 - Checks, the second look, and the records they leave.
 - Every required stop: a question the standard mode must ask is still asked
   here, in plain words. A quiet interface never skips a safety or cleanup

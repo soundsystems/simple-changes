@@ -694,11 +694,12 @@ clear the hold only when its owner releases it.
 
 The owner ends a hold with `hold release --agent-id <owner> --hold-id <id>` as
 soon as its reason is over. Release also withdraws a published ref and reports
-a failed withdrawal with its retry. A rejected delete still counts as withdrawn
-when `ls-remote --exit-code` finds no such ref, but only for a remote with one
-destination for fetch and push, and never when Git reports the ref broken or
-hidden; a host that hides the ref from listings without saying so on delete
-cannot be told apart from one without it. Status lists released holds whose
+a failed withdrawal with its retry. A rejected delete counts as withdrawn only
+when Git itself says the ref was already gone and `ls-remote --exit-code` then
+finds no such ref, and only for a remote with one destination for fetch and
+push. Any other rejection stays pending, a hook or host rule that declined the
+delete included, because a host can hide a ref from listings and still keep
+it; run `hold release` again to retry. Status lists released holds whose
 refs are still published. Another agent releases a hold only with `--approved-by` and
 `--reason` from the user, plus `--override-halt` for a halt; the owner's own
 clone keeps its record until the owner releases it there, and its gates report

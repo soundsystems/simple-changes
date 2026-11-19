@@ -252,23 +252,6 @@
   request, which is built only for the active run.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
-- First-use onboarding leads with one sentence about the outcome and two
-  choices, **Use this setup** and **Show options**; the walkthrough,
-  customization, and run-only setup stay available under the second. The
-  first is the recommended setup with its answers fixed to the safe defaults
-  plus the communication style. It is offered only when no policy is saved,
-  never with another setup choice, and never to someone who saved the
-  standard style for themselves. It is a conversation step: terminal `setup`
-  has no such screen and opens with the full choices.
-- `setup --first-use` saves that choice through the one setup writer, as one
-  conditional save. It writes only while no repository or personal policy
-  exists, checked before the setup is built and again under the setup lock;
-  installs the policy first, without replacing a file that appeared
-  meanwhile;
-  refuses, before any write, a style destination holding a different style or
-  an unreadable file, and a style the person's own setting would outrank;
-  never prompts; never writes the authoring sidecar; and saves the style
-  last.
 - The communication style (`ultra-simple` or `standard`) lives in its own
   sidecar and is reported by `initialize`. It changes wording and how often
   questions are asked. `setup --communication` writes only that sidecar, and
@@ -499,17 +482,15 @@
 - Leading routine user updates with controller, lease, ledger, digest, or other
   internal bookkeeping when a short plain-language explanation would preserve
   the same accuracy.
-- Treating Ultra-Simple Mode, or choosing **Use this setup**, as push, merge,
-  production, migration, or cleanup authority; skipping a required safety or
-  cleanup question because the mode is on; or reporting a partial run with a
+- Treating Ultra-Simple Mode as push, merge, production, migration, or
+  cleanup authority; skipping a required safety or cleanup question, or a
+  setup choice, because the mode is on; or reporting a partial run with a
   finished delivery line.
-- Turning on Autopilot by implication, offering it on the first screen, or
-  treating it as database, secret, DNS, store-release, or cleanup authority.
-- Showing a plain setup receipt whose lines the saved policy does not make
-  true, offering **Use this setup** over a saved policy, or dropping
-  `--first-use` to save over a setup the flag refused to replace.
-- Treating Autopilot as covering a request that asks for less than Ship, or
-  as removing any question but the one about going live.
+- Turning on Autopilot by implication, or treating it as database, secret,
+  DNS, store-release, or cleanup authority.
+- Treating Autopilot as covering a request that asks for less than Ship, as
+  removing any question but the one about going live, or as a promise of
+  review before deployment where a break-glass shipping order is saved.
 - Holding independent units, or other agents, while one unit waits for the
   user's answer.
 - Treating emotional urgency, active impact, or a tested claim as implicit

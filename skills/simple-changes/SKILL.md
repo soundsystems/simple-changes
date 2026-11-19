@@ -4,7 +4,7 @@ description: Use when a user asks to sync with remote main, package, queue, publ
 license: Apache-2.0
 compatibility: Requires Git and Bun 1.2 or later
 metadata:
-  version: "0.34.0"
+  version: "0.33.1"
 ---
 
 # Simple Changes
@@ -153,10 +153,10 @@ binaries may remain installed.
 
 Run `simple-changes initialize --mode <mode> [--changelog-required] --json`
 before every write-capable mutation or controller lease. The JSON result is not
-user-facing onboarding copy. When onboarding is required, follow
-[onboarding](references/onboarding.md): lead with the outcome, ask one question
-at a time, show every option with its one-sentence consequence, and use that
-reference's exact option copy. When private global personal defaults already exist,
+user-facing onboarding copy. When onboarding is required, explain the workflow,
+then follow [onboarding](references/onboarding.md): ask one question at a time,
+show every option with its one-sentence consequence, and use that reference's
+exact option copy. When private global personal defaults already exist,
 disclose them before the main questions and ask whether to use them unchanged
 for this run.
 

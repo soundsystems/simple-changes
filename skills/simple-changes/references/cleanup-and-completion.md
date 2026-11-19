@@ -291,16 +291,18 @@ when all of these hold:
 The build reads the worktrees and claims from `--repo`. A live branch is one
 checked out by the worktree listing or by the branch listing's own checkout
 path, or held by an unreleased claim. Every source names the branch as in
-`refs/heads/<name>`, so a tag that shares its name changes nothing. Its
-upstream is the one Git uses (`%(upstream:remotename)` and
-`%(upstream:remoteref)`, which follow the first `branch.<name>.merge`
-value), read only from Git's line for exactly `refs/heads/<name>`, never
-from a branch below it such as `<name>/child`. When Git names none, such as
-for a branch with no commit yet, a Git older than 2.16 refusing those
-fields or a fetch refspec that leaves the branch out, every
-`branch.<name>.merge` value counts while any `branch.<name>.remote` value is
-the target remote or not a configured remote. Any other failed upstream read
-counts as local state that cannot be read.
+`refs/heads/<name>`, so a tag that shares its name changes nothing. Two
+things hold a host branch as its upstream, together. One is the upstream Git
+uses (`%(upstream:remotename)` and `%(upstream:remoteref)`, which follow the
+first `branch.<name>.merge` value), read only from Git's line for exactly
+`refs/heads/<name>`, never from a branch below it such as `<name>/child`.
+The other is every `branch.<name>.merge` value, while any
+`branch.<name>.remote` value is the target remote or not a configured
+remote: a branch that lists two merge values holds both, and the
+configuration still holds when Git names no upstream, such as for a branch
+with no commit yet, a Git older than 2.16 refusing those fields, or a fetch
+refspec that leaves the branch out. Any other failed upstream read counts as
+local state that cannot be read.
 
 A merged-MR head that fails only the last two checks is listed in
 `heldBranches` with every reason and is not proposed. Every merged-MR head is

@@ -24,9 +24,12 @@
     merged, and it deletes nothing: your unsaved work, the run's working
     copy, and older branches all stay where they are. Unpushed or
     uncommitted work, a proposal that was never opened where one can be,
-    and a question waiting on you still keep the run open.
+    and a question waiting on you still keep the run open. Those working
+    copies do not pile up: the next such request removes an earlier one
+    once its change is merged, and leaves it with a plain note when it
+    holds anything that exists only there, such as a file Git ignores.
   - Guidance stays 33, so no repository is asked anything by this update.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T13:41:00-06:00" -->
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T13:57:00-06:00" -->
 
 ## 0.33.1 - 2026-11-18
 

@@ -1,10 +1,21 @@
+import { randomUUID } from "node:crypto";
+import {
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { resolve } from "node:path";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { completeLine } from "./git-complete.ts";
+import { ensureStateDirectory } from "./git-location.ts";
 import { isLossyName } from "./inventory.ts";
 import {
   resolvedCurrentTargetRevision,
   retirementForRegistration,
+  STATE_DIRECTORY,
   targetBranchForRef,
 } from "./loop-lease-core.ts";
 import { runGit, runGitRemote } from "./process.ts";
@@ -14,6 +25,7 @@ import {
   latestRecordedHead,
   readReviewLedger,
 } from "./review-ledger.ts";
+import { validateSchema } from "./schema.ts";
 import type {
   BranchInventory,
   LoopLease,
@@ -68,12 +80,122 @@ export interface QueuedUnit {
   worktree: string | null;
 }
 
+/**
+ * A run-created checkout finalization kept, with the reason a later
+ * clean-up will still leave it when there already is one: files in it that
+ * Git ignores, which exist nowhere else.
+ */
+export interface KeptQueuedWorktree {
+  note: string | null;
+  path: string;
+}
+
 export interface QueuedAssessment {
   blockers: string[];
   /** Every live run-created checkout. Finalization keeps them all. */
-  keptWorktrees: string[];
+  keptWorktrees: KeptQueuedWorktree[];
   units: QueuedUnit[];
 }
+
+const MAX_NAMED_FILES = 5;
+
+/** Every directory that holds a tracked path. */
+const trackedDirectories = (tracked: ReadonlySet<string>): Set<string> => {
+  const directories = new Set<string>();
+  for (const path of tracked) {
+    for (
+      let end = path.lastIndexOf("/");
+      end > 0 && !directories.has(path.slice(0, end));
+      end = path.lastIndexOf("/", end - 1)
+    ) {
+      directories.add(path.slice(0, end));
+    }
+  }
+  return directories;
+};
+
+interface TrackedShape {
+  directories: ReadonlySet<string>;
+  root: string;
+  tracked: ReadonlySet<string>;
+}
+
+// Adds what `relative` holds beyond the tracked shape, up to five names. A
+// directory with no tracked path under it is named and not descended into.
+const collectExtras = (
+  shape: TrackedShape,
+  relative: string,
+  extras: string[]
+): void => {
+  const entries = readdirSync(resolve(shape.root, relative), {
+    withFileTypes: true,
+  });
+  for (const entry of entries) {
+    if (extras.length >= MAX_NAMED_FILES) {
+      return;
+    }
+    const path = relative ? `${relative}/${entry.name}` : entry.name;
+    if (path === ".git" || shape.tracked.has(path)) {
+      continue;
+    }
+    if (entry.isDirectory() && shape.directories.has(path)) {
+      collectExtras(shape, path, extras);
+    } else {
+      extras.push(entry.isDirectory() ? `${path}/` : path);
+    }
+  }
+};
+
+/**
+ * Up to five entries on disk in a checkout that its head does not track,
+ * which in a checkout with clean status are files Git ignores. The disk is
+ * walked and compared with the head's own file list, so a list Git lost or
+ * cut short shows more extra files, never fewer. Null when either side
+ * cannot be read.
+ */
+export const filesBeyondHead = (
+  worktreePath: string,
+  headSha: string
+): string[] | null => {
+  const listed = runGit(
+    worktreePath,
+    ["ls-tree", "-r", "-z", "--name-only", headSha],
+    true
+  );
+  const tracked = new Set(listed.stdout.split("\0").filter(Boolean));
+  if (listed.exitCode !== 0 || tracked.size === 0) {
+    return null;
+  }
+  const extras: string[] = [];
+  try {
+    collectExtras(
+      { directories: trackedDirectories(tracked), root: worktreePath, tracked },
+      "",
+      extras
+    );
+  } catch {
+    return null;
+  }
+  return extras;
+};
+
+/** What to tell the owner about a kept checkout that holds ignored files. */
+export const ignoredFilesNote = (
+  path: string,
+  names: readonly string[]
+): string =>
+  `This copy holds files Git ignores (${names.join(", ")}), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: ${path}`;
+
+const keptWorktree = (worktree: WorktreeInventory): KeptQueuedWorktree => {
+  const extras =
+    worktree.headSha && worktree.changes.length === 0 && !worktree.prunable
+      ? filesBeyondHead(worktree.path, worktree.headSha)
+      : null;
+  return {
+    note: extras?.length ? ignoredFilesNote(worktree.path, extras) : null,
+    path: worktree.path,
+  };
+};
 
 /** What the controller told `loop finalize` about its pushed branches. */
 export interface QueuedDeclarations {
@@ -575,7 +697,7 @@ export const assessQueuedWork = (
       (item) => item.path === registered.path
     );
     if (worktree) {
-      assessment.keptWorktrees.push(worktree.path);
+      assessment.keptWorktrees.push(keptWorktree(worktree));
     }
     branches.add(worktree ? worktree.branch : registered.branch);
     const verdict = worktree
@@ -624,6 +746,107 @@ export const queuedSummary = (
   const kept =
     keptWorktrees.length === 0
       ? ""
-      : ` The run's ${keptWorktrees.length === 1 ? "worktree was" : `${keptWorktrees.length} worktrees were`} kept. Remove one when you no longer need it with \`git worktree remove <path>\`, which refuses a checkout that holds changes; its branch keeps the work.`;
+      : ` The run's ${keptWorktrees.length === 1 ? "worktree was" : `${keptWorktrees.length} worktrees were`} kept. The next Queue or Sweep run removes one once its work is merged and nothing in it exists only there; or remove one yourself with \`git worktree remove <path>\`, which refuses a checkout that holds changes. Its branch keeps the work.`;
   return `Queued for review, not merged: ${counts}. Nothing was added to ${lease.targetRef}, and finalization deleted no checkout, branch, or file. Uncommitted work in the primary checkout was left exactly as it was.${kept}`;
+};
+
+// ---------------------------------------------------------------------------
+// The worktrees a closed Queue or Sweep run kept
+
+/**
+ * The record a closed Queue or Sweep run leaves beside the loop state, in
+ * its own file so older runtimes never meet it: the worktrees it created
+ * and kept, each with its branch. A later Queue or Sweep start reads it to
+ * know which checkouts it may clean up once their work is in the target;
+ * it proves nothing by itself.
+ */
+export interface QueuedWorktreesRecord {
+  closedAt: string;
+  kind: "queued-worktrees";
+  mode: "queue" | "sweep";
+  runId: string;
+  schemaVersion: 1;
+  worktrees: { branch: string; path: string }[];
+}
+
+const queuedWorktreesDirectory = (commonGitDirectory: string): string =>
+  resolve(commonGitDirectory, STATE_DIRECTORY, "queued-worktrees");
+
+/** Writes the record, or deletes it once no worktree is left in it. */
+export const writeQueuedWorktreesRecord = (
+  commonGitDirectory: string,
+  record: QueuedWorktreesRecord
+): void => {
+  const path = resolve(
+    queuedWorktreesDirectory(commonGitDirectory),
+    `${record.runId}.json`
+  );
+  if (record.worktrees.length === 0) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const validated = validateSchema<QueuedWorktreesRecord>(
+    "queued-worktrees",
+    record
+  );
+  ensureStateDirectory(
+    commonGitDirectory,
+    queuedWorktreesDirectory(commonGitDirectory)
+  );
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(validated, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(temporaryPath, path);
+};
+
+/** The kept worktrees of a run that just closed, on their exact branches. */
+export const keptQueuedWorktreesRecord = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  assessment: QueuedAssessment,
+  closedAt: string
+): QueuedWorktreesRecord => ({
+  closedAt,
+  kind: "queued-worktrees",
+  mode: lease.mode === "sweep" ? "sweep" : "queue",
+  runId: lease.runId,
+  schemaVersion: 1,
+  worktrees: assessment.keptWorktrees.flatMap(({ path }) => {
+    const branch = inventory.worktrees.find(
+      (worktree) => worktree.path === path
+    )?.branch;
+    return branch && !isLossyName(branch) ? [{ branch, path }] : [];
+  }),
+});
+
+// A record that is missing, unreadable, or not this shape is skipped: it
+// only ever allows a clean-up, so skipping it keeps its worktrees.
+export const readQueuedWorktreesRecords = (
+  commonGitDirectory: string
+): QueuedWorktreesRecord[] => {
+  const directory = queuedWorktreesDirectory(commonGitDirectory);
+  let names: string[];
+  try {
+    names = readdirSync(directory).filter((name) => name.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const records: QueuedWorktreesRecord[] = [];
+  for (const name of names.sort((left, right) => left.localeCompare(right))) {
+    try {
+      const record = validateSchema<QueuedWorktreesRecord>(
+        "queued-worktrees",
+        JSON.parse(readFileSync(resolve(directory, name), "utf8")) as unknown
+      );
+      if (name === `${record.runId}.json`) {
+        records.push(record);
+      }
+    } catch {
+      // Skipped, as above.
+    }
+  }
+  return records;
 };

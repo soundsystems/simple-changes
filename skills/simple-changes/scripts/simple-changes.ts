@@ -175,6 +175,10 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
+import {
+  type QueuedRetirementReport,
+  retireMergedQueuedWorktrees,
+} from "./lib/queued-retirement.ts";
 import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
@@ -4347,7 +4351,9 @@ const renderQueuedClose = (
             : `proposal ${unit.proposalId}`
         }.\n`
     ),
-    ...queued.keptWorktrees.map((path) => `Kept worktree ${path}.\n`),
+    ...queued.keptWorktrees.map(
+      ({ note, path }) => `Kept worktree ${path}.${note ? ` ${note}` : ""}\n`
+    ),
   ].join("");
 
 // A cleanup's non-fatal notes, one per line.
@@ -4618,6 +4624,21 @@ const runLoopRebaseline = (
   return true;
 };
 
+// A Queue or Sweep run first clears what earlier ones left behind once it
+// is merged. It never throws, and what it keeps it says; null when there
+// was nothing to do or say.
+const earlierQueuedWorktrees = (
+  options: CliOptions
+): QueuedRetirementReport | null => {
+  if (!(options.mode === "queue" || options.mode === "sweep")) {
+    return null;
+  }
+  const retired = retireMergedQueuedWorktrees(options.repo);
+  return retired.removed.length + retired.kept.length + retired.notes.length > 0
+    ? retired
+    : null;
+};
+
 const runLoopStart = (options: CliOptions): void => {
   const agentId = requireCliOption(options.agentId, "--agent-id");
   if (!options.mode) {
@@ -4692,6 +4713,7 @@ const runLoopStart = (options: CliOptions): void => {
   let reviewLedger: ReviewLedgerResumeState | null = null;
   let workDir: string | null = null;
   let removedWorkDirectories: string[] = [];
+  const retired = earlierQueuedWorktrees(options);
   const lease = startLoop(
     options.repo,
     agentId,
@@ -4729,6 +4751,7 @@ const runLoopStart = (options: CliOptions): void => {
   const resumedQuestions = resumedAwaitingUser(lease);
   writeOutput(
     {
+      ...(retired ? { earlierQueuedWorktrees: retired } : {}),
       holds,
       inheritedAwaitingUser: resumedQuestions,
       lease,
@@ -4744,9 +4767,25 @@ const runLoopStart = (options: CliOptions): void => {
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
-    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
+    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}${renderQueuedRetirement(retired)}`
   );
 };
+
+// What a Queue or Sweep start did with earlier runs' merged worktrees.
+const renderQueuedRetirement = (
+  retired: QueuedRetirementReport | null
+): string =>
+  [
+    ...(retired?.removed ?? []).map(
+      (path) =>
+        `Removed an earlier run's worktree, now that its work is merged: ${path}\n`
+    ),
+    ...(retired?.kept ?? []).map(
+      ({ path, reason }) =>
+        `Kept an earlier run's merged worktree ${path}: ${reason}\n`
+    ),
+    ...(retired?.notes ?? []).map((note) => `Note: ${note}\n`),
+  ].join("");
 
 // Accepted reviews that no longer pass the gate on resume need a fresh review,
 // after any identity repair the reason calls for.

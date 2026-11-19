@@ -27,6 +27,7 @@ import {
   QUEUED_FOR_REVIEW,
   queuedDeclarations,
 } from "../../../skills/simple-changes/scripts/lib/queued-completion.ts";
+import { retireMergedQueuedWorktrees } from "../../../skills/simple-changes/scripts/lib/queued-retirement.ts";
 import { recordProposalAuthors } from "../../../skills/simple-changes/scripts/lib/review-ledger.ts";
 import type { LoopLease } from "../../../skills/simple-changes/scripts/lib/types.ts";
 import {
@@ -211,7 +212,7 @@ describe("Queue and Sweep finalization", () => {
       targetRevision: null,
     });
     expect(result.receipt.queued).toMatchObject({
-      keptWorktrees: [unit.path],
+      keptWorktrees: [{ note: null, path: unit.path }],
       status: QUEUED_FOR_REVIEW,
       units: [
         {
@@ -334,7 +335,12 @@ describe("Queue and Sweep finalization", () => {
     const result = finalize(run, { proposals: unit.named });
 
     expect(result.outcome).toBe("completed");
-    expect(result.receipt.queued?.keptWorktrees).toEqual([unit.path]);
+    expect(result.receipt.queued?.keptWorktrees).toEqual([
+      {
+        note: `This copy holds files Git ignores (.env.local), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: ${unit.path}`,
+        path: unit.path,
+      },
+    ]);
     expect(readFileSync(join(unit.path, ".env.local"), "utf8")).toBe(
       "TOKEN=only-copy\n"
     );
@@ -372,7 +378,9 @@ describe("Queue and Sweep finalization", () => {
 
     expect(result.outcome).toBe("completed");
     expect(result.receipt.queued?.units).toEqual([]);
-    expect(result.receipt.queued?.keptWorktrees).toEqual([unit.path]);
+    expect(result.receipt.queued?.keptWorktrees).toEqual([
+      { note: null, path: unit.path },
+    ]);
     expect(result.receipt.queued?.summary).toContain("nothing was queued");
     expect(existsSync(unit.path)).toBe(true);
     expect(git(run.root, ["rev-parse", unit.branch])).toBe(
@@ -717,6 +725,112 @@ describe("Ship and Integrate finalization of the same situation", () => {
   }
 });
 
+describe("worktrees that earlier Queue runs kept", () => {
+  /** A closed Queue run whose kept worktree is still there. */
+  const closedRun = () => {
+    const run = openRun({ forge: true });
+    appendFileSync(join(run.root, ".git", "info", "exclude"), ".env.local\n");
+    const unit = proposedUnit(run);
+    expect(finalize(run, { proposals: unit.named }).outcome).toBe("completed");
+    return { run, unit };
+  };
+  /** The proposal is merged, and the repository has fetched the target. */
+  const merge = (run: OpenRun, head: string): void => {
+    git(run.root, ["push", "origin", `${head}:main`]);
+    git(run.root, ["fetch", "origin"]);
+  };
+
+  test("a merged, clean one is removed with its branch when the next run starts", () => {
+    const { run, unit } = closedRun();
+    merge(run, unit.head);
+
+    const report = retireMergedQueuedWorktrees(run.root);
+
+    expect(report).toEqual({ kept: [], notes: [], removed: [unit.path] });
+    expect(existsSync(unit.path)).toBe(false);
+    expect(git(run.root, ["branch", "--list", unit.branch])).toBe("");
+    // The person's checkout and the pushed branch are untouched.
+    expect(readFileSync(join(run.root, "README.md"), "utf8")).toBe(PERSON_EDIT);
+    expect(git(run.remote, ["rev-parse", unit.branch])).toBe(unit.head);
+    // Nothing is left to check a second time.
+    expect(retireMergedQueuedWorktrees(run.root)).toEqual({
+      kept: [],
+      notes: [],
+      removed: [],
+    });
+  });
+
+  test("one that holds a file Git ignores is kept, with what to do about it", () => {
+    const { run, unit } = closedRun();
+    writeFixture(unit.path, ".env.local", "TOKEN=only-copy\n");
+    merge(run, unit.head);
+
+    const report = retireMergedQueuedWorktrees(run.root);
+
+    expect(report.removed).toEqual([]);
+    expect(report.kept).toEqual([
+      {
+        path: unit.path,
+        reason: `This copy holds files Git ignores (.env.local), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: ${unit.path}`,
+      },
+    ]);
+    expect(readFileSync(join(unit.path, ".env.local"), "utf8")).toBe(
+      "TOKEN=only-copy\n"
+    );
+  });
+
+  test("one with an edit Git's status is told not to see is kept", () => {
+    const { run, unit } = closedRun();
+    git(unit.path, ["update-index", "--assume-unchanged", "README.md"]);
+    writeFixture(unit.path, "README.md", "An edit status does not show.\n");
+    expect(git(unit.path, ["status", "--porcelain=v1"])).toBe("");
+    merge(run, unit.head);
+
+    const report = retireMergedQueuedWorktrees(run.root);
+
+    expect(report.removed).toEqual([]);
+    expect(report.kept).toMatchObject([{ path: unit.path }]);
+    expect(report.kept[0]?.reason).toContain(
+      "changes Git's status does not show (README.md)"
+    );
+    expect(readFileSync(join(unit.path, "README.md"), "utf8")).toBe(
+      "An edit status does not show.\n"
+    );
+  });
+
+  test("one whose work is not merged yet is kept and not reported", () => {
+    const { run, unit } = closedRun();
+
+    expect(retireMergedQueuedWorktrees(run.root)).toEqual({
+      kept: [],
+      notes: [],
+      removed: [],
+    });
+    expect(existsSync(unit.path)).toBe(true);
+  });
+
+  test("a target that cannot be read removes nothing", () => {
+    const { run, unit } = closedRun();
+    merge(run, unit.head);
+    git(run.root, ["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    const report = retireMergedQueuedWorktrees(run.root);
+
+    expect(report.removed).toEqual([]);
+    expect(report.notes).toHaveLength(1);
+    expect(existsSync(unit.path)).toBe(true);
+  });
+
+  test("nothing is removed while a loop record exists", () => {
+    const { run, unit } = closedRun();
+    merge(run, unit.head);
+    startLoop(run.root, "second-agent", "integrate");
+
+    expect(retireMergedQueuedWorktrees(run.root).removed).toEqual([]);
+    expect(existsSync(unit.path)).toBe(true);
+  });
+});
+
 describe("loop status for a Queue run", () => {
   test("says the run ends queued for review, not merged, and how to name its proposal", () => {
     const run = openRun({ forge: true });
@@ -802,5 +916,23 @@ describe("the command line", () => {
     expect(closed.stdout).toContain(
       `Queued, not merged: ${unit.branch} at ${unit.head} on origin, proposal ${PROPOSAL}.`
     );
+
+    // Once that proposal is merged, the next Queue run clears the worktree.
+    git(run.root, ["push", "origin", `${unit.head}:main`]);
+    git(run.root, ["fetch", "origin"]);
+    const next = cli(run, [
+      "loop",
+      "start",
+      "--mode",
+      "queue",
+      "--agent-id",
+      "second-agent",
+      "--json",
+    ]);
+    expect(next.exitCode).toBe(0);
+    expect(JSON.parse(next.stdout)).toMatchObject({
+      earlierQueuedWorktrees: { kept: [], removed: [unit.path] },
+    });
+    expect(existsSync(unit.path)).toBe(false);
   });
 });

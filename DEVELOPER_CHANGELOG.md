@@ -60,12 +60,21 @@
   Design choice: Queue finalization deletes nothing. The run's own
   worktrees are kept and listed in the receipt's `queued.keptWorktrees`
   with how to remove one, so an ignored file, an edit Git's status hides,
-  or a stopped Git operation in one is never lost. No state file is added
-  or changes shape: the lease is untouched, and the receipt gains an
+  or a stopped Git operation in one is never lost. No existing state file
+  changes shape: the lease is untouched, and the receipt gains an
   optional `queued` member (`status: queued-for-review-not-merged`, with
   `deliveryStatus` still `unverified`). `queuedRunGuidance` replaces
   "record its outcome" in `loop status` for these runs and prints the
-  finalize command with each branch to name. Known gap: a later run can
+  finalize command with each branch to name. Kept worktrees are cleared
+  later: a closed run writes `queued-worktrees/<run-id>.json`
+  (`queued-worktrees.schema.json`), and `retireMergedQueuedWorktrees`
+  (`lib/queued-retirement.ts`), run by `loop start --mode queue|sweep`
+  before the lease exists, hands the existing `removeProvenWorktrees` of
+  `worktree-maintenance.ts` only checkouts that are still that run's, on
+  the same branch, unclaimed, target-contained, clean, free of a Git
+  operation (`assertNoGitOperation`), equal to their commit
+  (`sourceWorktreeDelta`), and with nothing on disk beyond it
+  (`filesBeyondHead`); it never throws. Known gap: a later run can
   propose the same unchanged content from the primary checkout again
   without being told it is already queued. Ship, Integrate, Reconcile, a
   scoped Queue run, and `loop end` are unchanged. Covered by
@@ -78,8 +87,9 @@
   finalization commit had one review by gpt-6.2-astra at high effort that
   found 2 blocking and 9 should-fix defects, answered by removing
   automatic removal and the already-queued notice and fixing the rest;
-  the result was not re-reviewed. Guidance stays 33.
-<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T13:41:00-06:00" -->
+  the result, and the later clearing of merged worktrees at `loop start`,
+  were not re-reviewed. Guidance stays 33.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T13:57:00-06:00" -->
 
 ## 0.33.1 - 2026-11-18
 

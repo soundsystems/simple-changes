@@ -480,16 +480,39 @@ Everything stays where it is:
   uncommitted and untracked work: never stashed, reset, normalized, switched,
   or fast-forwarded, and never a blocker.
 - **The run's own worktrees are kept**, with their branches, ignored files,
-  and anything else in them, and listed in `keptWorktrees`. Tell the owner
-  they can remove one later with `git worktree remove <path>`, which refuses
-  a checkout that holds changes; an Integrate, Ship, or Reconcile run, or
-  `prune`, removes it once its branch is merged.
+  and anything else in them, and listed in `keptWorktrees`. An entry's `note`
+  says when the worktree holds files Git ignores. Tell the owner they can
+  remove one later with `git worktree remove <path>`, which refuses a
+  checkout that holds changes.
 - **Earlier branches and worktrees stay.** A clean worktree or local branch
   the target already contains is not removed and does not block. Each is
   named in the cleanup `notes`, and `cleanupStatus` is `pending` until one of
   those runs, or `prune`, cleans it. Only those modes run automatic cleanup,
   which is why earlier runtimes reported such a branch as a Queue blocker
   instead of deleting it.
+
+Kept worktrees do not pile up. A closed run records them in
+`queued-worktrees/<run-id>.json` beside the loop state
+(`evals/schemas/queued-worktrees.schema.json`), and `loop start --mode queue`
+or `--mode sweep` first removes each one whose work the target now contains,
+with the same unforced removal `prune` uses, reporting the result as
+`earlierQueuedWorktrees`. A worktree is removed only when every one of these
+is proven; anything that fails or cannot be read keeps it, and never stops
+the run:
+
+- no loop record exists, and the worktree is still that run's checkout on
+  the same branch, with no claim on it;
+- the freshly read target contains its head, by ancestry or patch
+  equivalence (one that is not merged yet simply waits, unreported);
+- its status is clean and no Git operation is in progress in it;
+- its files equal its commit even where status is told not to look
+  (assume-unchanged and skip-worktree entries);
+- nothing is on disk that its commit does not track, so no file Git ignores.
+
+Report every kept worktree with its reason. For ignored files, say it as the
+runtime does: "This copy holds files Git ignores (`<names, up to five>`), so I
+left it in place. Remove it by hand, or with computer use, once you have what
+you need from them: `<path>`".
 
 Before reporting completion:
 

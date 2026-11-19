@@ -82,12 +82,15 @@ import { runGit } from "./process.ts";
 import {
   assessQueuedWork,
   closesAsQueued,
+  type KeptQueuedWorktree,
+  keptQueuedWorktreesRecord,
   QUEUED_FOR_REVIEW,
   type QueuedAssessment,
   type QueuedDeclarations,
   type QueuedUnit,
   queuedDeclarations,
   queuedSummary,
+  writeQueuedWorktreesRecord,
 } from "./queued-completion.ts";
 import {
   type RemoteBranchCleanupReport,
@@ -2336,9 +2339,11 @@ export interface LoopFinalizationResult {
 export interface LoopFinalizationQueued {
   /**
    * Every checkout the run created that still exists. Finalization keeps
-   * them all: it deletes no checkout, branch, or file in these modes.
+   * them all: it deletes no checkout, branch, or file in these modes. A
+   * `note` says when one holds files Git ignores, which a later clean-up
+   * will leave in place too.
    */
-  keptWorktrees: string[];
+  keptWorktrees: KeptQueuedWorktree[];
   status: typeof QUEUED_FOR_REVIEW;
   summary: string;
   units: QueuedUnit[];
@@ -3049,6 +3054,29 @@ const relinquishController = (
   });
 };
 
+// Written before the lease goes, so a later Queue or Sweep start knows
+// which checkouts this run left. The receipt is persisted by now and the
+// run is closing, so a record that cannot be written is a note in the
+// result, never a failed finalization: its worktrees then simply stay.
+const recordKeptQueuedWorktrees = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  queued: QueuedAssessment,
+  closedAt: string,
+  cleanup: FinalizationCleanupResult
+): void => {
+  try {
+    writeQueuedWorktreesRecord(
+      lease.commonGitDirectory,
+      keptQueuedWorktreesRecord(lease, inventory, queued, closedAt)
+    );
+  } catch (error) {
+    cleanup.notes.push(
+      `The record of this run's kept worktrees could not be written, so a later run will not clean them up: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+};
+
 const finalizeOwnedLoop = (
   repositoryPath: string,
   openingLease: LoopLease,
@@ -3103,6 +3131,15 @@ const finalizeOwnedLoop = (
   );
   writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
   if (blockers.length === 0) {
+    if (queued) {
+      recordKeptQueuedWorktrees(
+        lease,
+        finalInventory,
+        queued,
+        now,
+        automaticCleanup.cleanup
+      );
+    }
     rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
     forgetLeaseSession(lease);
     removeControllerBinding(lease);

@@ -1477,7 +1477,14 @@ describe("Simple Changes skill contract", () => {
       // Nothing is deleted.
       "**The primary checkout stays exactly as it is**, on its branch, with its uncommitted and untracked work: never stashed, reset, normalized, switched, or fast-forwarded, and never a blocker.",
       "**The run's own worktrees are kept**, with their branches, ignored files, and anything else in them, and listed in `keptWorktrees`.",
-      "Tell the owner they can remove one later with `git worktree remove <path>`, which refuses a checkout that holds changes",
+      "Tell the owner they can remove one later with `git worktree remove <path>`, which refuses a checkout that holds changes.",
+      // Kept worktrees are cleared by a later Queue start, on proof only.
+      "Kept worktrees do not pile up.",
+      "`loop start --mode queue` or `--mode sweep` first removes each one whose work the target now contains, with the same unforced removal `prune` uses, reporting the result as `earlierQueuedWorktrees`.",
+      "A worktree is removed only when every one of these is proven; anything that fails or cannot be read keeps it, and never stops the run:",
+      "- its files equal its commit even where status is told not to look (assume-unchanged and skip-worktree entries);",
+      "- nothing is on disk that its commit does not track, so no file Git ignores.",
+      '"This copy holds files Git ignores (`<names, up to five>`), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: `<path>`"',
       "A clean worktree or local branch the target already contains is not removed and does not block.",
     ]) {
       expect(normalizedCleanup).toContain(sentence);

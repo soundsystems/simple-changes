@@ -404,6 +404,13 @@ const parseTracking = (tracking: string): { ahead: number; behind: number } => {
   };
 };
 
+// `name` stays Git's display name (`%(refname:short)`), which Git
+// disambiguates (`heads/main` when a tag is also named `main`), because
+// leases record it and their readers compare it as written. `exactName` is
+// `%(refname)` without this prefix, the name the worktree listing, claims
+// and `refs/heads/<name>` use.
+const HEADS_PREFIX = "refs/heads/";
+
 const inventoryBranches = (root: string): BranchInventory[] => {
   const format = [
     "%(refname:short)",
@@ -412,6 +419,7 @@ const inventoryBranches = (root: string): BranchInventory[] => {
     "%(upstream:track)",
     "%(worktreepath)",
     "%(HEAD)",
+    "%(refname)",
   ].join("%00");
   // A line cut short could drop a branch's worktree path and read a
   // checked-out branch as free to delete, so the listing must end whole.
@@ -425,13 +433,16 @@ const inventoryBranches = (root: string): BranchInventory[] => {
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [name, sha, upstream, tracking, worktreePath, head] =
+      const [name, sha, upstream, tracking, worktreePath, head, ref = ""] =
         line.split("\0");
       const counts = parseTracking(tracking ?? "");
       return {
         ahead: counts.ahead,
         behind: counts.behind,
         current: head === "*",
+        exactName: ref.startsWith(HEADS_PREFIX)
+          ? ref.slice(HEADS_PREFIX.length)
+          : "",
         name: name ?? "",
         sha: sha ?? "",
         upstream: upstream || null,
@@ -880,7 +891,19 @@ type InventoryDigestFields = Pick<
  */
 export const inventoryDigestInput = (fields: InventoryDigestFields): string =>
   JSON.stringify({
-    branches: fields.branches,
+    // Without `exactName`, so a digest, and a stored copy of this text, stay
+    // what 0.33.0 wrote for the same repository.
+    branches: fields.branches.map(
+      ({ ahead, behind, current, name, sha, upstream, worktreePath }) => ({
+        ahead,
+        behind,
+        current,
+        name,
+        sha,
+        upstream,
+        worktreePath,
+      })
+    ),
     capabilities: fields.capabilities,
     localChanges: fields.localChanges,
     policy: fields.policy,

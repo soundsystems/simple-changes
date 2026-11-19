@@ -20,6 +20,7 @@ import {
 import {
   finalizeLoop,
   guardLoopMutation,
+  loopLeasePath,
   loopStatus,
   prepareAgentWorktree,
   readLoopLease,
@@ -1044,3 +1045,48 @@ test.each(["dirty", "unique-commit"])(
     expect(result.receipt.deliveryStatus).not.toBe("verified");
   }
 );
+
+test("finalize never deletes a later branch named like a 0.33.0 opening name", () => {
+  // 0.33.0 recorded each opening branch by Git's display name, which reads
+  // heads/parked while a tag is also named parked.
+  const fixture = createTestRepository();
+  fixtures.push(fixture);
+  const { root } = fixture;
+  git(root, ["branch", "parked"]);
+  git(root, ["tag", "parked"]);
+  const head = git(root, ["rev-parse", "HEAD"]);
+  const lease = startLoop(root, "controller", "integrate");
+  writeFileSync(
+    loopLeasePath(captureInventory(root).repository.commonGitDirectory),
+    `${JSON.stringify(
+      {
+        ...readLoopLease(root),
+        openingBranches: [
+          { name: "heads/parked", sha: head },
+          { name: "main", sha: head },
+        ],
+      },
+      null,
+      2
+    )}\n`,
+    { encoding: "utf8", mode: 0o600 }
+  );
+  // Another agent then makes a branch literally named heads/parked at the
+  // same commit; a matching name and commit are not the opening branch.
+  git(root, ["branch", "heads/parked", head]);
+
+  const finalized = finalizeLoop(
+    root,
+    lease.runId,
+    "controller",
+    "Clean up after a run 0.33.0 opened."
+  );
+
+  const removed = finalized.cleanup.removedBranches.map(
+    (entry) => entry.branch
+  );
+  expect(removed).not.toContain("heads/parked");
+  expect(removed).not.toContain("parked");
+  expect(git(root, ["branch", "--list", "heads/parked"])).not.toBe("");
+  expect(git(root, ["branch", "--list", "parked"])).not.toBe("");
+});

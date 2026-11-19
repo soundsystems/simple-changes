@@ -716,6 +716,28 @@ export const runGit = (
   return retried;
 };
 
+/**
+ * Runs Git in `cwd` and returns its output as the bytes Git printed, never
+ * decoded, for answers whose exact bytes matter (a configuration key whose
+ * name is not valid UTF-8). A failure is returned with its exit code.
+ */
+export const runGitBytes = (
+  cwd: string,
+  args: readonly string[]
+): { exitCode: number; stderr: string; stdout: Buffer } => {
+  const result = spawnSync([gitExecutable(), "-C", cwd, ...args], {
+    cwd,
+    env: { ...process.env, LC_ALL: "C" },
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  return {
+    exitCode: result.exitCode,
+    stderr: textDecoder.decode(result.stderr),
+    stdout: Buffer.from(result.stdout),
+  };
+};
+
 export type GitRequest = GitWorkerRequest;
 
 // Below this many requests the worker's own startup costs more than it saves.

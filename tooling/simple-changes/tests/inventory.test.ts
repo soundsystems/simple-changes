@@ -8,11 +8,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { sha256 } from "../../../skills/simple-changes/scripts/lib/hash.ts";
 import {
   captureInventory,
   compareSnapshots,
   credentialFreeRemoteUrl,
   indexObjectIds,
+  inventoryDigestInput,
   locateRepository,
 } from "../../../skills/simple-changes/scripts/lib/inventory.ts";
 import { buildPreviewPlan } from "../../../skills/simple-changes/scripts/lib/planner.ts";
@@ -313,6 +315,45 @@ describe("Git inventory and concurrency", () => {
     expect(inventory.stashes).toHaveLength(1);
     expect(inventory.stashes[0]?.subject).toContain("existing fixture stash");
     expect(after).toBe(before);
+  });
+
+  test("names a branch a tag shares a name with both ways, and digests it as 0.33.0 did", () => {
+    const fixture = repository();
+    const { root } = fixture;
+    git(root, ["branch", "parked"]);
+    git(root, ["tag", "parked"]);
+    const head = git(root, ["rev-parse", "HEAD"]);
+    const inventory = captureInventory(root);
+    // `name` is the display name leases record; `exactName` is the
+    // `refs/heads/<name>` name.
+    expect(
+      inventory.branches.map(({ exactName, name, sha }) => ({
+        exactName,
+        name,
+        sha,
+      }))
+    ).toEqual([
+      { exactName: "parked", name: "heads/parked", sha: head },
+      { exactName: "main", name: "main", sha: head },
+    ]);
+    // The digest leaves `exactName` out, so it is what 0.33.0 computed.
+    const input = JSON.parse(inventoryDigestInput(inventory)) as {
+      branches: Record<string, unknown>[];
+    };
+    expect(input.branches.map((branch) => Object.keys(branch))).toEqual(
+      inventory.branches.map(() => [
+        "ahead",
+        "behind",
+        "current",
+        "name",
+        "sha",
+        "upstream",
+        "worktreePath",
+      ])
+    );
+    expect(inventory.baselineDigest).toBe(
+      sha256(inventoryDigestInput(inventory))
+    );
   });
 
   test("resolves index object IDs exactly as a per-path rev-parse would", () => {

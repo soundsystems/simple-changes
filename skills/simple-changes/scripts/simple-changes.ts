@@ -40,6 +40,14 @@ import {
 import { auditBranchReplacements } from "./lib/branch-audit.ts";
 import { inspectChangelogCoordination } from "./lib/changelog-coordination.ts";
 import {
+  COMMUNICATION_STYLES,
+  type CommunicationStyle,
+  communicationPaths,
+  isCommunicationStyle,
+  resolveCommunication,
+  writeCommunication,
+} from "./lib/communication.ts";
+import {
   buildCoordinationRequest,
   type CoordinationCapabilityProbe,
   probeCoordinationAdapter,
@@ -334,7 +342,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.33.0";
+const VERSION = "0.33.1";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -397,6 +405,8 @@ Usage:
     [--agent-id ID] [--yes] [--json] [--repo PATH]
   simple-changes setup --authoring JSON|@FILE --scope repository|personal
     --confirm [--agent-id ID] [--json] [--repo PATH]
+  simple-changes setup --communication ultra-simple|standard
+    --scope repository|personal --confirm [--agent-id ID] [--json] [--repo PATH]
   simple-changes acknowledge-update --guidance-decision accepted|reviewed|deferred
     [--agent-id ID] [--json] [--repo PATH]
   simple-changes migration decision --state REVIEW_FILE --pending PENDING_FILE --apply-plan APPLY_PLAN_FILE [--json] [--repo PATH]
@@ -668,6 +678,7 @@ interface CliOptions {
   check: boolean;
   claimId?: string;
   commits: string[];
+  communication?: CommunicationStyle;
   completeIdentity: boolean;
   concurrentWork?: RepoPolicy["concurrentWork"];
   contribution?: "implementation";
@@ -785,6 +796,7 @@ const VALUED_OPTIONS = new Set([
   "--name",
   "--authoring",
   "--authoring-request",
+  "--communication",
   "--deltas",
   "--destination",
   "--upstream",
@@ -1174,6 +1186,24 @@ const applyAuthoringValuedOption = (
   return true;
 };
 
+const applyCommunicationValuedOption = (
+  options: CliOptions,
+  option: string,
+  value: string
+): boolean => {
+  if (option !== "--communication") {
+    return false;
+  }
+  if (!isCommunicationStyle(value)) {
+    throw new SimpleChangesError(
+      `--communication must be ${COMMUNICATION_STYLES.join(" or ")}`,
+      EXIT_CODES.usage
+    );
+  }
+  options.communication = value;
+  return true;
+};
+
 const applySetupValuedOption = (
   options: CliOptions,
   option: string,
@@ -1519,6 +1549,7 @@ const applyValuedOption = (
     applyShippingModeOption(options, option, value) ||
     applySetupValuedOption(options, option, value) ||
     applyAuthoringValuedOption(options, option, value) ||
+    applyCommunicationValuedOption(options, option, value) ||
     applyLoopValuedOption(options, option, value) ||
     applyHoldValuedOption(options, option, value) ||
     applyLedgerValuedOption(options, option, value) ||
@@ -2225,6 +2256,154 @@ const runAuthoringSetup = async (
   );
 };
 
+const COMMUNICATION_EXCLUSIVE_INPUTS = SETUP_INPUT_KEYS.filter(
+  (key) => key !== "scope"
+);
+
+// What a write records, by scope: a project's setting is its default, and a
+// person's own setting can still outrank it.
+const COMMUNICATION_SAVED: Record<
+  "personal" | "repository",
+  Record<CommunicationStyle, string>
+> = {
+  personal: {
+    standard:
+      "Ultra-Simple Mode is off for you in every project: Simple Changes uses its standard voice.",
+    "ultra-simple":
+      "Ultra-Simple Mode is on for you in every project: Simple Changes keeps messages short, skips tool terms, and asks only when the answer changes what happens.",
+  },
+  repository: {
+    standard:
+      "Ultra-Simple Mode is off for this project by default: Simple Changes uses its standard voice.",
+    "ultra-simple":
+      "Ultra-Simple Mode is on for this project by default: Simple Changes keeps messages short, skips tool terms, and asks only when the answer changes what happens.",
+  },
+};
+
+interface SavedCommunication {
+  report: {
+    effective: ReturnType<typeof resolveCommunication>;
+    path: string;
+    scope: "personal" | "repository";
+    style: CommunicationStyle;
+    written: boolean;
+  };
+  summary: string;
+}
+
+// What was saved is this scope's setting. What applies to this person may
+// differ, because their own setting outranks the project's; the summary names
+// the file that does, and only when there is one.
+const savedCommunication = (
+  scope: "personal" | "repository",
+  style: CommunicationStyle,
+  recorded: { changed: boolean; path: string },
+  primaryCheckout: string | null
+): SavedCommunication => {
+  const effective = resolveCommunication(primaryCheckout);
+  const outranked =
+    effective.style !== style &&
+    effective.path !== null &&
+    effective.path !== recorded.path;
+  const summary = [
+    `${COMMUNICATION_SAVED[scope][style]} ${recorded.changed ? "Saved in" : "Already saved in"} ${recorded.path}.`,
+    outranked
+      ? `For you it stays ${effective.style === "ultra-simple" ? "on" : "off"}: ${effective.path} outranks it.`
+      : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join(" ");
+  return {
+    report: {
+      effective,
+      path: recorded.path,
+      scope,
+      style,
+      written: recorded.changed,
+    },
+    summary,
+  };
+};
+
+/**
+ * `setup --communication <style> --scope <repository|personal> --confirm`
+ * records how Simple Changes talks as its own transaction. It writes only the
+ * communication sidecar, so switching the display mode can never change the
+ * policy, its trust receipt, or any other authority.
+ */
+const runCommunicationSetup = async (
+  options: CliOptions,
+  style: CommunicationStyle
+): Promise<void> => {
+  const mixed = [
+    ...COMMUNICATION_EXCLUSIVE_INPUTS.filter(
+      (key) => options[key] !== undefined
+    ),
+    ...(options.migrationTargets.length > 0 ? ["migrationTargets"] : []),
+    ...(options.authoring === undefined ? [] : ["authoring"]),
+    ...(options.uiArtifacts ? ["uiArtifacts"] : []),
+    ...(options.acknowledgePushScope ? ["acknowledgePushScope"] : []),
+  ];
+  if (mixed.length > 0) {
+    throw new SimpleChangesError(
+      `setup --communication is a standalone transaction that changes no other setting; record ${mixed.join(", ")} in a separate setup.`,
+      EXIT_CODES.usage
+    );
+  }
+  if (options.dryRun) {
+    throw new SimpleChangesError(
+      "setup --communication has no --dry-run: it writes one file, and only with --confirm.",
+      EXIT_CODES.usage
+    );
+  }
+  if (options.scope !== "repository" && options.scope !== "user") {
+    throw new SimpleChangesError(
+      "setup --communication requires --scope repository or --scope personal; for one conversation, just use the style and save nothing.",
+      EXIT_CODES.usage
+    );
+  }
+  if (!options.yes) {
+    throw new SimpleChangesError(
+      "setup --communication requires --confirm before writing.",
+      EXIT_CODES.usage
+    );
+  }
+  const scope = options.scope === "user" ? "personal" : "repository";
+  const { repository } =
+    scope === "repository"
+      ? captureInventory(options.repo)
+      : { repository: null };
+  const paths = communicationPaths(repository?.primaryCheckout ?? null);
+  const path = scope === "repository" ? paths.repository : paths.personal;
+  if (!path) {
+    throw new SimpleChangesError(
+      "setup --communication --scope repository requires a Git repository; use --scope personal outside one.",
+      EXIT_CODES.usage
+    );
+  }
+  const write = () => writeCommunication(path, style, scope === "personal");
+  const recorded = repository
+    ? await withSetupWriteLock(
+        options.repo,
+        repository.commonGitDirectory,
+        options.agentId,
+        "communication setup write",
+        write
+      )
+    : write();
+  const saved = savedCommunication(
+    scope,
+    style,
+    recorded,
+    repository?.primaryCheckout ?? null
+  );
+  writeOutput(
+    { communication: saved.report, summary: saved.summary },
+    options.json,
+    `${saved.summary}\n`
+  );
+};
+
 // Detection and pre-fill for the interactive authoring questions; none when
 // the harness data file is unreadable (the questions are then skipped).
 const interactiveAuthoringContext = (
@@ -2291,6 +2470,10 @@ interface SetupRun {
 }
 
 const runSetup = async (options: CliOptions): Promise<void> => {
+  if (options.communication !== undefined) {
+    await runCommunicationSetup(options, options.communication);
+    return;
+  }
   if (options.authoring !== undefined) {
     await runAuthoringSetup(options, options.authoring);
     return;
@@ -3063,6 +3246,7 @@ const initializationStatusFor = (
     ...inspected,
     ...authoring.fields,
     changelogInstall: pendingChangelogInstallOffer(changelogCoordination),
+    communication: resolveCommunication(inventory.repository.primaryCheckout),
     handoffClaimRelease,
     policyRequest: policyLayer.report,
     reviewer,
@@ -6392,6 +6576,20 @@ const assertLockWaitApplies = (command: string, options: CliOptions): void => {
   }
 };
 
+// `--communication` saves a style through `setup` and nothing else reads it,
+// so any other command given it would silently do nothing with it.
+const assertCommunicationApplies = (
+  command: string,
+  options: CliOptions
+): void => {
+  if (options.communication !== undefined && command !== "setup") {
+    throw new SimpleChangesError(
+      "--communication applies only to setup: setup --communication <style> --scope repository|personal --confirm.",
+      EXIT_CODES.usage
+    );
+  }
+};
+
 // --wait-lock: wait for a busy loop lock for the bound instead of failing.
 const lockWaitOption = (options: CliOptions): LoopLockWait | undefined =>
   options.waitLock
@@ -6633,6 +6831,7 @@ const executeCommand = async (
     return EXIT_CODES.success;
   }
   assertLockWaitApplies(command, options);
+  assertCommunicationApplies(command, options);
   const restore = selectInvocationHarness(
     invocationHarnessFor(command, options)
   );

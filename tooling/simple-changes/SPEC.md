@@ -252,6 +252,13 @@
   request, which is built only for the active run.
 - Missing onboarding defaults to checked proposal creation and confirmation
   before completed-work handoff.
+- The communication style (`ultra-simple` or `standard`) lives in its own
+  sidecar and is reported by `initialize`. It changes wording and how often
+  questions are asked. `setup --communication` writes only that sidecar, and
+  no rule reads the style to decide what is allowed.
+- A decision one unit is waiting on blocks only that unit: independent work
+  continues, and a turn ends on a question only when nothing else can
+  proceed.
 - A meaningful guidance-version change blocks the next write-capable mutation
   until the user reviews, accepts, or defers it. The recorded disposition
   suppresses repeat prompting for that version without granting changelog
@@ -475,6 +482,17 @@
 - Leading routine user updates with controller, lease, ledger, digest, or other
   internal bookkeeping when a short plain-language explanation would preserve
   the same accuracy.
+- Treating Ultra-Simple Mode as push, merge, production, migration, or
+  cleanup authority; skipping a required safety or cleanup question, or a
+  setup choice, because the mode is on; or reporting a partial run with a
+  finished delivery line.
+- Turning on Autopilot by implication, or treating it as database, secret,
+  DNS, store-release, or cleanup authority.
+- Treating Autopilot as covering a request that asks for less than Ship, as
+  removing any question but the one about going live, or as a promise of
+  review before deployment where a break-glass shipping order is saved.
+- Holding independent units, or other agents, while one unit waits for the
+  user's answer.
 - Treating emotional urgency, active impact, or a tested claim as implicit
   authority to deploy before review; treating break-glass policy without
   production authority as deploy permission; or marking `live-unreviewed` or

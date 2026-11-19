@@ -21,13 +21,17 @@ import {
   type RemoteInventoryHoldResolver,
   type RemoteInventoryPages,
 } from "../../../skills/simple-changes/scripts/lib/remote-inventory.ts";
-import type { ShipmentOutcomeReceipt } from "../../../skills/simple-changes/scripts/lib/types.ts";
+import type {
+  ShipmentOutcomeReceipt,
+  WorktreeClaim,
+} from "../../../skills/simple-changes/scripts/lib/types.ts";
 import { readCoordinationDocumentFromCommonDirectory } from "../../../skills/simple-changes/scripts/lib/worktree-coordination.ts";
 import { commitEquivalenceAgainstTarget } from "../../../skills/simple-changes/scripts/lib/worktree-equivalence.ts";
 import {
   renderExpiredExternalDeletionPins,
   renderRemoteBranchCleanup,
 } from "../../../skills/simple-changes/scripts/simple-changes.ts";
+import { runWithFakeGit } from "./fake-git.ts";
 import {
   createTestRepository,
   git,
@@ -38,12 +42,17 @@ import {
 setDefaultTimeout(60_000);
 
 let repositories: TestRepository[] = [];
+let cleanups: (() => void)[] = [];
 
 afterEach(() => {
   for (const fixture of repositories) {
     fixture.cleanup();
   }
   repositories = [];
+  for (const cleanup of cleanups.reverse()) {
+    cleanup();
+  }
+  cleanups = [];
 });
 
 const repository = (): TestRepository => {
@@ -1537,5 +1546,604 @@ describe("round 5: the target's upstream and shallow clones", () => {
     expect(held.errors.join(" ")).toContain(
       "Fork-point holds could not be computed"
     );
+  });
+});
+
+/** A provider branch with one commit of its own and no local branch. */
+const providerOnlyBranch = (root: string, name: string): string => {
+  git(root, ["switch", "--quiet", "-c", name]);
+  writeFixture(root, `${name}.txt`, `${name}\n`);
+  git(root, ["add", `${name}.txt`]);
+  git(root, ["commit", "--quiet", "-m", `Write ${name}`]);
+  const head = git(root, ["rev-parse", "HEAD"]);
+  git(root, ["switch", "--quiet", "main"]);
+  git(root, ["branch", "--quiet", "-D", name]);
+  return head;
+};
+
+/**
+ * Each provider branch beside main was merged by its own MR at its head, and
+ * the provider kept it: the opening and final pages.
+ */
+const mergedPages = (head: string, heads: Record<string, string>) => {
+  const branches = [
+    main(head),
+    ...Object.entries(heads).map(([name, headRevision]) => ({
+      headRevision,
+      name,
+      protected: false,
+    })),
+  ];
+  const proposals = (state: Proposal["state"]) =>
+    Object.entries(heads).map(([name, headRevision], index) =>
+      mr(String(50 + index), name, state, headRevision)
+    );
+  return {
+    final: pages(CLOSED, branches, proposals("merged"), []),
+    opening: pages(
+      OPENED,
+      branches,
+      proposals("open"),
+      proposals("open").map((proposal) => ({
+        objectId: proposal.objectId,
+        targetBranch: "main",
+      }))
+    ),
+  };
+};
+
+const mergedHeads = (
+  head: string,
+  heads: Record<string, string>,
+  resolveHolds: RemoteInventoryHoldResolver
+) => {
+  const { final, opening } = mergedPages(head, heads);
+  return buildRemoteInventory(final, {
+    opening: buildRemoteInventory(opening).receipt,
+    resolveHolds,
+  });
+};
+
+const libraryPath = (name: string): string =>
+  join(import.meta.dir, `../../../skills/simple-changes/scripts/lib/${name}`);
+
+// Git's own upstream of a branch, which an older Git refuses.
+const UPSTREAM_FORMAT =
+  "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)";
+
+const outcome = (built: ReturnType<typeof buildRemoteInventory>) => ({
+  held: built.summary.heldBranches.map((branch) => [
+    branch.name,
+    branch.reasons.join("; "),
+  ]),
+  proposed: built.summary.deletionProposals.map((branch) => branch.name),
+});
+
+describe("an upstream is read the way Git resolves it", () => {
+  // Issue #19: main lists two merge values, kept and then other. Git's
+  // upstream is the first, origin/kept, but reading the configuration by
+  // hand took the last, so kept was proposed and only other was held. A
+  // pull merges both, so both hold.
+  const twoMerges = () => {
+    const { root } = repository();
+    git(root, ["remote", "add", "origin", "git@gitlab.com:group/project.git"]);
+    const heads = {
+      kept: providerOnlyBranch(root, "kept"),
+      other: providerOnlyBranch(root, "other"),
+    };
+    return { head: git(root, ["rev-parse", "HEAD"]), heads, root };
+  };
+
+  test("with two merge values, the one Git uses and the other both hold", () => {
+    const { head, heads, root } = twoMerges();
+    // Control: with main tracking nothing, both merged heads are proposed.
+    expect(outcome(mergedHeads(head, heads, localHolds(root)))).toEqual({
+      held: [],
+      proposed: ["kept", "other"],
+    });
+    git(root, ["config", "branch.main.remote", "origin"]);
+    git(root, ["config", "--add", "branch.main.merge", "refs/heads/kept"]);
+    git(root, ["config", "--add", "branch.main.merge", "refs/heads/other"]);
+    expect(
+      git(root, [
+        "for-each-ref",
+        "--format=%(upstream:short)",
+        "refs/heads/main",
+      ])
+    ).toBe("origin/kept");
+    const built = mergedHeads(head, heads, localHolds(root));
+    const why = `upstream of main, checked out in ${root}`;
+    expect(outcome(built)).toEqual({
+      held: [
+        ["kept", why],
+        ["other", why],
+      ],
+      proposed: [],
+    });
+    // Finalize reports from the same holds: both held, nothing pending.
+    const report = remoteBranchCleanupReport({
+      claims: [],
+      inventory: captureInventory(root, { skipWorktreeStatus: true }),
+      openTargets: [],
+      receipt: built.receipt,
+    });
+    expect(report.errors).toEqual([]);
+    expect(report.held.map((branch) => [branch.name, branch.reasons])).toEqual([
+      ["kept", [why]],
+      ["other", [why]],
+    ]);
+    expect(report.pending.map((branch) => branch.name)).toEqual([]);
+  });
+
+  test("a merge value Git maps to no remote-tracking branch still holds", () => {
+    // A single-branch clone fetches only main, so Git reports no upstream
+    // for main, but its configuration still names kept on the target.
+    const { head, heads, root } = twoMerges();
+    git(root, [
+      "config",
+      "remote.origin.fetch",
+      "+refs/heads/main:refs/remotes/origin/main",
+    ]);
+    git(root, ["config", "branch.main.remote", "origin"]);
+    git(root, ["config", "branch.main.merge", "refs/heads/kept"]);
+    expect(
+      git(root, ["for-each-ref", "--format=%(upstream)", "refs/heads/main"])
+    ).toBe("");
+    expect(outcome(mergedHeads(head, heads, localHolds(root)))).toEqual({
+      held: [["kept", `upstream of main, checked out in ${root}`]],
+      proposed: ["other"],
+    });
+  });
+
+  test("an unborn branch's upstream is its own, never that of a branch named below it", () => {
+    // planned is checked out with no commit yet, so Git has no ref for it,
+    // and it tracks origin/kept. The existing planned/child tracks
+    // origin/other. Asking Git for refs/heads/planned also matches
+    // refs/heads/planned/child, whose one line was read as planned's
+    // upstream, so other was held and kept proposed.
+    const fixture = repository();
+    const { root } = fixture;
+    git(root, ["remote", "add", "origin", "git@gitlab.com:group/project.git"]);
+    const heads = {
+      kept: providerOnlyBranch(root, "kept"),
+      other: providerOnlyBranch(root, "other"),
+    };
+    const head = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["branch", "planned/child"]);
+    git(root, ["config", "branch.planned/child.remote", "origin"]);
+    git(root, ["config", "branch.planned/child.merge", "refs/heads/other"]);
+    const path = join(fixture.base, "planned");
+    git(root, ["worktree", "add", "--quiet", "--detach", path]);
+    git(path, ["symbolic-ref", "HEAD", "refs/heads/planned"]);
+    git(root, ["config", "branch.planned.remote", "origin"]);
+    git(root, ["config", "branch.planned.merge", "refs/heads/kept"]);
+    expect(
+      git(root, ["for-each-ref", "--format=%(refname)", "refs/heads/planned"])
+    ).toBe("refs/heads/planned/child");
+    const reason = `upstream of planned, checked out in ${path}`;
+    const expectKeptHeld = (): void => {
+      const built = mergedHeads(head, heads, localHolds(root));
+      expect(outcome(built)).toEqual({
+        held: [["kept", reason]],
+        proposed: ["other"],
+      });
+      // Finalize reports from the same holds: kept is held, other pending.
+      const report = remoteBranchCleanupReport({
+        claims: [],
+        inventory: captureInventory(root, { skipWorktreeStatus: true }),
+        openTargets: [],
+        receipt: built.receipt,
+      });
+      expect(report.errors).toEqual([]);
+      expect(
+        report.held.map((branch) => [branch.name, branch.reasons])
+      ).toEqual([["kept", [reason]]]);
+      expect(report.pending.map((branch) => branch.name)).toEqual(["other"]);
+    };
+    expectKeptHeld();
+    // `rev-parse refs/heads/planned` falls back to a tag of that name when
+    // the branch has no ref, so asking it whether planned exists said yes.
+    git(root, ["tag", "refs/heads/planned", head]);
+    expect(
+      git(root, ["rev-parse", "--verify", "--quiet", "refs/heads/planned"])
+    ).toBe(head);
+    expectKeptHeld();
+  });
+
+  test("a Git older than 2.16, which refuses the upstream atoms, holds every merge value", () => {
+    const { head, root } = twoMerges();
+    git(root, ["config", "branch.main.remote", "origin"]);
+    git(root, ["config", "--add", "branch.main.merge", "refs/heads/kept"]);
+    git(root, ["config", "--add", "branch.main.merge", "refs/heads/other"]);
+    const run = (
+      failure?: { exitCode: number; stderr: string },
+      version?: string
+    ) =>
+      runWithFakeGit(
+        {
+          body: `import { captureInventory } from ${JSON.stringify(libraryPath("inventory.ts"))};
+import { remoteBranchHolds } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
+const inventory = captureInventory(${JSON.stringify(root)}, { skipWorktreeStatus: true });
+try {
+  const holds = remoteBranchHolds({ claims: [], inventory, targetBranch: "main", targetRevision: ${JSON.stringify(head)} });
+  console.log(JSON.stringify(Object.fromEntries(holds.byName)));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+          failFlag: failure ? UPSTREAM_FORMAT : "",
+          ...(failure ? { failure } : {}),
+          flag: "",
+          lost: 0,
+          ...(version ? { version } : {}),
+        },
+        (cleanup) => cleanups.push(cleanup)
+      ).reply;
+    const reason = `upstream of main, checked out in ${root}`;
+    // Control: a Git that knows the atoms holds its upstream and the other
+    // merge value alike.
+    expect(run()).toMatchObject({ kept: [reason], other: [reason] });
+    // Git 2.13 to 2.15, and Git before 2.13, refuse the atoms in their own
+    // words, so the configuration alone holds every value.
+    const refused = {
+      exitCode: 128,
+      stderr: "fatal: unrecognized %(upstream) argument: remotename",
+    };
+    expect(run(refused, "git version 2.15.4")).toMatchObject({
+      kept: [reason],
+      other: [reason],
+    });
+    expect(
+      run(
+        {
+          exitCode: 128,
+          stderr: "fatal: unrecognized format: %(upstream:remotename)",
+        },
+        "git version 2.12.5"
+      )
+    ).toMatchObject({ kept: [reason], other: [reason] });
+    // The same words from a Git that knows the atoms, or an older Git that
+    // fails for another reason, are a failed read, never a missing upstream.
+    for (const [failure, version] of [
+      [refused, undefined],
+      [refused, "git version 2.16.0"],
+      [{ ...refused, exitCode: 3 }, "git version 2.15.4"],
+      [
+        {
+          exitCode: 128,
+          stderr: "fatal: unable to read refs/heads/main: Input/output error",
+        },
+        "git version 2.15.4",
+      ],
+    ] as const) {
+      expect((run(failure, version) as { error?: string }).error).toStartWith(
+        "cannot read the upstream of main: "
+      );
+    }
+  });
+
+  test("an upstream read that fails withholds every proposal", () => {
+    // main tracks origin/kept; other is finished and unrelated. Git fails
+    // to read the upstream while the configuration still reads, which once
+    // fell back to the configuration as if Git had named no upstream.
+    const { head, heads, root } = twoMerges();
+    git(root, ["config", "branch.main.remote", "origin"]);
+    git(root, ["config", "branch.main.merge", "refs/heads/kept"]);
+    const { final, opening } = mergedPages(head, heads);
+    const build = (failFlag: string) =>
+      runWithFakeGit(
+        {
+          body: `import { captureInventory } from ${JSON.stringify(libraryPath("inventory.ts"))};
+import { remoteBranchHolds } from ${JSON.stringify(libraryPath("remote-branch-prune.ts"))};
+import { buildRemoteInventory } from ${JSON.stringify(libraryPath("remote-inventory.ts"))};
+const built = buildRemoteInventory(${JSON.stringify(final)}, {
+  opening: buildRemoteInventory(${JSON.stringify(opening)}).receipt,
+  resolveHolds: (targetBranch, targetRevision) =>
+    remoteBranchHolds({
+      claims: [],
+      inventory: captureInventory(${JSON.stringify(root)}, { skipWorktreeStatus: true }),
+      targetBranch,
+      targetRevision,
+    }),
+});
+console.log(JSON.stringify({
+  held: built.summary.heldBranches.map((branch) => [branch.name, branch.reasons.join("; ")]),
+  proposed: built.summary.deletionProposals.map((branch) => branch.name),
+}));
+`,
+          failFlag,
+          failure: {
+            exitCode: 128,
+            stderr: "fatal: unable to read refs/heads/main: Input/output error",
+          },
+          flag: "",
+          lost: 0,
+        },
+        (cleanup) => cleanups.push(cleanup)
+      ).reply as ReturnType<typeof outcome>;
+    // Control: with every read whole, kept is held and other proposed.
+    expect(build("")).toEqual({
+      held: [["kept", `upstream of main, checked out in ${root}`]],
+      proposed: ["other"],
+    });
+    const { held, proposed } = build(UPSTREAM_FORMAT);
+    expect(proposed).toEqual([]);
+    expect(held.map(([name]) => name)).toEqual(["kept", "other"]);
+    for (const [, reasons] of held) {
+      expect(reasons).toContain(
+        "live worktrees and claims could not be checked"
+      );
+      expect(reasons).toContain(
+        "cannot read the upstream of main: fatal: unable to read refs/heads/main: Input/output error"
+      );
+    }
+  });
+});
+
+describe("holds come from every source of checkouts, which must agree", () => {
+  // Issue #27: fix/live is checked out in an unclaimed checkout, and MR !51
+  // merged it at its head while the provider kept it; done is merged too.
+  // A worktree listing cut between two complete records still ends whole,
+  // so it once left the checkout out, and fix/live was proposed.
+  const liveCheckout = () => {
+    const fixture = repository();
+    const { root } = fixture;
+    const done = providerOnlyBranch(root, "done");
+    const path = join(fixture.base, "live");
+    git(root, ["worktree", "add", "--quiet", "-b", "fix/live", path]);
+    writeFixture(path, "work.txt", "work\n");
+    git(path, ["add", "work.txt"]);
+    git(path, ["commit", "--quiet", "-m", "Work"]);
+    const heads = { done, "fix/live": git(path, ["rev-parse", "HEAD"]) };
+    return { fixture, head: git(root, ["rev-parse", "HEAD"]), heads, path };
+  };
+
+  type Inventory = ReturnType<typeof captureInventory>;
+  const holdsFrom =
+    (
+      root: string,
+      edit: (inventory: Inventory) => void,
+      claims: WorktreeClaim[] = []
+    ): RemoteInventoryHoldResolver =>
+    (targetBranch, targetRevision) => {
+      const inventory = captureInventory(root, { skipWorktreeStatus: true });
+      edit(inventory);
+      return remoteBranchHolds({
+        claims,
+        inventory,
+        targetBranch,
+        targetRevision,
+      });
+    };
+
+  const claimOf = (
+    root: string,
+    branch: string,
+    state: WorktreeClaim["state"] = "active"
+  ): WorktreeClaim => ({
+    branch,
+    changeDigest: "0".repeat(64),
+    claimId: `claim-${branch}`,
+    commonGitDirectory: join(root, ".git"),
+    createdAt: OPENED,
+    headSha: null,
+    owner: { adapter: "test", agentId: "builder", ownerRef: null },
+    path: join(root, "..", branch),
+    repositoryId: "test",
+    schemaVersion: 1,
+    state,
+    updatedAt: OPENED,
+  });
+
+  // Every merged head is held with the disagreement, so none is proposed.
+  const expectWithheld = (
+    built: ReturnType<typeof buildRemoteInventory>,
+    why: string
+  ): void => {
+    const { held, proposed } = outcome(built);
+    expect(proposed).toEqual([]);
+    expect(held.map(([name]) => name)).toEqual(["done", "fix/live"]);
+    for (const [, reasons] of held) {
+      expect(reasons).toContain("disagree about what is checked out");
+      expect(reasons).toContain(why);
+      expect(reasons).toContain("retry the command");
+    }
+  };
+
+  test("a worktree listing that leaves out a checkout withholds every proposal", () => {
+    const { fixture, head, heads, path } = liveCheckout();
+    const { root } = fixture;
+    // Control: the checkout holds fix/live, and done is proposed.
+    expect(outcome(mergedHeads(head, heads, localHolds(root)))).toEqual({
+      held: [["fix/live", `checked out in ${path}`]],
+      proposed: ["done"],
+    });
+    const cut = (inventory: Inventory) => {
+      inventory.worktrees = inventory.worktrees.filter(
+        (worktree) => worktree.path !== path
+      );
+    };
+    const built = mergedHeads(head, heads, holdsFrom(root, cut));
+    expectWithheld(
+      built,
+      `the branch listing has fix/live checked out in ${path}, but the worktree listing does not`
+    );
+    // Finalize reports from the same holds: none can be applied, so both
+    // finished branches stay pending, never held or clean.
+    const cutInventory = captureInventory(root, { skipWorktreeStatus: true });
+    cut(cutInventory);
+    const report = remoteBranchCleanupReport({
+      claims: [],
+      inventory: cutInventory,
+      openTargets: [],
+      receipt: built.receipt,
+    });
+    expect(report.held).toEqual([]);
+    expect(report.pending.map((branch) => branch.name)).toEqual([
+      "done",
+      "fix/live",
+    ]);
+    expect(report.errors.join(" ")).toContain(
+      "Holds could not be computed, so none is applied"
+    );
+    // Control: once the checkout is really gone, fix/live is proposed.
+    git(root, ["worktree", "remove", path]);
+    expect(
+      outcome(mergedHeads(head, heads, localHolds(root))).proposed
+    ).toEqual(["done", "fix/live"]);
+  });
+
+  test("a branch listing that leaves out or misplaces a checkout's branch withholds every proposal", () => {
+    const { fixture, head, heads, path } = liveCheckout();
+    const { root } = fixture;
+    expectWithheld(
+      mergedHeads(
+        head,
+        heads,
+        holdsFrom(root, (inventory) => {
+          inventory.branches = inventory.branches.filter(
+            (branch) => branch.name !== "fix/live"
+          );
+        })
+      ),
+      `the worktree listing has fix/live checked out in ${path}, but the branch listing leaves the branch out`
+    );
+    expectWithheld(
+      mergedHeads(
+        head,
+        heads,
+        holdsFrom(root, (inventory) => {
+          for (const branch of inventory.branches) {
+            if (branch.name === "fix/live") {
+              branch.worktreePath = null;
+            }
+          }
+        })
+      ),
+      `the worktree listing has fix/live checked out in ${path}, but the branch listing has it checked out nowhere`
+    );
+  });
+
+  test("a claimed branch that exists but the branch listing leaves out withholds every proposal", () => {
+    const { fixture, head, heads } = liveCheckout();
+    const { root } = fixture;
+    git(root, ["branch", "parked"]);
+    const withoutParked = (inventory: Inventory) => {
+      inventory.branches = inventory.branches.filter(
+        (branch) => branch.name !== "parked"
+      );
+    };
+    expectWithheld(
+      mergedHeads(
+        head,
+        heads,
+        holdsFrom(root, withoutParked, [claimOf(root, "parked")])
+      ),
+      "claim claim-parked holds parked, but the branch listing leaves the branch out"
+    );
+    // Control: a released claim, or a claim for a branch not created yet,
+    // is no disagreement, and the planned branch is still held by name.
+    const agreed = outcome(
+      mergedHeads(
+        head,
+        { ...heads, planned: heads.done },
+        holdsFrom(root, withoutParked, [
+          claimOf(root, "parked", "released"),
+          claimOf(root, "planned"),
+        ])
+      )
+    );
+    expect(agreed.proposed).toEqual(["done"]);
+    expect(agreed.held).toContainEqual([
+      "planned",
+      "held by claim claim-planned (builder, active)",
+    ]);
+  });
+
+  test("a tag named like a checked-out branch is no disagreement", () => {
+    // Tags named main and fix/live make Git show each branch's short name
+    // as heads/<name>, which the worktree listing and claims never use.
+    const { fixture, head, heads, path } = liveCheckout();
+    const { root } = fixture;
+    git(root, ["tag", "main"]);
+    git(root, ["tag", "fix/live", heads["fix/live"]]);
+    expect(
+      git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+    ).toBe("heads/fix/live\nheads/main");
+    // The checkout still holds fix/live, and the finished done is proposed.
+    const built = mergedHeads(
+      head,
+      heads,
+      holdsFrom(root, () => undefined, [claimOf(root, "fix/live")])
+    );
+    expect(outcome(built)).toEqual({
+      held: [
+        [
+          "fix/live",
+          `checked out in ${path}; held by claim claim-fix/live (builder, active)`,
+        ],
+      ],
+      proposed: ["done"],
+    });
+    // The branch listing keeps Git's display names, which leases record,
+    // and names each branch exactly beside them; finalize reports from the
+    // same holds: fix/live held, done pending.
+    const inventory = captureInventory(root, { skipWorktreeStatus: true });
+    expect(
+      inventory.branches.map(({ exactName, name }) => [name, exactName])
+    ).toEqual([
+      ["heads/fix/live", "fix/live"],
+      ["heads/main", "main"],
+    ]);
+    const report = remoteBranchCleanupReport({
+      claims: [],
+      inventory,
+      openTargets: [],
+      receipt: built.receipt,
+    });
+    expect(report.errors).toEqual([]);
+    expect(report.held.map((branch) => branch.name)).toEqual(["fix/live"]);
+    expect(report.pending.map((branch) => branch.name)).toEqual(["done"]);
+  });
+
+  test("bare, unborn and prunable checkouts are no disagreement", () => {
+    const { fixture, head, heads, path } = liveCheckout();
+    const { base, root } = fixture;
+    // A checkout whose branch has no commit yet is in the worktree listing
+    // only, and one whose folder was deleted is in both.
+    const unborn = join(base, "unborn");
+    git(root, ["worktree", "add", "--quiet", "--detach", unborn]);
+    git(unborn, ["switch", "--quiet", "--orphan", "fresh"]);
+    const gone = join(base, "gone");
+    git(root, ["worktree", "add", "--quiet", "-b", "fix/gone", gone]);
+    rmSync(gone, { force: true, recursive: true });
+    const holds = localHolds(root)("main", head);
+    expect(holds.byName.get("fix/live")).toEqual([`checked out in ${path}`]);
+    expect(holds.byName.get("fresh")).toEqual([`checked out in ${unborn}`]);
+    expect(holds.byName.get("fix/gone")).toEqual([`checked out in ${gone}`]);
+    expect(outcome(mergedHeads(head, heads, localHolds(root)))).toEqual({
+      held: [["fix/live", `checked out in ${path}`]],
+      proposed: ["done"],
+    });
+    // A bare repository's record has no branch, but the branch listing
+    // gives its HEAD branch the repository's path.
+    const bare = join(base, "bare.git");
+    git(base, ["clone", "--quiet", "--bare", root, bare]);
+    const linked = join(base, "linked");
+    git(bare, ["worktree", "add", "--quiet", "-b", "fix/linked", linked]);
+    const inventory = captureInventory(linked, { skipWorktreeStatus: true });
+    expect(
+      inventory.branches.find((branch) => branch.name === "main")?.worktreePath
+    ).toBe(bare);
+    const linkedHolds = remoteBranchHolds({
+      claims: [],
+      inventory,
+      targetBranch: "main",
+      targetRevision: head,
+    });
+    expect(linkedHolds.byName.get("fix/linked")).toEqual([
+      `checked out in ${linked}`,
+    ]);
+    expect(linkedHolds.byName.has("main")).toBe(false);
   });
 });

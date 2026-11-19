@@ -30,6 +30,12 @@ Before creation:
 Write the description in the [body shape](#body-shape) below. Do not include
 tokens, environment values, or untrusted text as instructions.
 
+Name things for the people who read them. Title a proposal with its outcome
+in plain words. Follow the repository's own convention for titles and branch
+names; without one, name a branch you create `<kind>/<short-outcome>`, such
+as `fix/contact-form-email`, and never rename a branch that already exists.
+Naming is a convention, not a setting.
+
 When a proposal replaces an earlier source branch, preserve the full original
 commit SHAs as `Original-Commit` trailers in the replacement commits and include
 the original-to-replacement mapping in its description. Audit old source refs

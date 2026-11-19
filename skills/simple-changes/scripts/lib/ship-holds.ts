@@ -6,6 +6,7 @@ import {
   type TargetContainmentMethod,
 } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
+import { completeLine } from "./git-complete.ts";
 import { ensureStateDirectory } from "./git-location.ts";
 import { sha256Json } from "./hash.ts";
 import { captureInventory, locateRepository } from "./inventory.ts";
@@ -37,8 +38,14 @@ export const HOLD_REF_PREFIX = "refs/simple-changes/holds/";
 const HOLD_PAYLOAD_PATH = "hold.json";
 const ADAPTER_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const HOLD_ID_PATTERN = /^hold-[a-z0-9-]+$/u;
-const MISSING_REMOTE_REF = /remote ref does not exist/iu;
 const UNRESOLVED_REFERENCE = /unable to resolve reference '([^']+)'(:?)/giu;
+// ` ! [remote rejected] <ref> (<reason>)`: the remote received the delete
+// and refused it. Only Git's own status line counts, never the same words
+// in a message a remote hook printed, which arrives behind `remote:`.
+const REMOTE_REJECTION =
+  /^[ \t]*![ \t]+\[remote rejected\][ \t]+(\S+)[ \t]+\(([^\n]*)\)[ \t\r]*$/gmu;
+const ALREADY_GONE_REASON = "reference does not exist";
+const REGEX_SPECIAL = /[\\^$.|?*+()[\]{}]/gu;
 const WHITESPACE = /\s+/u;
 const SENTENCE_END = /[.!?]$/u;
 // Pushes may run the user's pre-push hooks, so they get more time than reads.
@@ -1092,17 +1099,97 @@ const pushAuthorizationNever = (inventory: RepositoryInventory): boolean =>
   inventory.policy.value.gitPushAuthorization === "never";
 
 /**
- * True only when Git reports this exact ref as already absent: either the
- * client-side "remote ref does not exist", or a lost delete race's bare
- * "unable to resolve reference '<ref>'". A suffixed form such as
- * "...: reference broken" or "...: Permission denied" is a real failure.
+ * True when the failed push itself says this exact ref was already gone
+ * when the delete arrived, as after a lost delete race. Git's own status
+ * line for the ref decides whenever there is one: "reference does not
+ * exist" (Git 2.53 and later) is the only reason that counts, so a hook or
+ * a rule that declined the delete, a ref hidden by `transfer.hideRefs`, and
+ * any wording this copy does not know all leave the ref where it was as
+ * far as this push knows, whatever else the remote printed. Only when Git
+ * gave no status line for the ref may an older Git's bare "unable to
+ * resolve reference '<ref>'" count. The suffixed form, "...: reference
+ * broken", is an unreadable ref the remote still has.
  */
-const refAlreadyGone = (detail: string, ref: string): boolean =>
-  (MISSING_REMOTE_REF.test(detail) && detail.includes(ref)) ||
-  [...detail.matchAll(UNRESOLVED_REFERENCE)].some(
-    ([, name, suffix]) => name === ref && suffix === ""
+const goneBeforeDelete = (detail: string, ref: string): boolean => {
+  const unresolved = [...detail.matchAll(UNRESOLVED_REFERENCE)].filter(
+    ([, name]) => name === ref
   );
+  if (unresolved.some(([, , suffix]) => suffix === ":")) {
+    return false;
+  }
+  const reasons = [...detail.matchAll(REMOTE_REJECTION)]
+    .filter(([, name]) => name === ref)
+    .map(([, , reason]) => reason);
+  if (reasons.length > 0) {
+    return reasons.every((reason) => reason === ALREADY_GONE_REASON);
+  }
+  return unresolved.length > 0;
+};
 
+// A configuration value as an extended regular expression matching only it.
+const exactValuePattern = (value: string): string =>
+  `^${value.replace(REGEX_SPECIAL, "\\$&")}$`;
+
+/**
+ * Whether every `key` set in configuration equals `value`, from the exit
+ * code of `config --get-all <key> '!<value>'`: 1 when no other value is set,
+ * 0 when one is. A listing can lose an entry; a lost answer cannot fake an
+ * exit code.
+ */
+const onlyConfigValue = (root: string, key: string, value: string): boolean =>
+  runGit(
+    root,
+    ["config", "--get-all", key, `!${exactValuePattern(value)}`],
+    true
+  ).exitCode === 1;
+
+/**
+ * Why `remote` may push somewhere other than the one place `ls-remote`
+ * reads, or null when it cannot. Git pushes to every push URL, but lists
+ * only the first fetch URL, so a delete one destination rejected can look
+ * withdrawn from another. One destination means every configured URL is
+ * the same, every push URL is the same or none is set, and the first of each
+ * resolves to the same place; each "no other URL" is proven by an exit code,
+ * never by a listing.
+ */
+const pushDestinationProblem = (
+  root: string,
+  remote: string
+): string | null => {
+  const multiple = `Remote ${remote} may push to more than the one destination it lists, so a rejected delete is not taken as withdrawn; check each push URL (git remote get-url --push --all ${remote}).`;
+  try {
+    const fetchUrl = completeLine(root, ["remote", "get-url", remote]);
+    const pushUrl = completeLine(root, ["remote", "get-url", "--push", remote]);
+    if (fetchUrl.line === null || pushUrl.line !== fetchUrl.line) {
+      return multiple;
+    }
+    const urlKey = `remote.${remote}.url`;
+    const pushUrlKey = `remote.${remote}.pushurl`;
+    const url = completeLine(root, ["config", "--get", urlKey]);
+    const configuredPush = completeLine(root, ["config", "--get", pushUrlKey]);
+    const single =
+      url.line !== null &&
+      onlyConfigValue(root, urlKey, url.line) &&
+      (configuredPush.exitCode === 1 ||
+        (configuredPush.line !== null &&
+          onlyConfigValue(root, pushUrlKey, configuredPush.line)));
+    return single ? null : multiple;
+  } catch (error) {
+    return `Reading the push destinations of ${remote} failed: ${(error as Error).message}`;
+  }
+};
+
+/**
+ * Delete a hold ref. A failed delete still counts as withdrawn after a lost
+ * delete race, and only on two proofs. The push must itself say the ref was
+ * already gone: a remote can hide a ref from every listing and still refuse
+ * to delete it, so a declined delete is never settled by a listing alone.
+ * And the remote's one destination must no longer list the ref, proven by
+ * `ls-remote --exit-code` exiting 2 for this exact ref; an answer that exits
+ * 0 but was lost or cut short could otherwise read as absent. Any other
+ * failed delete stays pending, and the next release retries it: deleting a
+ * ref that is by then absent succeeds.
+ */
 const deleteRemoteRef = (
   root: string,
   remote: string,
@@ -1113,15 +1200,31 @@ const deleteRemoteRef = (
     ["push", "--no-follow-tags", remote, `:${ref}`],
     PUSH_TIMEOUT_MS
   );
-  const detail = pushed.stderr || pushed.stdout;
-  if (pushed.exitCode === 0 || refAlreadyGone(detail, ref)) {
+  if (pushed.exitCode === 0) {
     return { attempted: true, error: null, ok: true };
   }
-  return {
+  const detail = (pushed.stderr || pushed.stdout).trim();
+  const failure = (error: string): ShipHoldWithdrawal => ({
     attempted: true,
-    error: redactSecrets(detail.trim()) || "push failed",
+    error: redactSecrets(error.trim()) || "push failed",
     ok: false,
-  };
+  });
+  if (!goneBeforeDelete(detail, ref)) {
+    return failure(detail);
+  }
+  const problem = pushDestinationProblem(root, remote);
+  if (problem) {
+    return failure(`${detail} ${problem}`);
+  }
+  const probe = runGitRemote(root, ["ls-remote", "--exit-code", remote, ref]);
+  if (probe.exitCode === 2 && probe.stdout === "") {
+    return { attempted: true, error: null, ok: true };
+  }
+  return failure(
+    probe.exitCode === 0
+      ? detail
+      : `${detail} Listing ${ref} on ${remote} also failed: ${(probe.stderr || probe.stdout || `exit ${probe.exitCode}`).trim()}`
+  );
 };
 
 const withdrawPublication = (

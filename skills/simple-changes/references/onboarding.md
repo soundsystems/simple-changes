@@ -103,6 +103,10 @@ that Simple Changes coordinates with Simple Changelogs when available but does
 not author changelogs itself. Save the full per-use catalog for **Walk me
 through it**; do not turn the first screen into a wall of text.
 
+Setup is the same under [Ultra-Simple Mode](ultra-simple-mode.md), said in
+its words. After any of these choices is saved, the mode can be added with
+`setup --communication ultra-simple`.
+
 Outside Git, the recommended durable scope is private personal preferences
 because repository policy is unavailable. An explicit current request always
 overrides a recommendation.
@@ -166,6 +170,10 @@ run? Choose one:**
 Offer option 3 only when **Deploy automatically** was selected in the
 production question; otherwise mention in one sentence that an advanced
 break-glass mode exists and requires automatic production deployment.
+
+**Ship when approved** with **Deploy automatically** is what
+[Ultra-Simple Mode calls Autopilot](ultra-simple-mode.md#autopilot). It is
+chosen here, with these questions and their confirmations.
 
 Then, only when this run will actually produce more than one independent
 change proposal, ask **When there are multiple independent change proposals,

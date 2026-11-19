@@ -497,9 +497,39 @@ repository:
 bun run simple-changes setup --scope user
 ```
 
-On first use, it explains why onboarding appeared, shows the exact recommended
-workflow, and makes clear that nothing has been pushed, merged, deployed, or
-saved yet. The first choice is:
+### Ultra-Simple Mode
+
+For people who want the result and not the tooling: say what you want, get a
+review link and a short status, and answer a question only when your answer
+changes what happens. No Git terms unless you use them first.
+
+```sh
+bun run simple-changes setup --communication ultra-simple --scope repository --confirm
+```
+
+That writes one file, `.simple-changes-communication.json`. Commit it and it
+is the project's default: teammates get the mode with no setup of their own,
+unless their own setting says otherwise. Use `--scope personal` for yourself
+in every project, and `--communication standard` to turn it off. Your own
+setting outranks the project's, so an owner can set a project to Ultra-Simple
+for a team and keep full detail personally.
+
+The mode changes the words and how often Simple Changes asks. It never changes
+what Simple Changes may do: the command cannot write policy, checks and review
+run as before, and going live, database changes, and removing work still ask.
+
+**Autopilot** is the plain name for the existing **Ship when approved** finish
+with **Deploy automatically**: a request to ship goes live without a question
+about going live, while a request that asks for less still stops where it
+says. What happens before going live follows your saved shipping order: checks
+and review first under the standard and expedited orders. It is a permission,
+not part of Ultra-Simple Mode, it is never turned on by implication, each
+person confirms it on their own computer before it takes effect there, and
+database changes keep their own setting.
+
+Setup itself is the same with the mode on. On first use, it explains why
+onboarding appeared, shows the exact recommended workflow, and makes clear that
+nothing has been pushed, merged, deployed, or saved yet. The first choice is:
 
 1. **Use recommended setup**: Apply the safe, request-aware defaults and show a
    receipt before saving them.

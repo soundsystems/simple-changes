@@ -1077,9 +1077,24 @@ describe("release-tag destinations", () => {
     const auxiliary = join(fixture.base, "auxiliary.git");
     git(fixture.base, ["clone", "--quiet", "--bare", fixture.bare, auxiliary]);
     git(auxiliary, ["branch", "--quiet", "next", "main"]);
-    git(fixture.root, ["remote", "add", "origin/release", auxiliary]);
+    // Git 2.53 refuses `git remote add origin/release` beside `origin`, but
+    // such remotes survive from older Git or hand edits and Git still lists
+    // and resolves them, so write the configuration directly.
+    git(fixture.root, ["config", "remote.origin/release.url", auxiliary]);
+    git(fixture.root, [
+      "config",
+      "remote.origin/release.fetch",
+      "+refs/heads/*:refs/remotes/origin/release/*",
+    ]);
+    expect(git(fixture.root, ["remote"]).split("\n")).toEqual([
+      "origin",
+      "origin/release",
+    ]);
     const lease = startController(fixture);
     expect(lease.targetRef).toBe("origin/release/next");
+    expect(lease.remoteBindings?.map((binding) => binding.name).sort()).toEqual(
+      ["origin", "origin/release"]
+    );
     const check = (receipt: Awaited<ReturnType<typeof releaseTag>>) => {
       expect(receipt).toMatchObject({
         reasonCode: "remote-not-single-url",

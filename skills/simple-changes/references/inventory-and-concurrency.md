@@ -493,7 +493,9 @@ branch onto the updated target through `loop exec`.
    only when it reports `open`; otherwise choose another author model or
    harness, or ask the owner
    ([review identity](review-and-merge.md#review-identity-and-the-review-ledger)).
-2. Start the agents together. Give each one its exact prepared path, branch,
+2. Start the agents together, each with a brief written as
+   [messages to other agents](user-communication.md#messages-to-other-agents)
+   describes. Give each one its exact prepared path, branch,
    agent ID, and unit scope, and the `workDir` `prepare-agent` reported; the
    checks to run; and its boundary: edit, generate, format, check, stage, and
    commit only inside that worktree. A
@@ -692,8 +694,13 @@ clear the hold only when its owner releases it.
 
 The owner ends a hold with `hold release --agent-id <owner> --hold-id <id>` as
 soon as its reason is over. Release also withdraws a published ref and reports
-a failed withdrawal with its retry; status lists released holds whose refs are
-still published. Another agent releases a hold only with `--approved-by` and
+a failed withdrawal with its retry. A rejected delete counts as withdrawn only
+when Git itself says the ref was already gone and `ls-remote --exit-code` then
+finds no such ref, and only for a remote with one destination for fetch and
+push. Any other rejection stays pending, a hook or host rule that declined the
+delete included, because a host can hide a ref from listings and still keep
+it; run `hold release` again to retry. Status lists released holds whose
+refs are still published. Another agent releases a hold only with `--approved-by` and
 `--reason` from the user, plus `--override-halt` for a halt; the owner's own
 clone keeps its record until the owner releases it there, and its gates report
 that the published ref was withdrawn elsewhere. No hold is released by elapsed

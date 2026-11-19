@@ -63,6 +63,10 @@ const setupAndPolicyPath = new URL(
   "../../../skills/simple-changes/references/setup-and-policy.md",
   import.meta.url
 );
+const ultraSimpleModePath = new URL(
+  "../../../skills/simple-changes/references/ultra-simple-mode.md",
+  import.meta.url
+);
 const harnessPushPath = new URL(
   "../../../skills/simple-changes/references/harness-push-authorization.md",
   import.meta.url
@@ -1566,5 +1570,215 @@ describe("Simple Changes skill contract", () => {
     // Code disable-model-invocation.
     expect(parsed.policy).toBeUndefined();
     expect(skill).not.toContain("disable-model-invocation");
+  });
+
+  test("every message says less, asks less, and keeps unblocked work moving", async () => {
+    const [skill, communication, concurrency, shipCommunication] = (
+      await Promise.all([
+        readFile(skillPath, "utf8"),
+        readFile(userCommunicationPath, "utf8"),
+        readFile(inventoryConcurrencyPath, "utf8"),
+        readFile(shipCommunicationPath, "utf8"),
+      ])
+    ).map((text) => text.replace(/\s+/g, " "));
+
+    expect(skill).toContain(
+      "Say each thing once, ask only what the user must decide, and let a pending decision block only its own unit"
+    );
+    for (const rule of [
+      "Send a message only when the reader would do or think something different after reading it",
+      "what you are about to do, when you can do it and report the result",
+      "a caution or boundary already stated in this conversation",
+      "Do not ask what the request, saved policy, or repository evidence already answers",
+      "Do not ask permission for work that is already authorized, and do not ask whether to continue",
+      "Do not ask the same thing twice while nothing has changed",
+      "Ask independent decisions that are already known together, instead of one per turn",
+      // Batching never overrides a guided setup's one question at a time.
+      "A guided setup or walkthrough still asks [one question at a time](onboarding.md#question-presentation-contract)",
+      "A decision one unit is waiting on blocks that unit and nothing else",
+      "Only work that needs the answer, or that the answer could undo, waits",
+      "End a turn on a question only when nothing else can proceed",
+      "When the answer arrives, resume the waiting unit only",
+      // Keeping work moving never loosens how a run closes or a unit is held.
+      "The run still closes by the [turn-end rules](cleanup-and-completion.md#turn-end-guard), and a unit left out of a shipment is still [held](focused-units.md#held-unit) with the user's approval",
+    ]) {
+      expect(communication).toContain(rule);
+    }
+    // Agent-to-agent messages are briefs, and reviewers get no conclusions.
+    for (const rule of [
+      "is a brief for a reader who has none of your context",
+      "**Goal:**",
+      "**Scope:**",
+      "**Decided:**",
+      "**Boundary:**",
+      "**Return:**",
+      "never your conclusion: a reader handed a hypothesis tends to return it confirmed",
+      "Treat a returned report as evidence, not proof",
+      "Never pass on authority you were not given, and never reword an approval",
+    ]) {
+      expect(communication).toContain(rule);
+    }
+    expect(concurrency).toContain(
+      "[messages to other agents](user-communication.md#messages-to-other-agents)"
+    );
+    expect(shipCommunication).toContain(
+      "a decision one unit is waiting on never stops the rest of the shipment"
+    );
+  });
+
+  test("Ultra-Simple Mode changes the words and the questions, never the authority", async () => {
+    const [
+      skill,
+      mode,
+      onboarding,
+      setupAndPolicy,
+      migrations,
+      communication,
+      changeRequests,
+      shipCommunication,
+    ] = (
+      await Promise.all([
+        readFile(skillPath, "utf8"),
+        readFile(ultraSimpleModePath, "utf8"),
+        readFile(onboardingPath, "utf8"),
+        readFile(setupAndPolicyPath, "utf8"),
+        readFile(
+          new URL(
+            "../../../skills/simple-changes/references/migrations-and-high-risk-actions.md",
+            import.meta.url
+          ),
+          "utf8"
+        ),
+        readFile(userCommunicationPath, "utf8"),
+        readFile(
+          new URL(
+            "../../../skills/simple-changes/references/change-requests.md",
+            import.meta.url
+          ),
+          "utf8"
+        ),
+        readFile(shipCommunicationPath, "utf8"),
+      ])
+    ).map((text) => text.replace(/\s+/g, " "));
+
+    expect(skill).toContain(
+      "Under `communication.style: ultra-simple`, follow [Ultra-Simple Mode](references/ultra-simple-mode.md)"
+    );
+
+    // Setup is unchanged by the mode: onboarding only points at it.
+    for (const copy of [
+      "Setup is the same under [Ultra-Simple Mode](ultra-simple-mode.md), said in its words.",
+      "After any of these choices is saved, the mode can be added with `setup --communication ultra-simple`.",
+      "**Ship when approved** with **Deploy automatically** is what [Ultra-Simple Mode calls Autopilot](ultra-simple-mode.md#autopilot)",
+    ]) {
+      expect(onboarding).toContain(copy);
+    }
+    for (const copy of [
+      "The mode does not change setup.",
+      "the same choices, the same receipt, and the same confirmation before anything is saved, said in this mode's words when the mode is already in effect",
+      "Nothing is chosen for the person because the mode is on.",
+      "Inside setup, the path the owner chose decides what is asked.",
+      // Turning the mode on is a one-file command.
+      "simple-changes setup --communication ultra-simple --scope repository --confirm",
+      "it is the project's default: teammates get the mode with no setup of their own, unless their own setting says otherwise",
+    ]) {
+      expect(mode).toContain(copy);
+    }
+
+    for (const rule of [
+      "It is a display preference, never a permission.",
+      "Never introduce a tool term.",
+      "One answer in detail does not turn the mode off.",
+      // The word rule never hides what an approval is bound to.
+      "show the exact evidence the standard mode requires beside the plain question, revisions included",
+      "Ask only when the answer changes what happens and nothing saved or said already answers it.",
+      // The saved questions preference and required stops still govern.
+      "**At major steps** keeps its confirmations, and **Don't interrupt me** means work that lacks permission is skipped and reported, not asked about",
+      "Everything `initialize` requires is still presented, in plain words and before the run changes anything",
+      "its required answers first, then any recommended change with the current and the proposed setting, then what matters in a line and every choice the standard notice offers, each under a short label of its own",
+      "**Carry on**, **Quick tour**, **Full tour**, **Release notes**, or **Decide later**?",
+      "a one-time offer, such as the turn-end guard or a refreshed instruction rule, in one line the person can decline",
+      "Never ask twice for the same thing while nothing has changed",
+      // The brief keeps its timing, its scope, and the reviewer.
+      "it is sent before the first step that changes anything shared, it presents the recorded scope, and it names the reviewer as the standard brief does: the agent, its model and effort, whether it must differ from the author, and the setting that chose it with the file it is saved in",
+      "This project's review setting asks > for that (`<path>/.simple-changes-authoring.json`).",
+      // The three finished states, and honesty about what was checked.
+      "Open with one of these labels and no other",
+      "Ready for review: the new pricing table. `<link>`. Checks passed. Nothing is live.",
+      "Added to the project: the new pricing table, approved at `<link>`. Nothing is live yet.",
+      "Live: the new pricing table, at `<address>`. `<the check that ran>` confirms it.",
+      "Name the check that really ran, such as opening the live page or a request to the live service; never claim one that did not.",
+      "A run that finished only part of the request never uses a finished label for all of it.",
+      "Report a preview that exists; never create one or promise one.",
+      "show a before and after picture of it in the message",
+      "> This would remove saved addresses from the live store. I've left them alone. > Should I prepare a version that keeps them?",
+      "> I couldn't confirm the live database backup, so I didn't change the > database. Your review link is ready.",
+      // Database authority stays exactly where it was.
+      'The mode itself, "ship it", "handle it", and "do whatever it takes" are never database permission.',
+      "Name all three parts of the target, because the saved permission is bound to all three.",
+      "Offer it only when the audit classed this update as routine, the exact target was observed, and saved setup is not `never`.",
+      "Should I handle checked, low-risk updates like this on > `<provider>`: `<project>` / `<environment>` from now on?",
+      "It never selects the wider `auto-apply-reviewed` tier",
+      "A single one-time apply is not part of this question: the guarded apply runs only under a saved setting.",
+      "The same update on any other target asks.",
+      "A request that stops at review applies nothing and offers nothing.",
+      'There is no "apply anyway".',
+      "Backfills and repairs keep their own separate permission.",
+      // What the mode can never do.
+      "grants no push, merge, go-live, database, or cleanup permission beyond what saved setup and the request already give",
+      "A quiet interface never skips a safety or cleanup question.",
+      "Blocked, partial, and failed work is named as such.",
+    ]) {
+      expect(mode).toContain(rule);
+    }
+
+    // Autopilot is a name for existing settings, and a permission of its own.
+    for (const rule of [
+      "Autopilot is the plain name for two settings Simple Changes already has: the **Ship when approved** finish with **Deploy automatically**.",
+      // It reaches only work that reaches Ship, and removes one question.
+      'A request that asks for less, such as "put this up", still stops where it says.',
+      // Handed-over work starts when the saved handoff setting lets it.
+      "So is finished work handed over with no other instruction, when the saved [handoff setting](setup-and-policy.md#completed-work-handoff-checkpoint) lets it start: after the person confirms it is ready, after they say so themselves, or straight away when handoff is automatic.",
+      "`<after you confirm > it's ready | once you tell me it's ready | as soon as it's built and > checked, without asking>`",
+      "The handoff setting still decides when finished work is handed over.",
+      // The shipping order decides what precedes going live, break-glass included.
+      "Under a saved break-glass order a Ship request can go live before the second look.",
+      "never promise a second look first to a project that saved break-glass",
+      "It is a permission, not a way of talking, so it is separate from this mode and never part of it.",
+      'Nothing turns it on by implication: not Ultra-Simple Mode, not "ship it", not urgency.',
+      "it takes effect on each computer only after that person confirms the saved setup there through `setup`, because a project file alone never grants permission to deploy",
+      "Autopilot removes one question, the one about going live, and nothing else.",
+      "A saved **At major steps** setting still confirms each major step.",
+      "Database changes follow the saved database setting and the section above.",
+      "Break-glass shipping is a different, advanced choice and is never offered under this name.",
+    ]) {
+      expect(mode).toContain(rule);
+    }
+
+    for (const rule of [
+      "It writes that one file and refuses any other setup option in the same command",
+      "and never rewrites one holding members this version does not know",
+      "The personal file outranks the repository's, unlike policy, because the style grants nothing",
+      "in any layer, is listed in `communication.errors` and skipped",
+      "no rule may read it to decide what is allowed",
+    ]) {
+      expect(setupAndPolicy).toContain(rule);
+    }
+    expect(migrations).toContain("the mode itself authorizes nothing");
+    // The say-less rules never loosen a saved questions preference.
+    expect(communication).toContain(
+      "The saved `questions` preference decides how much that is, and these rules never loosen it: under **At major steps** confirm each consequential step even when it is authorized, and under **Don't interrupt me** skip what lacks authority and report it at the end."
+    );
+    // Preview links and pictures are reported when they exist, for everyone.
+    expect(communication).toContain(
+      "When the host built a preview deployment for the exact proposed revision, give its link beside the proposal's; report one that exists, and never create or promise one."
+    );
+    expect(communication).toContain("Neither ever delays the report.");
+    expect(changeRequests).toContain(
+      "without one, name a branch you create `<kind>/<short-outcome>`, such as `fix/contact-form-email`, and never rename a branch that already exists. Naming is a convention, not a setting."
+    );
+    expect(shipCommunication).toContain(
+      "the brief keeps this timing and content, the recorded scope and the reviewer included"
+    );
   });
 });

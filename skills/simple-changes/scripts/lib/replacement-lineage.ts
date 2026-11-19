@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import {
   localBranchForTargetRef,
   PATCH_EQUIVALENCE_MAX_COMMITS,
@@ -16,6 +18,7 @@ import {
 } from "./cleanup-core.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
+import { decodeUtf8 } from "./extensions.ts";
 import {
   completeLine,
   completeListing,
@@ -27,7 +30,7 @@ import {
   type ArchiveRetentionPolicy,
   archiveRetentionPolicy,
 } from "./policy.ts";
-import { runGit } from "./process.ts";
+import { runGit, runGitBytes } from "./process.ts";
 import { headCoverage, readReviewLedger } from "./review-ledger.ts";
 import { validateSchema } from "./schema.ts";
 import type {
@@ -851,11 +854,11 @@ const writeRecord = (
 // through branch deletion, every Git command runs with these options: no
 // pager, no lazy fetch, hooks and fsmonitor off, and every filter driver
 // either checkout's effective configuration defines emptied. With
-// submodules, partial clones, and configured hooks refused, this keeps the
-// programs it recognizes from running between reading the checkout and
-// removing it. It is hardening, not a guarantee: as on the other removal
-// paths, configured programs are trusted, and a filter driver whose name
-// does not read back exactly (empty, or not valid UTF-8) is not covered.
+// submodules, partial clones, configured hooks, and filter driver names the
+// command line cannot override exactly refused, this keeps the programs it
+// recognizes from running between reading the checkout and removing it. It
+// is hardening, not a guarantee: as on the other removal paths, configured
+// programs are trusted.
 const CALLBACK_FREE_BASE = [
   "--no-pager",
   "--no-lazy-fetch",
@@ -866,7 +869,9 @@ const CALLBACK_FREE_BASE = [
   "core.fsmonitor=false",
 ] as const;
 const FILTER_COMMAND_KEYS = ["clean", "smudge", "process"] as const;
-const FILTER_KEY_PATTERN = /^filter\.(.+)\.(clean|smudge|process|required)$/u;
+const FILTER_SECTION = "filter.";
+const DRIVER_NAME_BREAKS = /[\n\r\u2028\u2029]/u;
+const DISPLAYED_BREAKS = /[\u2028\u2029]/gu;
 const CONFIGURED_HOOK_PATTERN = /^hook\./u;
 const PROMISOR_KEY_PATTERN = /^remote\..+\.promisor$/u;
 const FALSE_VALUES = new Set(["false", "no", "off", "0", ""]);
@@ -879,41 +884,104 @@ const boundaryRefusal = (path: string, detail: string): SimpleChangesError =>
     EXIT_CODES.unsafe
   );
 
+// The boundary reads configuration as the bytes Git printed, held one
+// character per byte, so a key that is not valid UTF-8 is compared exactly
+// instead of being decoded into another key's name.
+const byteString = (bytes: Buffer): string => bytes.toString("latin1");
+
+// A byte-string key as a person reads it in a refusal, with quotes,
+// control characters and line breaks escaped.
+const readableKey = (key: string): string =>
+  JSON.stringify(Buffer.from(key, "latin1").toString("utf8"))
+    .slice(1, -1)
+    .replace(
+      DISPLAYED_BREAKS,
+      (character) => `\\u${character.charCodeAt(0).toString(16)}`
+    );
+
 // Every `name value` pair of the effective configuration in one checkout,
-// across system, global, local, worktree, included, and environment scopes.
-// A key written without `=` has a null value, which Git reads as true.
+// across system, global, local, worktree, included, and environment scopes,
+// as byte strings: Git's `-z` records split on raw NUL and line feed bytes,
+// never decoded. A key written without `=` has a null value, which Git
+// reads as true. Null when Git could not list it, or twice listed it cut
+// inside a record.
 const effectiveConfig = (
   context: string,
   options: readonly string[]
-): Array<{ key: string; value: string | null }> => {
-  const listed = runGit(context, [...options, "config", "--list", "-z"], true);
-  if (listed.exitCode !== 0) {
-    return [];
+): Array<{ key: string; value: string | null }> | null => {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const listed = runGitBytes(context, [...options, "config", "--list", "-z"]);
+    if (listed.exitCode !== 0) {
+      return null;
+    }
+    const records = byteString(listed.stdout);
+    if (records !== "" && !records.endsWith("\0")) {
+      continue;
+    }
+    return records
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => {
+        const split = entry.indexOf("\n");
+        return split < 0
+          ? { key: entry, value: null }
+          : { key: entry.slice(0, split), value: entry.slice(split + 1) };
+      });
   }
-  return listed.stdout
-    .split("\0")
-    .filter(Boolean)
-    .map((entry) => {
-      const split = entry.indexOf("\n");
-      return split < 0
-        ? { key: entry, value: null }
-        : { key: entry.slice(0, split), value: entry.slice(split + 1) };
-    });
+  return null;
+};
+
+// The driver name of a `filter.<driver>.<variable>` byte-string key, or
+// null for any other key (Git ignores a filter key without a driver).
+const filterDriverOf = (key: string): string | null => {
+  if (!key.startsWith(FILTER_SECTION)) {
+    return null;
+  }
+  const end = key.lastIndexOf(".");
+  return end < FILTER_SECTION.length
+    ? null
+    : key.slice(FILTER_SECTION.length, end);
+};
+
+// Why `-c filter.<driver>.<key>=` could not name exactly this driver, or
+// null when it can: arguments travel as UTF-8 text, `-c` splits at the
+// first `=`, and a line break could split a record or escape a pattern.
+// The name is a byte string.
+const unoverridableDriver = (driver: string): string | null => {
+  if (driver === "") {
+    return "is empty";
+  }
+  const name = decodeUtf8(Buffer.from(driver, "latin1"));
+  if (!name.exact) {
+    return "is not valid UTF-8";
+  }
+  if (DRIVER_NAME_BREAKS.test(name.text)) {
+    return "contains a line break";
+  }
+  return name.text.includes("=") ? "contains =" : null;
 };
 
 // Collects the filter drivers one checkout's effective configuration
-// defines, and refuses a configured hook, a partial clone, or a driver name
-// the command line cannot override.
+// defines, as byte strings, and refuses a configured hook, a partial clone,
+// a configuration Git could not list whole, or a driver name the command
+// line cannot override exactly.
 const scanContext = (
   context: string,
   source: string,
   drivers: Set<string>
 ): void => {
-  for (const { key, value } of effectiveConfig(context, CALLBACK_FREE_BASE)) {
+  const entries = effectiveConfig(context, CALLBACK_FREE_BASE);
+  if (entries === null) {
+    throw boundaryRefusal(
+      source,
+      `Git could not list the configuration in ${context} whole, so the filter drivers it defines could not all be emptied.`
+    );
+  }
+  for (const { key, value } of entries) {
     if (CONFIGURED_HOOK_PATTERN.test(key)) {
       throw boundaryRefusal(
         source,
-        `${context} configures a hook through ${key}, which hooks off cannot stop.`
+        `${context} configures a hook through ${readableKey(key)}, which hooks off cannot stop.`
       );
     }
     if (key === "core.virtualfilesystem" && value !== "") {
@@ -928,31 +996,34 @@ const scanContext = (
     if (key === "extensions.partialclone" || promisor) {
       throw boundaryRefusal(
         source,
-        `${context} is a partial clone (${key}), where reading a missing object would start a fetch.`
+        `${context} is a partial clone (${readableKey(key)}), where reading a missing object would start a fetch.`
       );
     }
-    const driver = FILTER_KEY_PATTERN.exec(key)?.[1];
-    if (driver === undefined) {
+    const driver = filterDriverOf(key);
+    if (driver === null) {
       continue;
     }
-    if (driver.includes("=")) {
+    const reason = unoverridableDriver(driver);
+    if (reason !== null) {
       throw boundaryRefusal(
         source,
-        `filter configuration key ${JSON.stringify(key)} cannot be overridden on the command line.`
+        `filter configuration key "${readableKey(key)}" names a driver that ${reason}, so it cannot be overridden on the command line. Rename or remove that filter driver and run the command again.`
       );
     }
     drivers.add(driver);
   }
 };
 
-// What one checkout does not read back as overridden.
+// What one checkout does not read back as overridden. Keys are compared as
+// the bytes Git printed, so two driver names that decode alike never
+// confirm each other.
 const unconfirmedIn = (
   context: string,
   overrides: readonly string[],
   drivers: ReadonlySet<string>
 ): string[] => {
   const effective = new Map<string, string | null>();
-  for (const { key, value } of effectiveConfig(context, overrides)) {
+  for (const { key, value } of effectiveConfig(context, overrides) ?? []) {
     effective.set(key, value);
   }
   const wanted = new Map<string, string>([
@@ -967,11 +1038,11 @@ const unconfirmedIn = (
   }
   const missing = [...wanted]
     .filter(([key, value]) => effective.get(key) !== value)
-    .map(([key]) => `${key} in ${context}`);
+    .map(([key]) => `${readableKey(key)} in ${context}`);
   for (const key of effective.keys()) {
-    const driver = FILTER_KEY_PATTERN.exec(key)?.[1];
-    if (driver !== undefined && !drivers.has(driver)) {
-      missing.push(`${key} in ${context}`);
+    const driver = filterDriverOf(key);
+    if (driver !== null && !drivers.has(driver)) {
+      missing.push(`${readableKey(key)} in ${context}`);
     }
   }
   const hooks = runGit(
@@ -991,8 +1062,9 @@ const unconfirmedIn = (
  * configurations differ (worktree config, `includeIf`). Throws, before
  * anything is written, when either checkout configures a hook through
  * `hook.*`, is a partial clone (a missing object would start a fetch), names
- * a filter driver the command line cannot override, or does not read back
- * hooks at /dev/null, fsmonitor off, and every driver emptied.
+ * a filter driver the command line cannot override exactly (empty, not
+ * valid UTF-8, or with a line break or `=`), or does not read back hooks at
+ * /dev/null, fsmonitor off, and every driver emptied, byte for byte.
  */
 const callbackFreeOverrides = (primary: string, source: string): string[] => {
   const contexts = [primary, source];
@@ -1002,10 +1074,12 @@ const callbackFreeOverrides = (primary: string, source: string): string[] => {
   }
   const overrides: string[] = [...CALLBACK_FREE_BASE];
   for (const driver of [...drivers].sort()) {
+    // Every name was checked to be valid UTF-8, so its text is its bytes.
+    const name = Buffer.from(driver, "latin1").toString("utf8");
     for (const key of FILTER_COMMAND_KEYS) {
-      overrides.push("-c", `filter.${driver}.${key}=`);
+      overrides.push("-c", `filter.${name}.${key}=`);
     }
-    overrides.push("-c", `filter.${driver}.required=false`);
+    overrides.push("-c", `filter.${name}.required=false`);
   }
   const unconfirmed = contexts.flatMap((context) =>
     unconfirmedIn(context, overrides, drivers)
@@ -1188,12 +1262,72 @@ const PSEUDO_REFS = [
 const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const EXTENDED_REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/gu;
 
+// The names of everything under `relative` in `root` that is not a folder,
+// as paths from `root`, never following a link; none when it is absent.
+const filesUnder = (root: string, relative: string): string[] => {
+  const absolute = join(root, relative);
+  const stats = lstatSync(absolute, { throwIfNoEntry: false });
+  if (!stats) {
+    return [];
+  }
+  if (!stats.isDirectory()) {
+    return [relative];
+  }
+  return readdirSync(absolute).flatMap((name) =>
+    filesUnder(root, `${relative}/${name}`)
+  );
+};
+
+// Why Git's listing of the checkout's own refs is not confirmed, or null
+// when it is. Git gives no count for that listing, and a listing lost
+// entirely reads as "no refs", which would leave a ref's older commits,
+// kept only by its reflog, unpinned when the removal deletes that reflog.
+// Git keeps those refs, never packed, as files under `refs/` in the
+// private Git directory and their reflogs under `logs/refs/`, so the
+// listing must name exactly the ref files there and every reflog file. A
+// ref store that keeps no such files (reftable) cannot be confirmed.
+const unconfirmedOwnRefs = (
+  privateGitDirectory: string,
+  listed: ReadonlySet<string>
+): string | null => {
+  if (existsSync(join(privateGitDirectory, "reftable"))) {
+    return "its refs are kept in Git's reftable format, so they cannot be checked against files on disk";
+  }
+  let refFiles: string[];
+  let logFiles: string[];
+  try {
+    refFiles = filesUnder(privateGitDirectory, "refs");
+    logFiles = filesUnder(privateGitDirectory, "logs/refs").map((name) =>
+      name.slice("logs/".length)
+    );
+  } catch (error) {
+    return `its private Git directory could not be read (${error instanceof Error ? error.message : String(error)})`;
+  }
+  const onDisk = new Set(refFiles);
+  const byName = (left: string, right: string) => left.localeCompare(right);
+  const unlisted = [...new Set([...refFiles, ...logFiles])]
+    .filter((name) => !listed.has(name))
+    .sort(byName);
+  const missing = [...listed].filter((name) => !onDisk.has(name)).sort(byName);
+  const problems = [
+    unlisted.length > 0
+      ? `${unlisted.join(", ")} on disk but not in Git's listing`
+      : "",
+    missing.length > 0
+      ? `${missing.join(", ")} in Git's listing but not on disk`
+      : "",
+  ].filter(Boolean);
+  return problems.length > 0 ? problems.join("; ") : null;
+};
+
 // A read that Git could not complete refuses: an object these refs name
 // that went unpinned could be lost to a later gc. A listing or an ID cut
 // short, which would drop the object as unparsable, is asked once more and
-// then refused.
+// then refused, and so is a listing the private Git directory does not
+// confirm.
 const namedObjectsOf = (
   path: string,
+  privateGitDirectory: string,
   overrides: readonly string[]
 ): ReviewedSourceState["namedObjects"] => {
   const found: ReviewedSourceState["namedObjects"] = [];
@@ -1218,6 +1352,16 @@ const namedObjectsOf = (
     if (name && object && OBJECT_ID_PATTERN.test(object)) {
       found.push({ name, object });
     }
+  }
+  const unconfirmed = unconfirmedOwnRefs(
+    privateGitDirectory,
+    new Set(found.map((entry) => entry.name))
+  );
+  if (unconfirmed !== null) {
+    throw boundaryRefusal(
+      path,
+      `the checkout's own refs could not be confirmed: ${unconfirmed}. A ref Git did not list would lose the older commits only its reflog keeps, so the checkout was kept. Run the command again; if it refuses again, look at those refs before removing the checkout yourself.`
+    );
   }
   for (const name of PSEUDO_REFS) {
     const resolved = completeLine(
@@ -1393,7 +1537,11 @@ export const assertReviewedReplacementUnchanged = (
     );
   }
   const { branch, headSha, path } = verified.worktree;
-  const namedObjects = namedObjectsOf(path, overrides);
+  const namedObjects = namedObjectsOf(
+    path,
+    verified.archive.privateGitDirectory,
+    overrides
+  );
   const reflogCommits = reflogOnlyCommitsOf(
     path,
     branch,

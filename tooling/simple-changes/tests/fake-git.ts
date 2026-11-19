@@ -24,6 +24,8 @@ export interface FakeGitRun {
   body: string;
   /** Calls whose arguments fail with exit 3 when they contain this. */
   failFlag?: string;
+  /** How a `failFlag` call fails instead: its exit code and stderr line. */
+  failure?: { exitCode: number; stderr: string };
   /**
    * Calls whose arguments contain this (one argument, or several in a row)
    * lose their answer while lost answers remain.
@@ -48,7 +50,8 @@ export interface FakeGitRun {
 // a call whose arguments contain FAKE_GIT_EMPTY_FLAG first uses up a skip
 // token and answers truthfully, then, while loss tokens remain, claims one
 // and loses its answer (FAKE_GIT_EMPTY_MODE); a call whose arguments
-// contain FAKE_GIT_FAIL_FLAG fails with exit 3; and `git version` prints
+// contain FAKE_GIT_FAIL_FLAG fails with exit 3 (or FAKE_GIT_FAIL_EXIT,
+// printing FAKE_GIT_FAIL_STDERR); and `git version` prints
 // FAKE_GIT_VERSION when it is set. A claim moves the token into the
 // `-taken` folder beside its own: a rename succeeds for exactly one of
 // several Git processes racing for the same token, while macOS `rm` can
@@ -74,8 +77,8 @@ fi
 if [ -n "$FAKE_GIT_FAIL_FLAG" ]; then
   case " $* " in
     *" $FAKE_GIT_FAIL_FLAG "*)
-      echo "error: simulated failure" >&2
-      exit 3
+      printf '%s\\n' "\${FAKE_GIT_FAIL_STDERR:-error: simulated failure}" >&2
+      exit "\${FAKE_GIT_FAIL_EXIT:-3}"
       ;;
   esac
 fi
@@ -139,7 +142,9 @@ export const runWithFakeGit = (
       FAKE_GIT_EMPTY_FLAG: run.flag,
       FAKE_GIT_EMPTY_MODE: run.mode ?? "empty",
       FAKE_GIT_EMPTY_TOKENS: tokens,
+      FAKE_GIT_FAIL_EXIT: String(run.failure?.exitCode ?? 3),
       FAKE_GIT_FAIL_FLAG: run.failFlag ?? "",
+      FAKE_GIT_FAIL_STDERR: run.failure?.stderr ?? "error: simulated failure",
       FAKE_GIT_SKIP_TOKENS: skips,
       FAKE_GIT_VERSION: run.version ?? "",
       PATH: `${bin}:${process.env.PATH ?? ""}`,

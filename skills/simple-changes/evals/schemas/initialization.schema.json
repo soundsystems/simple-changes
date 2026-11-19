@@ -325,6 +325,22 @@
         }
       }
     },
+    "communication": {
+      "description": "How Simple Changes talks to this person: the effective style, the layer it came from, and the sidecar that set it. A display preference; it grants nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["errors", "path", "source", "style"],
+      "properties": {
+        "errors": { "type": "array", "items": { "type": "string" } },
+        "path": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+        },
+        "source": {
+          "enum": ["personal", "repository", "companion", "default"]
+        },
+        "style": { "enum": ["ultra-simple", "standard"] }
+      }
+    },
     "changelogInstall": {
       "anyOf": [
         { "type": "null" },

@@ -148,6 +148,10 @@ const MISSING_REASSIGN_PATTERN = /holds no reassign receipt/u;
 const REDIRECTED_GIT_PATTERN =
   /would make Git read or remove something other than the checkout itself/u;
 const DAYS_FALLBACK_PATTERN = /^archiveRetention\.days 0 /u;
+const OWN_REFS_ORPHAN_LOG_PATTERN =
+  /own refs could not be confirmed: refs\/worktree\/orphan on disk but not in Git's listing\. .*the checkout was kept/u;
+const REFTABLE_PATTERN =
+  /own refs could not be confirmed: its refs are kept in Git's reftable format/u;
 
 let repositories: TestRepository[] = [];
 
@@ -176,10 +180,13 @@ const commonDirectory = (root: string): string =>
  * replacement commits whose patch IDs differ. With `sameBytes`, one broader
  * replacement carries the source's exact bytes plus another file; otherwise
  * two replacements change the bytes the review refined. A merged side
- * checkout is the normal cleanup's control.
+ * checkout is the normal cleanup's control. `initArguments` go to `git init`.
  */
-const lineageFixture = (sameBytes: boolean): LineageFixture => {
-  const fixture = createTestRepository();
+const lineageFixture = (
+  sameBytes: boolean,
+  initArguments: readonly string[] = []
+): LineageFixture => {
+  const fixture = createTestRepository(initArguments);
   repositories.push(fixture);
   const mergedPath = join(fixture.base, "merged-unit");
   git(fixture.root, ["worktree", "add", "-b", "merged-unit", mergedPath]);
@@ -1208,6 +1215,82 @@ describe("reviewed replacement lineage cleanup", () => {
     expectNothingWritten(lineage);
   });
 
+  // Filter driver names the command line cannot override exactly, written
+  // into the shared configuration as raw bytes (issue #20).
+  const oddDriverNames: Array<{
+    driver: Buffer;
+    name: string;
+    reason: string;
+  }> = [
+    { driver: Buffer.alloc(0), name: "an empty name", reason: "is empty" },
+    {
+      driver: Buffer.from("watch\u2028name"),
+      name: "a name with U+2028",
+      reason: "contains a line break",
+    },
+    {
+      driver: Buffer.from("watch\u2029name"),
+      name: "a name with U+2029",
+      reason: "contains a line break",
+    },
+    {
+      driver: Buffer.concat([Buffer.from("watch"), Buffer.from([0xff])]),
+      name: "a name with the raw byte 0xFF",
+      reason: "is not valid UTF-8",
+    },
+  ];
+
+  // An acting clean filter under `driver`, which the attributes select for
+  // a stat-dirty file, so any status in the source would run it.
+  const configureDriver = (lineage: LineageFixture, driver: Buffer): string => {
+    const { marker, script } = actingScript(
+      lineage,
+      "clean-filter",
+      "exec cat"
+    );
+    const common = commonDirectory(lineage.fixture.root);
+    appendFileSync(
+      join(common, "config"),
+      Buffer.concat([
+        Buffer.from('[filter "'),
+        driver,
+        Buffer.from(`"]\n\tclean = ${script}\n`),
+      ])
+    );
+    mkdirSync(join(common, "info"), { recursive: true });
+    writeFileSync(
+      join(common, "info", "attributes"),
+      Buffer.concat([Buffer.from("a.ts filter="), driver, Buffer.from("\n")])
+    );
+    keepRehashing(lineage);
+    return marker;
+  };
+
+  for (const odd of oddDriverNames) {
+    test(`a filter driver with ${odd.name} is refused before anything is written`, () => {
+      const lineage = lineageFixture(false);
+      const marker = configureDriver(lineage, odd.driver);
+      expectRefusal(
+        () => prune(lineage, receiptFor(lineage)),
+        new RegExp(
+          `names a driver that ${odd.reason}, so it cannot be overridden on the command line`,
+          "u"
+        )
+      );
+      expect(existsSync(marker)).toBe(false);
+      expectNothingWritten(lineage);
+    });
+  }
+
+  test("a filter driver whose name is other UTF-8 is emptied, confirmed and kept from running (control)", () => {
+    const lineage = lineageFixture(false);
+    const marker = configureDriver(lineage, Buffer.from("wätch näme"));
+    const report = prune(lineage, receiptFor(lineage));
+    expect(report.errors).toEqual([]);
+    expect(report.reviewedReplacement?.worktreeRemoved).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test("no hook of any name runs from the pin through branch deletion", () => {
     const lineage = lineageFixture(false);
     const hooks = join(lineage.fixture.base, "all-hooks");
@@ -2021,6 +2104,76 @@ describe("reviewed replacement lineage cleanup", () => {
     );
   });
 
+  test("an older commit only a per-worktree ref's reflog keeps is pinned (issue #26)", () => {
+    const lineage = lineageFixture(false);
+    const { root } = lineage.fixture;
+    const work = (message: string) =>
+      git(lineage.path, [
+        "commit-tree",
+        "HEAD^{tree}",
+        "-p",
+        "HEAD",
+        "-m",
+        message,
+      ]);
+    const older = work("Older rescue work");
+    const newer = work("Newer rescue work");
+    git(lineage.path, [
+      "update-ref",
+      "--create-reflog",
+      "refs/worktree/rescue",
+      older,
+    ]);
+    git(lineage.path, ["update-ref", "refs/worktree/rescue", newer]);
+
+    const report = prune(lineage, receiptFor(lineage));
+
+    expect(report.errors).toEqual([]);
+    const archive = reportedArchive(report);
+    for (const commit of [older, newer]) {
+      const pin = `refs/simple-changes/archives/${archive.archiveId}/objects/${commit}`;
+      expect(git(root, ["rev-parse", pin])).toBe(commit);
+    }
+  });
+
+  test("a per-worktree reflog whose ref Git does not list refuses and keeps the checkout", () => {
+    const lineage = lineageFixture(false);
+    const orphan = git(lineage.path, [
+      "commit-tree",
+      "HEAD^{tree}",
+      "-p",
+      "HEAD",
+      "-m",
+      "Work only a leftover reflog names",
+    ]);
+    const log = join(
+      privateGitDirectoryOf(lineage.path),
+      "logs",
+      "refs",
+      "worktree",
+      "orphan"
+    );
+    mkdirSync(dirname(log), { recursive: true });
+    writeFileSync(
+      log,
+      `${"0".repeat(40)} ${orphan} Draft <draft@example.com> 1700000000 +0000\tleft behind\n`
+    );
+    expectRefusal(
+      () => prune(lineage, receiptFor(lineage)),
+      OWN_REFS_ORPHAN_LOG_PATTERN
+    );
+    expectNothingWritten(lineage);
+  });
+
+  test("a checkout whose refs are kept in reftable refuses and is kept", () => {
+    const lineage = lineageFixture(false, ["--ref-format=reftable"]);
+    expect(git(lineage.path, ["rev-parse", "--show-ref-format"])).toBe(
+      "reftable"
+    );
+    expectRefusal(() => prune(lineage, receiptFor(lineage)), REFTABLE_PATTERN);
+    expectNothingWritten(lineage);
+  });
+
   test("a branch description goes with the removed branch and comes back with it", () => {
     const lineage = lineageFixture(false);
     const { root } = lineage.fixture;
@@ -2766,5 +2919,112 @@ try {
       REACH,
       "Git could not tell which commits in the checkout's reflogs other refs keep"
     );
+  });
+});
+
+describe("the checkout's own refs, with Git's listing lost or cut short", () => {
+  const cleanups: (() => void)[] = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      cleanup();
+    }
+  });
+  const worktreeMaintenancePath = fileURLToPath(
+    new URL(
+      "../../../skills/simple-changes/scripts/lib/worktree-maintenance.ts",
+      import.meta.url
+    )
+  );
+  const LISTING = "refs/bisect refs/worktree refs/rewritten";
+
+  // Two per-worktree refs, `refs/worktree/rescue` with an older commit
+  // only its reflog keeps, then the reviewed removal in a child whose Git
+  // loses the per-worktree ref listing the first `lost` times, as `mode`.
+  const removeWithLostListing = (lost: number, mode: "empty" | "lines:1") => {
+    const lineage = lineageFixture(false);
+    const work = (message: string) =>
+      git(lineage.path, [
+        "commit-tree",
+        "HEAD^{tree}",
+        "-p",
+        "HEAD",
+        "-m",
+        message,
+      ]);
+    const older = work("Older rescue work");
+    git(lineage.path, [
+      "update-ref",
+      "--create-reflog",
+      "refs/worktree/rescue",
+      older,
+    ]);
+    git(lineage.path, [
+      "update-ref",
+      "refs/worktree/rescue",
+      work("Newer rescue work"),
+    ]);
+    git(lineage.path, [
+      "update-ref",
+      "refs/worktree/second",
+      work("Second rescue work"),
+    ]);
+    const result = runWithFakeGit(
+      {
+        body: `import { pruneRepository } from ${JSON.stringify(worktreeMaintenancePath)};
+try {
+  const report = pruneRepository({
+    agentId: ${JSON.stringify(CONTROLLER)},
+    approvedBy: ${JSON.stringify(APPROVER)},
+    dryRun: false,
+    lineageReceipt: ${JSON.stringify(receiptFor(lineage))},
+    reason: "Remove the reviewed obsolete source.",
+    repositoryPath: ${JSON.stringify(lineage.fixture.root)},
+  });
+  console.log(JSON.stringify({
+    pinRefs: report.reviewedReplacement?.pinRefs ?? [],
+    removed: report.reviewedReplacement?.worktreeRemoved ?? false,
+  }));
+} catch (error) {
+  console.log(JSON.stringify({ error: error.message }));
+}
+`,
+        flag: LISTING,
+        lost,
+        mode,
+      },
+      (cleanup) => cleanups.push(cleanup)
+    );
+    return { lineage, older, ...result };
+  };
+
+  test("with the listing whole, the older commit is pinned (control)", () => {
+    const { older, remaining, reply } = removeWithLostListing(0, "empty");
+    expect(remaining).toBe(0);
+    const { pinRefs: pinned, removed } = reply as {
+      pinRefs: string[];
+      removed: boolean;
+    };
+    expect(removed).toBe(true);
+    expect(pinned.some((ref) => ref.endsWith(`/objects/${older}`))).toBe(true);
+  });
+
+  test("a listing lost entirely refuses and keeps the checkout", () => {
+    const { lineage, remaining, reply } = removeWithLostListing(1, "empty");
+    expect(remaining).toBe(0);
+    const { error } = reply as { error: string };
+    expect(error).toContain(
+      "the checkout's own refs could not be confirmed: refs/worktree/rescue, refs/worktree/second on disk but not in Git's listing"
+    );
+    expectNothingWritten(lineage);
+  });
+
+  test("a listing cut at an entry's end refuses and keeps the checkout", () => {
+    const { lineage, remaining, reply } = removeWithLostListing(1, "lines:1");
+    expect(remaining).toBe(0);
+    const { error } = reply as { error: string };
+    expect(error).toContain(
+      "the checkout's own refs could not be confirmed: refs/worktree/second on disk but not in Git's listing"
+    );
+    expectNothingWritten(lineage);
   });
 });

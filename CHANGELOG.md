@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.33.2 - 2026-11-19
+
+- **Bug Fixes & Improvements**:
+  - In Ultra-Simple Mode, agents no longer treat "ask before uploads" as a
+    prompt your computer will show. The person answers, in the
+    conversation. A request such as "put this up" counts as the answer for
+    one upload, your change's own copy sent for review. Any other upload
+    gets one plain question first, and nothing is uploaded straight onto
+    the main version without a yes that names it.
+  - When a project has nowhere to open a review link, an agent in the mode
+    now stops after saving and sending your change as its own copy. It does
+    not add the change to the project, with or without Autopilot, until a
+    review link exists or the owner says to add it without one.
+  - Guidance stays 33, so no repository is asked anything by this update.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-19T10:32:00-06:00" -->
+
 ## 0.33.1 - 2026-11-18
 
 - **Bug Fixes & Improvements**:

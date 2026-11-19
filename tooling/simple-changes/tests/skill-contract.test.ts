@@ -1699,6 +1699,13 @@ describe("Simple Changes skill contract", () => {
       "**Carry on**, **Quick tour**, **Full tour**, **Release notes**, or **Decide later**?",
       "a one-time offer, such as the turn-end guard or a refreshed instruction rule, in one line the person can decline",
       "Never ask twice for the same thing while nothing has changed",
+      // Upload permission comes from the person, never from a harness prompt.
+      "When the saved setting is to ask before uploads, the person is the one who answers, in this conversation.",
+      'A request to send a change for review, such as "put this up", is that answer for one upload: the change\'s own separate copy, sent for review.',
+      "no upload ever goes straight onto the main version without a yes that names it",
+      "A prompt from the computer is extra, never a substitute",
+      // Without a review link nothing is added to the project.
+      "do not add it to the project, with or without [Autopilot](#autopilot), until a review link exists or the owner says to add it without one",
       // The brief keeps its timing, its scope, and the reviewer.
       "it is sent before the first step that changes anything shared, it presents the recorded scope, and it names the reviewer as the standard brief does: the agent, its model and effort, whether it must differ from the author, and the setting that chose it with the file it is saved in",
       "This project's review setting asks > for that (`<path>/.simple-changes-authoring.json`).",

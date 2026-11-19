@@ -764,6 +764,7 @@
       "expectedBehaviors": [
         "Apply Ultra-Simple Mode because initialize reports communication.style ultra-simple",
         "Ask no setup or preference question",
+        "Treat the request as the answer for one upload, the change's own copy sent for review, and never upload onto the main version without a yes that names it",
         "End with the delivery line: ready for review, the link, checks passed, nothing is live",
         "Use no Git, forge, or internal term the user did not use first",
         "Keep exact revisions, commands, and receipts available under Details"

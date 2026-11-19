@@ -1,5 +1,28 @@
 # Developer changelog
 
+## 0.33.2 - 2026-11-19
+
+- Found by a live smoke of 0.33.1: six agents (Opus 5.5 at high, Sonnet 5.5
+  at high, Fable 5.2 at medium, each with the safe defaults and with
+  Autopilot) ran "put my change up" or "ship it" in a throwaway site with
+  `gitPushAuthorization: "ask"` and a bare local remote. All six pushed
+  without a question in chat, and two logged why: `ultra-simple-mode.md`
+  told them to describe the upload "when the computer itself asks", which
+  read as "the harness asks, so the agent need not". No prompt appeared.
+  Under Autopilot, Fable recorded a real review and fast-forwarded `main`
+  with no proposal, while Opus and Sonnet stopped.
+- `references/ultra-simple-mode.md` Questions gains two paragraphs.
+  **Uploads**: under `ask` the person answers in the conversation; a
+  request to send a change for review is that answer for the one push of
+  the change's own branch; any other push asks first; a harness prompt is
+  never a substitute. **No review link**: with no proposal capability the
+  run stops at the pushed branch and never integrates, Autopilot or not,
+  unless the owner says to. Text only; `skill-contract.test.ts` pins both
+  and one eval journey gains a behavior.
+- Not independently reviewed: the owner ended review rounds for this line
+  on 2026-11-18. Guidance stays 33.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 xhigh" at="2026-11-19T10:32:00-06:00" -->
+
 ## 0.33.1 - 2026-11-18
 
 - Scope and numbering (issue soundsystems/simple-changes#35): this release

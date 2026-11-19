@@ -152,10 +152,23 @@ Asked whenever saved setup and the request do not already cover it:
 - overriding a stop another person or agent put in place;
 - a choice between two real outcomes, such as two versions of the same text.
 
-Never ask twice for the same thing while nothing has changed. When the
-computer itself asks to allow an upload, say what it is in one line: "Your
-computer will ask to allow an upload. That's me sending your change for
-review."
+Never ask twice for the same thing while nothing has changed.
+
+**Uploads.** When the saved setting is to ask before uploads, the person is
+the one who answers, in this conversation. A request to send a change for
+review, such as "put this up", is that answer for one upload: the change's
+own separate copy, sent for review. Any other upload gets one plain question
+first, such as "Should I send your change to the shared project? Nothing
+goes live.", and no upload ever goes straight onto the main version without
+a yes that names it. A prompt from the computer is extra, never a
+substitute: when one may appear, say what it is in one line ("Your computer
+may ask to allow an upload. That's me sending your change for review.").
+
+**No review link.** When the project has nowhere to open a review link, a
+change can be saved and sent as its own copy, and no further: do not add it
+to the project, with or without [Autopilot](#autopilot), until a review
+link exists or the owner says to add it without one. Say what is missing
+and stop there.
 
 ## Messages
 

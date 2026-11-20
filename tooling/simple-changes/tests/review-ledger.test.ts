@@ -3174,8 +3174,10 @@ describe("ledger state, locking, resume and finalization", () => {
     expect(readFileSync(worktreeCoordinationPath(common), "utf8")).toBe(
       coordinationBytes
     );
+    // The ledger and, since record-authors also records the proposal's
+    // source branch, its own new file; nothing an older copy reads.
     expect(readdirSync(join(common, "simple-changes")).sort()).toEqual(
-      [...stateEntries, "review-ledger.json"].sort()
+      [...stateEntries, "proposal-sources.json", "review-ledger.json"].sort()
     );
     expect(() =>
       validateSchema("loop-lease", JSON.parse(leaseBytes))

@@ -57,6 +57,16 @@ that has ended, needs the owner's exact `proposal waive-coverage` on that
 draft head. Mark it ready for review only after that, and never attest
 another agent's commits to fill a gap.
 
+In Queue and Sweep, that record is also what `loop finalize` reads to close
+the run as
+[queued for review](cleanup-and-completion.md#queue-and-sweep-end-queued-not-merged):
+the command also records which local branch the proposal came from, in
+`proposal-sources.json` beside the ledger, and finalization accepts the one
+proposal recorded from a pushed branch at its exact head. The branch is
+taken from `--head` when exactly one local branch points there; otherwise
+pass `--source-branch <branch>`. Record the authors again whenever the
+pushed head moves.
+
 Save the fetched source body to a file in the agent's
 [work directory](inventory-and-concurrency.md#agent-work-directories) and audit
 it before re-reading the rendered body:
@@ -251,7 +261,8 @@ nothing is reconstructed later. Record it whatever `proposalSignatures` says:
    keeps its mapping, and the owner waives any remaining gap.
 3. **Right after creating the proposal, and after every head update**, run
    `simple-changes proposal record-authors --proposal <provider id> --base
-   <sha> --head <sha> [--receipt <copy-authors.json>]`. A head without it is
+   <sha> --head <sha> [--source-branch <branch>] [--receipt
+   <copy-authors.json>]`. A head without it is
    `authors-not-recorded` and not ready for review.
 
 The receipt adds description authors only: `{"copyAuthors": [{"source":

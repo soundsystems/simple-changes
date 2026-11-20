@@ -55,6 +55,7 @@ import {
   withLoopStateLockBounded,
 } from "./loop-lease-core.ts";
 import { gitExecutable, runGit, runGitWithInput } from "./process.ts";
+import { proposalSourceAt, recordProposalSource } from "./proposal-sources.ts";
 import type {
   LoopControllerSession,
   LoopLease,
@@ -3818,6 +3819,12 @@ export interface RecordAuthorsInput extends ExecutingIdentityInput {
   lockWait?: LoopLockWait;
   proposalId: string;
   repositoryPath: string;
+  /**
+   * `--source-branch`: the local branch the proposal was opened from. It
+   * must point at exactly `head`. Without it the branch is taken from the
+   * head only when exactly one local branch points there.
+   */
+  sourceBranch?: string;
 }
 
 export interface RecordAuthorsResult {
@@ -3830,6 +3837,12 @@ export interface RecordAuthorsResult {
   head: string;
   ledgerPath: string;
   proposalId: string;
+  /**
+   * The branch recorded as this proposal's source at this head, in the
+   * proposal-sources file beside the ledger; null when none was named and
+   * the head did not identify exactly one.
+   */
+  sourceBranch: string | null;
   status: "recorded" | "updated" | "unchanged";
   unattributed: string[];
 }
@@ -3999,6 +4012,17 @@ export const recordProposalAuthors = (
       const base = resolveCommit(cwd, input.base, "--base");
       const head = resolveCommit(cwd, input.head, "--head");
       const commits = rangeCommits(cwd, base, head);
+      // Read before anything is recorded, so a branch that is not at this
+      // head refuses the whole command.
+      const source = proposalSourceAt(cwd, head, input.sourceBranch);
+      if (source) {
+        recordProposalSource(commonGitDirectory, {
+          ...source,
+          headSha: head,
+          proposalId,
+          recordedAt,
+        });
+      }
       const proposal = ownValue(ledger.proposals, proposalId) ?? {
         attempts: [],
         heads: {},
@@ -4037,6 +4061,7 @@ export const recordProposalAuthors = (
         head,
         ledgerPath: reviewLedgerPath(commonGitDirectory),
         proposalId,
+        sourceBranch: source?.sourceBranch ?? null,
         status,
         unattributed: coverage.unattributed,
       };

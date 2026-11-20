@@ -418,6 +418,86 @@ obsolete or generated entries. Report pending cleanup separately and use
 guarded `prune` when safe; do not keep a delivered shipment open solely for
 that housekeeping.
 
+### Queue and Sweep end queued, not merged
+
+A Queue or Sweep run never merges, so `loop finalize` does not hold it to a
+merged target or a clean primary checkout, and it deletes nothing: no
+checkout, branch, or file. A run that recorded no shipment scope closes when
+every worktree it created with `prepare-agent` is in one of two states,
+whether or not its checkout still exists:
+
+- **Queued.** The worktree is clean, and the remote itself confirms that its
+  branch holds exactly the worktree's head: finalization asks the remote's
+  one push destination for that one `refs/heads/<branch>` (the branch's
+  upstream, or its namesake on the target remote). A remote-tracking ref
+  alone is not proof, and a remote that gives no answer, or has more than
+  one push URL, keeps the run open. Its proposal is found without a flag
+  from what `proposal record-authors` recorded for the pushed head, the step
+  [change proposals](change-requests.md#create-and-audit-proposals) already
+  requires: the source branch it wrote beside the ledger must be this
+  branch at this exact head, and the ledger must record the proposal's
+  latest head as exactly that head, on a base the target contains. Exactly
+  one such proposal is accepted. None, or several, keeps the run open with
+  the command that settles it; `--queued-proposal <branch>=<id>` names one,
+  and a named proposal must pass the same checks.
+- **Nothing to queue.** The worktree is clean and the target already contains
+  its head.
+
+Clean means more than status: every file is compared with the head itself,
+so an edit under an assume-unchanged or skip-worktree entry keeps the run
+open, and so does a comparison that cannot be read.
+
+Where the remote has nowhere to open a proposal, finalize with `--no-proposal
+"<why>"` instead; the receipt then reports each such branch as pushed without
+a proposal. The flag is ignored when the target remote or the remote the
+branch was pushed to is GitHub, GitLab, or Codeberg: a missing proposal there
+is unfinished work.
+
+Everything else still relinquishes the run with its blockers and exits
+nonzero:
+
+- uncommitted changes in a run-created worktree;
+- commits that are not pushed, including commits on the branch of a
+  run-created worktree that is already gone;
+- a pushed branch the remote no longer holds at that head, or cannot confirm;
+- a pushed branch with no recorded proposal, with several, or with one
+  recorded from another branch, at another head, or against another base;
+- a target that cannot be resolved, or that moved since `loop start` so that
+  the branch no longer merges into it, checked with `git merge-tree`, which
+  changes no checkout;
+- a manifest violation;
+- an `--awaiting-user` pause.
+
+Resume such a run with `loop start --mode resume`, fix what the blocker names,
+and finalize again. That also closes a Queue run an older runtime left
+relinquished, with no replan. A Queue or Sweep run that did record a shipment
+scope, the only kind that can hold a unit, keeps the scoped rules below.
+`loop end` keeps its stricter rule in every mode.
+
+The closed run's receipt has `shipmentStatus: closed`, `blocksNextShipment:
+false`, `deliveryStatus: unverified`, a null `targetRevision`, and `queued`:
+`status: queued-for-review-not-merged`, a plain `summary`, `keptWorktrees`,
+and one entry per unit with its `branch`, `headSha`, `remote`,
+`remoteBranch`, `proposalId` or `withoutProposal`, and `worktree`. Report it
+as queued for review, never as merged, delivered, or shipped.
+
+Everything stays where it is:
+
+- **The primary checkout stays exactly as it is**, on its branch, with its
+  uncommitted and untracked work: never stashed, reset, normalized, switched,
+  or fast-forwarded, and never a blocker.
+- **The run's own worktrees are kept**, with their branches, ignored files,
+  and anything else in them, and each path is listed in `keptWorktrees`.
+  They stay until the owner asks to clean the repository: Reconcile or
+  `prune`, which ask first. Nothing in a Queue or Sweep start or finalize
+  removes one.
+- **Earlier branches and worktrees stay.** A clean worktree or local branch
+  the target already contains is not removed and does not block. Each is
+  named in the cleanup `notes`, and `cleanupStatus` is `pending` until one of
+  those runs, or `prune`, cleans it. Only those modes run automatic cleanup,
+  which is why earlier runtimes reported such a branch as a Queue blocker
+  instead of deleting it.
+
 Before reporting completion:
 
 1. Refresh local worktree, branch, stash, and status inventory.

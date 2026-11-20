@@ -1437,6 +1437,62 @@ describe("Simple Changes skill contract", () => {
     );
   });
 
+  test("Queue and Sweep close queued for review, never merged, and delete nothing", async () => {
+    const [cleanup, recovery, changeRequests] = await Promise.all([
+      readFile(cleanupCompletionPath, "utf8"),
+      readFile(recoveryPath, "utf8"),
+      readFile(
+        new URL(
+          "../../../skills/simple-changes/references/change-requests.md",
+          import.meta.url
+        ),
+        "utf8"
+      ),
+    ]);
+    const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+    const normalizedRecovery = recovery.replace(/\s+/g, " ");
+
+    expect(cleanup).toContain("### Queue and Sweep end queued, not merged");
+    for (const sentence of [
+      "A Queue or Sweep run never merges, so `loop finalize` does not hold it to a merged target or a clean primary checkout, and it deletes nothing: no checkout, branch, or file.",
+      // Pushed means the remote says so, and the proposal is bound to the branch.
+      "the remote itself confirms that its branch holds exactly the worktree's head",
+      "A remote-tracking ref alone is not proof, and a remote that gives no answer, or has more than one push URL, keeps the run open.",
+      "Its proposal is found without a flag from what `proposal record-authors` recorded for the pushed head",
+      "the source branch it wrote beside the ledger must be this branch at this exact head, and the ledger must record the proposal's latest head as exactly that head, on a base the target contains. Exactly one such proposal is accepted.",
+      "None, or several, keeps the run open with the command that settles it; `--queued-proposal <branch>=<id>` names one, and a named proposal must pass the same checks.",
+      "Clean means more than status: every file is compared with the head itself, so an edit under an assume-unchanged or skip-worktree entry keeps the run open, and so does a comparison that cannot be read.",
+      'Where the remote has nowhere to open a proposal, finalize with `--no-proposal "<why>"` instead; the receipt then reports each such branch as pushed without a proposal.',
+      "a missing proposal there is unfinished work.",
+      // What still keeps the run open.
+      "Everything else still relinquishes the run with its blockers and exits nonzero:",
+      "- uncommitted changes in a run-created worktree;",
+      "- commits that are not pushed, including commits on the branch of a run-created worktree that is already gone;",
+      "- a pushed branch the remote no longer holds at that head, or cannot confirm;",
+      "- a pushed branch with no recorded proposal, with several, or with one recorded from another branch, at another head, or against another base;",
+      "- a target that cannot be resolved, or that moved since `loop start` so that the branch no longer merges into it",
+      "- an `--awaiting-user` pause.",
+      "A Queue or Sweep run that did record a shipment scope, the only kind that can hold a unit, keeps the scoped rules below.",
+      // Honest reporting.
+      "`status: queued-for-review-not-merged`",
+      "Report it as queued for review, never as merged, delivered, or shipped.",
+      // Nothing is deleted.
+      "**The primary checkout stays exactly as it is**, on its branch, with its uncommitted and untracked work: never stashed, reset, normalized, switched, or fast-forwarded, and never a blocker.",
+      "**The run's own worktrees are kept**, with their branches, ignored files, and anything else in them, and each path is listed in `keptWorktrees`.",
+      "They stay until the owner asks to clean the repository: Reconcile or `prune`, which ask first. Nothing in a Queue or Sweep start or finalize removes one.",
+      "A clean worktree or local branch the target already contains is not removed and does not block.",
+    ]) {
+      expect(normalizedCleanup).toContain(sentence);
+    }
+    expect(normalizedCleanup).not.toContain("alreadyQueued");
+    expect(normalizedRecovery).toContain(
+      "A relinquished Queue or Sweep run does not need a replan before the next request can start, including one an older runtime left behind."
+    );
+    expect(changeRequests.replace(/\s+/g, " ")).toContain(
+      "the command also records which local branch the proposal came from, in `proposal-sources.json` beside the ledger, and finalization accepts the one proposal recorded from a pushed branch at its exact head. The branch is taken from `--head` when exactly one local branch points there; otherwise pass `--source-branch <branch>`. Record the authors again whenever the pushed head moves."
+    );
+  });
+
   test("Controllers finalize before replying, and a turn-end guard backs the rule", async () => {
     const [skill, cleanup, spec] = await Promise.all([
       readFile(skillPath, "utf8"),
@@ -1697,8 +1753,17 @@ describe("Simple Changes skill contract", () => {
       "Everything `initialize` requires is still presented, in plain words and before the run changes anything",
       "its required answers first, then any recommended change with the current and the proposed setting, then what matters in a line and every choice the standard notice offers, each under a short label of its own",
       "**Carry on**, **Quick tour**, **Full tour**, **Release notes**, or **Decide later**?",
-      "a one-time offer, such as the turn-end guard or a refreshed instruction rule, in one line the person can decline",
+      "the one-time turn-end guard offer, in one line the person can decline",
+      "An offer to refresh a note in the person's own agent instruction files is not made in this mode: mention it only under Details.",
       "Never ask twice for the same thing while nothing has changed",
+      // Upload permission comes from the person, never from a harness prompt.
+      "When the saved setting is to ask before uploads, the person is the one who answers, in this conversation.",
+      'A request to send a change for review, such as "put this up", is that answer for one upload: the change\'s own separate copy, sent for review.',
+      "no upload ever goes straight onto the main version without a yes that names it",
+      "A prompt from the computer is extra, never a substitute",
+      // Without a review link nothing is added to the project.
+      "do not add it to the project, with or without [Autopilot](#autopilot), until a review link exists or the owner says to add it without one",
+      'End that run with `loop finalize --no-proposal "<what is missing>"`, which closes it as sent without a review link. Where the host can open review links, a change sent without one keeps the run open instead.',
       // The brief keeps its timing, its scope, and the reviewer.
       "it is sent before the first step that changes anything shared, it presents the recorded scope, and it names the reviewer as the standard brief does: the agent, its model and effort, whether it must differ from the author, and the setting that chose it with the file it is saved in",
       "This project's review setting asks > for that (`<path>/.simple-changes-authoring.json`).",

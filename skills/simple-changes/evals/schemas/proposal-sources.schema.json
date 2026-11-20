@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://simple-changes.dev/schemas/proposal-sources.schema.json",
+  "title": "Simple Changes proposal sources",
+  "description": "File beside the review ledger at `proposal-sources.json`: for each proposal, the local branch `proposal record-authors` found at its exact recorded head, and the remote branch that branch tracked. The review ledger binds a proposal to commits only and older runtimes read its closed shape strictly, so this binding is kept in its own file, which they never open. `loop finalize` reads it to name the proposal that carries a Queue or Sweep run's pushed branch; a missing or unreadable file holds no binding.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sources"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "proposalId",
+          "headSha",
+          "sourceBranch",
+          "remote",
+          "remoteBranch",
+          "recordedAt"
+        ],
+        "properties": {
+          "proposalId": { "type": "string", "minLength": 1 },
+          "headSha": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+          "sourceBranch": { "type": "string", "minLength": 1 },
+          "remote": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "remoteBranch": {
+            "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+          },
+          "recordedAt": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

@@ -80,6 +80,16 @@ import {
 import { primaryDeliveryProof } from "./primary-delivery-proof.ts";
 import { runGit } from "./process.ts";
 import {
+  assessQueuedWork,
+  closesAsQueued,
+  QUEUED_FOR_REVIEW,
+  type QueuedAssessment,
+  type QueuedDeclarations,
+  type QueuedUnit,
+  queuedDeclarations,
+  queuedSummary,
+} from "./queued-completion.ts";
+import {
   type RemoteBranchCleanupReport,
   remoteBranchCleanupReport,
 } from "./remote-branch-prune.ts";
@@ -2082,7 +2092,8 @@ const shipmentOutcomeCompletionBlockers = (
   return [...targetBlockers, ...unitBlockers, ...sourceBlockers];
 };
 
-const repositoryCleanupBlockers = (
+// What a merging run owes its primary checkout and local target branch.
+const primaryAndTargetBlockers = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   targetBranch: string | null,
@@ -2118,6 +2129,17 @@ const repositoryCleanupBlockers = (
       `Clean primary checkout ${lease.primaryCheckout} before ending the loop; preserve uncertain changes instead of discarding them.`
     );
   }
+  return blockers;
+};
+
+// Clean worktrees and local branches the target already contains.
+const containedCleanupBlockers = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetBranch: string | null,
+  targetRevision: string | null
+): string[] => {
+  const blockers: string[] = [];
   const registeredByPath = new Map(
     lease.worktrees.map((worktree) => [worktree.path, worktree])
   );
@@ -2175,12 +2197,57 @@ const repositoryCleanupBlockers = (
   return blockers;
 };
 
+const repositoryCleanupBlockers = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  targetBranch: string | null,
+  targetRevision: string | null
+): string[] => [
+  ...primaryAndTargetBlockers(lease, inventory, targetBranch, targetRevision),
+  ...containedCleanupBlockers(lease, inventory, targetBranch, targetRevision),
+];
+
+/**
+ * How a run may close apart from the default bar of merged work and a clean
+ * primary at the target: `scoped` for an exact verified shipment or a run
+ * that held every unit, `queued` for a Queue or Sweep run, whose finish line
+ * is its own pushed branches and never the target.
+ */
+interface CompletionBasis {
+  queued?: QueuedAssessment | null;
+  scoped?: boolean;
+}
+
+// A Queue or Sweep run answers for its own checkouts through their queued
+// state; every other run must have removed the ones it created.
+const runWorktreeBlockers = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  { queued, scoped }: CompletionBasis
+): string[] => {
+  if (queued) {
+    return queued.blockers;
+  }
+  const liveRunWorktrees = lease.worktrees.filter(
+    (worktree) =>
+      worktree.createdByRun &&
+      inventory.worktrees.some((current) => current.path === worktree.path)
+  );
+  return !scoped && liveRunWorktrees.length > 0
+    ? [
+        `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
+          .map((worktree) => worktree.path)
+          .join(", ")}`,
+      ]
+    : [];
+};
+
 const loopCompletionBlockers = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   verification: LoopVerification,
   cleanupErrors: string[] = [],
-  scopedCompletion = false
+  basis: CompletionBasis = {}
 ): string[] => {
   const blockers: string[] = [...cleanupErrors];
   blockers.push(...missingShipmentScopeBlockers(lease));
@@ -2191,18 +2258,7 @@ const loopCompletionBlockers = (
         .join(", ")}`
     );
   }
-  const liveRunWorktrees = lease.worktrees.filter(
-    (worktree) =>
-      worktree.createdByRun &&
-      inventory.worktrees.some((current) => current.path === worktree.path)
-  );
-  if (!scopedCompletion && liveRunWorktrees.length > 0) {
-    blockers.push(
-      `Remove run-created worktrees before ending the loop: ${liveRunWorktrees
-        .map((worktree) => worktree.path)
-        .join(", ")}`
-    );
-  }
+  blockers.push(...runWorktreeBlockers(lease, inventory, basis));
   let targetBranch: string | null = null;
   let targetRevision: string | null = null;
   try {
@@ -2219,7 +2275,7 @@ const loopCompletionBlockers = (
   blockers.push(
     ...shipmentOutcomeCompletionBlockers(lease, inventory, targetRevision)
   );
-  if (!scopedCompletion) {
+  if (!(basis.scoped || basis.queued)) {
     blockers.push(
       ...repositoryCleanupBlockers(
         lease,
@@ -2274,6 +2330,21 @@ export interface LoopFinalizationResult {
 }
 
 /**
+ * How a Queue or Sweep run closed: its branches are pushed and waiting for
+ * review. Nothing was merged or delivered, and the target did not change.
+ */
+export interface LoopFinalizationQueued {
+  /**
+   * Every checkout the run created that still exists. Finalization keeps
+   * them all: it deletes no checkout, branch, or file in these modes.
+   */
+  keptWorktrees: string[];
+  status: typeof QUEUED_FOR_REVIEW;
+  summary: string;
+  units: QueuedUnit[];
+}
+
+/**
  * A unit `loop hold-unit` held, reported apart from delivered work. Its
  * source checkout, branch, claim, and bytes were left untouched.
  */
@@ -2307,6 +2378,11 @@ export interface LoopFinalizationReceipt {
   kind: "loop-finalization";
   leaseDigest: string;
   preservedWorktrees: string[];
+  /**
+   * Present only when a Queue or Sweep run closed at its own finish line:
+   * queued for review, not merged. `deliveryStatus` stays `unverified`.
+   */
+  queued?: LoopFinalizationQueued;
   reason: string;
   /**
    * Preserved provider branches the evidence says are finished, when a
@@ -2647,12 +2723,73 @@ const shipmentFinalizationVerification = (
   return { ...verification, ok: violations.length === 0, violations };
 };
 
+// Cleanup a Queue or Sweep run saw and left alone, since it never cleans
+// up: clean worktrees and local branches the target already contains.
+const queuedLeftovers = (
+  lease: LoopLease,
+  inventory: RepositoryInventory
+): string[] => {
+  try {
+    return containedCleanupBlockers(
+      lease,
+      inventory,
+      targetBranchForRef(inventory.repository.primaryCheckout, lease.targetRef),
+      currentTargetRevision(lease)
+    );
+  } catch {
+    // Completion reports the unresolved target itself.
+    return [];
+  }
+};
+
+/**
+ * Whether housekeeping remains after this finalization. A Queue or Sweep
+ * run that closes owes none for the primary checkout or the local target
+ * branch, which it never moves, so only what the target already contains
+ * counts for it; one that stays open is pending like any other.
+ */
+const housekeepingPending = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  strictVerification: LoopVerification,
+  blockers: readonly string[],
+  cleanupErrors: string[],
+  queued: QueuedAssessment | null
+): boolean =>
+  queued
+    ? blockers.length > 0 || queuedLeftovers(lease, inventory).length > 0
+    : loopCompletionBlockers(
+        lease,
+        inventory,
+        strictVerification,
+        cleanupErrors
+      ).length > 0;
+
+const queuedField = (
+  lease: LoopLease,
+  queued: QueuedAssessment | null,
+  blockers: readonly string[]
+): Pick<LoopFinalizationReceipt, "queued"> =>
+  queued && blockers.length === 0
+    ? {
+        queued: {
+          keptWorktrees: queued.keptWorktrees,
+          status: QUEUED_FOR_REVIEW,
+          summary: queuedSummary(lease, queued),
+          units: queued.units,
+        },
+      }
+    : {};
+
 const finalizationDecision = (
   lease: LoopLease,
   finalInventory: RepositoryInventory,
   cleanup: FinalizationCleanupResult,
   reason: string,
-  awaitingUser: string[] | null = null
+  awaitingUser: string[] | null = null,
+  // A Queue or Sweep run's own checkouts read as queued work; null for
+  // every other run.
+  queued: QueuedAssessment | null = null
 ): {
   blockers: string[];
   verification: LoopVerification;
@@ -2694,7 +2831,7 @@ const finalizationDecision = (
     finalInventory,
     verification,
     cleanup.errors,
-    scopedCompletion
+    { queued, scoped: scopedCompletion }
   );
   if (
     lease.shipmentOutcome?.receipt.units.some(
@@ -2728,12 +2865,14 @@ const finalizationDecision = (
         };
   const remoteBranches = remoteBranchesField(lease, finalInventory);
   const cleanupPending =
-    loopCompletionBlockers(
+    housekeepingPending(
       lease,
       finalInventory,
       strictVerification,
-      cleanup.errors
-    ).length > 0 ||
+      blockers,
+      cleanup.errors,
+      queued
+    ) ||
     (remoteBranches.remoteBranches?.pending.length ?? 0) > 0 ||
     (remoteBranches.remoteBranches?.deletedExternally?.length ?? 0) > 0 ||
     (remoteBranches.remoteBranches?.errors.length ?? 0) > 0;
@@ -2752,6 +2891,7 @@ const finalizationDecision = (
     preservedWorktrees: finalInventory.worktrees
       .map((worktree) => worktree.path)
       .sort((left, right) => left.localeCompare(right)),
+    ...queuedField(lease, queued, blockers),
     reason,
     ...remoteBranches,
     ...reviewAttemptsField(lease),
@@ -2914,7 +3054,8 @@ const finalizeOwnedLoop = (
   openingLease: LoopLease,
   inventory: RepositoryInventory,
   reason: string,
-  awaitingUser: string[] | null
+  awaitingUser: string[] | null,
+  declared: QueuedDeclarations
 ): LoopFinalizationResult => {
   let lease = reconcileAbsentRetainedWorktrees(openingLease, inventory);
   lease = reconcilePrimarySynchronization(lease, inventory);
@@ -2925,12 +3066,28 @@ const finalizeOwnedLoop = (
       : automaticFinalizationCleanup(lease, inventory, openingVerification);
   ({ lease } = automaticCleanup);
   const finalInventory = captureInventory(repositoryPath);
+  // A Queue or Sweep run never merges, so it is judged by its own pushed
+  // branches and proposals. Its finalization deletes nothing: the primary
+  // checkout, the local target branch, every earlier branch and worktree,
+  // and the run's own worktrees all stay as they are.
+  const queued = closesAsQueued(lease)
+    ? assessQueuedWork(lease, finalInventory, declared)
+    : null;
+  if (queued) {
+    automaticCleanup.cleanup.notes.push(
+      ...queuedLeftovers(lease, finalInventory).map(
+        (leftover) =>
+          `Left for a later Integrate, Reconcile, or \`prune\`, because a ${lease.mode} run never cleans up: ${leftover}`
+      )
+    );
+  }
   const { blockers, verification, receipt } = finalizationDecision(
     lease,
     finalInventory,
     automaticCleanup.cleanup,
     reason,
-    awaitingUser
+    awaitingUser,
+    queued
   );
   const now = receipt.finalizedAt;
   if (blockers.length === 0 && receipt.deliveryStatus === "verified") {
@@ -3014,10 +3171,23 @@ export interface LoopFinalizationOptions {
    */
   awaitingUser?: readonly string[];
   /**
+   * `--no-proposal`: why this run's pushed branches have no proposal. It
+   * counts only for a Queue or Sweep run whose remote has nowhere to open
+   * one; the receipt then reports each such branch as pushed without a
+   * proposal. A remote on a forge that can open proposals ignores it.
+   */
+  noProposal?: string;
+  /**
    * Runs under the loop locks when the run closes (completed or closed
    * without mutation), never when it pauses or relinquishes.
    */
   onClosed?: () => void;
+  /**
+   * `--queued-proposal <branch>=<id>`, once per pushed branch of a Queue or
+   * Sweep run: the proposal that carries that branch. It binds only when
+   * the review ledger records that proposal at the branch's exact head.
+   */
+  queuedProposals?: readonly string[];
 }
 
 const MAX_AWAITING_USER_QUESTIONS = 10;
@@ -3052,7 +3222,8 @@ const finalizeRun = (
   lease: LoopLease,
   inventory: RepositoryInventory,
   reason: string,
-  awaitingUser: string[] | null
+  awaitingUser: string[] | null,
+  declared: QueuedDeclarations
 ): LoopFinalizationResult => {
   const untouched = finalizeUnmutatedRun(
     lease,
@@ -3069,7 +3240,8 @@ const finalizeRun = (
       lease,
       inventory,
       reason,
-      awaitingUser
+      awaitingUser,
+      declared
     );
   } catch (error) {
     return relinquishAfterFinalizationError(lease, error, awaitingUser);
@@ -3119,6 +3291,10 @@ export const finalizeLoop = (
   const ownerAgentId = requiredText(ownerAgentIdInput, "agent ID");
   const reason = requiredText(reasonInput, "finalization reason");
   const awaitingUser = awaitingUserQuestions(options.awaitingUser);
+  const declared = queuedDeclarations(
+    options.noProposal,
+    options.queuedProposals
+  );
   const opening = locateRepository(repositoryPath);
   return withStateLock(
     opening.repository.commonGitDirectory,
@@ -3143,7 +3319,8 @@ export const finalizeLoop = (
             lease,
             inventory,
             reason,
-            awaitingUser
+            awaitingUser,
+            declared
           );
           if (result.outcome !== "relinquished") {
             options.onClosed?.();

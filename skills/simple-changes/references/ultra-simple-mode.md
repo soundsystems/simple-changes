@@ -141,8 +141,9 @@ before the run changes anything:
   under a short label of its own ("Simple Changes was updated: `<what
   matters>`. Your settings are the same. **Carry on**, **Quick tour**,
   **Full tour**, **Release notes**, or **Decide later**?");
-- a one-time offer, such as the turn-end guard or a refreshed instruction
-  rule, in one line the person can decline.
+- the one-time turn-end guard offer, in one line the person can decline.
+  An offer to refresh a note in the person's own agent instruction files is
+  not made in this mode: mention it only under Details.
 
 Asked whenever saved setup and the request do not already cover it:
 
@@ -152,10 +153,26 @@ Asked whenever saved setup and the request do not already cover it:
 - overriding a stop another person or agent put in place;
 - a choice between two real outcomes, such as two versions of the same text.
 
-Never ask twice for the same thing while nothing has changed. When the
-computer itself asks to allow an upload, say what it is in one line: "Your
-computer will ask to allow an upload. That's me sending your change for
-review."
+Never ask twice for the same thing while nothing has changed.
+
+**Uploads.** When the saved setting is to ask before uploads, the person is
+the one who answers, in this conversation. A request to send a change for
+review, such as "put this up", is that answer for one upload: the change's
+own separate copy, sent for review. Any other upload gets one plain question
+first, such as "Should I send your change to the shared project? Nothing
+goes live.", and no upload ever goes straight onto the main version without
+a yes that names it. A prompt from the computer is extra, never a
+substitute: when one may appear, say what it is in one line ("Your computer
+may ask to allow an upload. That's me sending your change for review.").
+
+**No review link.** When the project has nowhere to open a review link, a
+change can be saved and sent as its own copy, and no further: do not add it
+to the project, with or without [Autopilot](#autopilot), until a review
+link exists or the owner says to add it without one. Say what is missing
+and stop there. End that run with `loop finalize --no-proposal "<what is
+missing>"`, which closes it as sent without a review link. Where the host
+can open review links, a change sent without one keeps the run open
+instead.
 
 ## Messages
 

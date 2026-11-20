@@ -35,6 +35,7 @@ export type {
   LoopEndResult,
   LoopFinalizationHeldUnit,
   LoopFinalizationOptions,
+  LoopFinalizationQueued,
   LoopFinalizationReceipt,
   LoopFinalizationResult,
   LoopUnmutatedClose,

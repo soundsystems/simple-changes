@@ -20,6 +20,7 @@ import {
   unmutatedCloseReady,
   verificationAgainst,
 } from "./loop-lease-verify.ts";
+import { closesAsQueued } from "./queued-completion.ts";
 import type { LoopLease, LoopVerification, LoopViolation } from "./types.ts";
 
 export interface LoopGuidance {
@@ -132,6 +133,19 @@ const relinquishedGuidance = (lease: LoopLease): LoopGuidance =>
     nextCommands: resumeCommands(lease),
   });
 
+// A Queue or Sweep run never merges or records a shipment outcome: it ends
+// with its own branches pushed and their proposals recorded.
+const queuedRunGuidance = (lease: LoopLease): LoopGuidance | null =>
+  closesAsQueued(lease) && !lease.shipmentOutcome
+    ? {
+        headline: `Loop ${lease.runId} is healthy. It is a ${lease.mode} run, so it ends queued for review, not merged: push each unit's own branch, open its proposal, record it with \`proposal record-authors\`, then finalize. Finalize finds each branch's proposal from that record and closes the run when every run-created branch is committed and on the remote at its exact head. It merges nothing, deletes nothing, and leaves uncommitted work in the primary checkout exactly as it is.`,
+        nextCommands: [
+          "simple-changes proposal record-authors --proposal <id> --base <sha> --head <sha>",
+          `simple-changes loop finalize --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --reason <why>`,
+        ],
+      }
+    : null;
+
 const loopGuidanceFor = (
   lease: LoopLease | null,
   verification: LoopVerification,
@@ -222,6 +236,10 @@ const loopGuidanceFor = (
         `simple-changes loop record-scope --run-id ${lease.runId} --agent-id ${lease.ownerAgentId} --receipt <file>`,
       ],
     };
+  }
+  const queuedGuidance = queuedRunGuidance(lease);
+  if (queuedGuidance) {
+    return queuedGuidance;
   }
   if (!lease.shipmentOutcome) {
     return {

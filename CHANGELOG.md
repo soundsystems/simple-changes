@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.33.2 - 2026-11-19
+
+- **Bug Fixes & Improvements**:
+  - In Ultra-Simple Mode, agents no longer treat "ask before uploads" as a
+    prompt your computer will show. The person answers, in the
+    conversation. A request such as "put this up" counts as the answer for
+    one upload, your change's own copy sent for review. Any other upload
+    gets one plain question first, and nothing is uploaded straight onto
+    the main version without a yes that names it.
+  - When a project has nowhere to open a review link, an agent in the mode
+    now stops after saving and sending your change as its own copy. It does
+    not add the change to the project, with or without Autopilot, until a
+    review link exists or the owner says to add it without one.
+  - A "put this up" request now finishes cleanly, so the next one can
+    start. Before, a run that opened a proposal and stopped there could not
+    close. It was held to the rules for merged work: it wanted your unsaved
+    edit cleaned up, its own working copy removed, and old merged branches
+    deleted, and every later request was refused until the owner cleared
+    it. Now a Queue or Sweep run closes once each branch it made is on the
+    remote, confirmed by the remote itself, and its proposal is recorded;
+    the run finds that proposal by itself. It reports the work as queued
+    for review, not
+    merged, and it deletes nothing: your unsaved work, the run's working
+    copy, and older branches all stay where they are. Unpushed or
+    uncommitted work, a proposal that was never opened where one can be,
+    and a question waiting on you still keep the run open. The run's
+    working copy stays until you ask to clean the repository.
+  - Guidance stays 33, so no repository is asked anything by this update.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T15:50:00-06:00" -->
+
 ## 0.33.1 - 2026-11-18
 
 - **Bug Fixes & Improvements**:

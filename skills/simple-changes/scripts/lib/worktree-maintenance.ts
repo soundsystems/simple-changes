@@ -570,13 +570,45 @@ const deleteContainedBranch = (
   return true;
 };
 
-const removeProvenWorktrees = (
+/** A checkout its caller proved may be removed, and the proof it used. */
+export interface ProvenRemovable<Method extends string> {
+  containment: Method;
+  worktree: WorktreeInventory & { headSha: string };
+}
+
+/** A removed checkout, with the proof its caller named. */
+export type ProvenRemoval<Method extends string> = Omit<
+  WorktreeCleanupRemoval,
+  "containment"
+> & { containment: Method };
+
+export interface ProvenRemovalOptions {
+  /**
+   * A caller's own last checks, run after this function's fresh re-read
+   * and immediately before Git removes the checkout. A returned reason
+   * keeps the checkout and is reported in `errors`.
+   */
+  beforeRemoval?: (
+    fresh: WorktreeInventory & { headSha: string }
+  ) => string | null;
+}
+
+/**
+ * Removes exactly the given checkouts with Git's unforced removal, after
+ * re-reading each one's path, head, digest, and clean status, and deletes
+ * a branch only while it still points at the removed head. Every caller
+ * proves its own candidates and holds the cleanup locks.
+ */
+export const removeProvenWorktrees = <
+  Method extends string = TargetContainmentMethod,
+>(
   repositoryPath: string,
   targetRef: string,
-  removable: CleanupClassification["removable"],
-  errors: string[]
-): WorktreeCleanupRemoval[] => {
-  const removed: WorktreeCleanupRemoval[] = [];
+  removable: readonly ProvenRemovable<Method>[],
+  errors: string[],
+  options: ProvenRemovalOptions = {}
+): ProvenRemoval<Method>[] => {
+  const removed: ProvenRemoval<Method>[] = [];
   for (const candidate of removable) {
     const fresh = captureInventory(repositoryPath).worktrees.find(
       (worktree) =>
@@ -589,6 +621,14 @@ const removeProvenWorktrees = (
       errors.push(
         `Cleanup candidate changed during final audit and was preserved: ${candidate.worktree.path}`
       );
+      continue;
+    }
+    const refusal = options.beforeRemoval?.({
+      ...fresh,
+      headSha: candidate.worktree.headSha,
+    });
+    if (refusal) {
+      errors.push(refusal);
       continue;
     }
     const removal = runGit(

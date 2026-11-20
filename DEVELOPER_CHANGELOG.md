@@ -1,5 +1,112 @@
 # Developer changelog
 
+## 0.33.3 - 2026-11-19
+
+- Why: the owner asked for "autoclean 4 tha newbz". A Queue or Sweep run
+  keeps the worktree `prepare-agent` made for it, and in 0.33.2 nothing
+  removed it until someone asked for a cleanup they may not know exists.
+  Automatic clearing was built twice for 0.33.2 and removed after two
+  reviews by gpt-6.2-astra at high effort (the second found 3 blocking
+  defects in `queued-retirement.ts` at 959dfe8). This release rebuilds it
+  with each of those findings as a requirement.
+- The record (`queued-worktrees.ts`, new). When a Queue or Sweep run
+  closes as queued, `finalizeOwnedLoop` calls `recordKeptQueuedWorktrees`
+  before it removes the lease. It writes
+  `queued-worktrees/<run-id>.json` beside the loop state, validated by the
+  new `queued-worktrees` schema, a file older runtimes never open. Each
+  entry holds the worktree's path and branch, a registration ID, and the
+  target binding. `ensureRegistrationId` writes the ID into the worktree's
+  private Git directory
+  (`<common>/worktrees/<name>/simple-changes-queued-worktree`), which Git
+  deletes with the worktree. `queuedTargetBinding` resolves the lease's
+  target to `refs/heads/<branch>` on one remote and that remote's single
+  fetch address as Git resolved it (`singleFetchUrl`, `remote get-url
+  --all`, one whole line), stored without credentials. A target that is
+  not a remote branch, or a remote with several addresses, is not bound:
+  finalization adds a cleanup note and those worktrees are never cleared
+  automatically. Finalization still deletes nothing.
+- The clearing (`queued-retirement.ts`, new;
+  `retireMergedQueuedWorktrees`). `startLoop` now builds a fresh run in
+  three steps: `openingTarget` (target and provider inventory),
+  `openingLease` once on the validated inventory (it refuses a branch that
+  cannot be recorded exactly), then `inventoryAfterQueuedRetirement`, and
+  the lease again only when something was removed. So clearing runs inside
+  the start's loop and coordination locks, after every start validation
+  (harness session, existing run, target, opening remote inventory, exact
+  branches) and before the baseline. It runs only for a fresh Queue or
+  Sweep start. The report always reaches `LoopStartOptions
+  .onQueuedRetirement`, and `loop start` prints it as
+  `earlierQueuedWorktrees` (`removed`, `kept`, `notes`), even when empty.
+  It never throws.
+- Per worktree, in order (`retireOne`): `locate` finds it in the start's
+  inventory and compares `readRegistrationId` with the record
+  (`registrationOf`); a missing checkout or another registration drops the
+  record entry, and the checkout the command runs in, another branch, or
+  an unreadable ID waits. `mergedEvidence` asks the recorded address for
+  the recorded ref (`askTarget` through `askRemoteRef`, the `ls-remote
+  --exit-code` read split out of `remoteBranchHead` in
+  `queued-completion.ts`), once per target per start, and only to sort
+  merged from unmerged. When the answered commit is not local,
+  `fetchTargetCommit` downloads that ref from that address with
+  `--no-tags --no-write-fetch-head --no-recurse-submodules
+  --no-auto-maintenance`, so only objects arrive and no ref moves; without
+  this the feature would rarely fire, since a run starts before it
+  refreshes its target. `containmentProof` accepts ancestry
+  (`targetContainsRevision`) or `proveExactByteTargetContainment` with a
+  nonempty `touchedPaths`. No patch IDs anywhere.
+- Check then remove (`removeMerged`, `lastChecks`). `removeProvenWorktrees`
+  in `worktree-maintenance.ts` is now exported, generic in its proof
+  label, and takes an optional `beforeRemoval` guard that runs after its
+  own fresh re-read and immediately before `git worktree remove`. Existing
+  callers pass no guard and behave as before. Each worktree goes through
+  it alone, one candidate per call, with `lastChecks` as the guard: the
+  registration and branch again, a fresh `askTarget` (the proof is
+  repeated if the target moved), `claimReason`, `privateGitState`, and
+  last `contentBeyondCommit`. `privateGitState` calls
+  `assertNoGitOperation` and then checks the `sequencer` directory and
+  per-worktree refs itself; the shared `assertNoGitOperation` is
+  unchanged, so pause, detach, and ready-work behave as before.
+  `contentBeyondCommit` requires an empty `sourceWorktreeDelta` and then
+  `filesBeyondHead`, a sorted disk walk against `ls-tree -r` that never
+  follows a link, fails on a submodule, an unreadable folder, or a link or
+  special file where the commit holds a file or folder, and names up to
+  five extras. A link the commit tracks as a link is allowed and compared
+  by the delta. The branch is deleted by the remover's existing rule: the
+  worktree's own branch, still at the proven head, never the target's
+  local branch (the recorded `refs/heads/<branch>` is passed as the
+  protected target).
+- Reporting. Unmerged worktrees are silent. A merged one that is kept
+  gets one sentence in `kept`; for ignored files it is
+  `ignoredFilesReason`, the owner's wording. An unanswered remote is one
+  note per target. `queuedSummary` and the leftover note in
+  `finalizeOwnedLoop` no longer say kept worktrees wait for the owner.
+- Known limits, all on the keeping side. A worktree with installed
+  packages or build output is reported, not removed. Exact-byte proof is
+  against the remote's current target, so a squash merge followed by
+  another change to the same paths keeps the worktree; ancestry merges
+  are unaffected. A target without one remote address, a run closed by
+  `loop end`, and a record that failed to write are never cleared. The
+  worktree's own HEAD reflog goes with it, as with `prune`.
+- Docs and pins: `cleanup-and-completion.md` gains "A later Queue or
+  Sweep start clears merged kept worktrees"; `inventory-and-concurrency.md`
+  and `ultra-simple-mode.md` ("Old copies") point at it; the README
+  security model lists the behaviour; `skill-contract.test.ts` pins the
+  new prose and no longer pins "They stay until the owner asks".
+- Tests: `queued-retirement.test.ts` (30) covers removal by ancestry, at
+  a Queue and at a Sweep start, and by identical squash; a squash edited
+  in indentation; ignored files;
+  assume-unchanged and skip-worktree edits; a sequencer left by an
+  interrupted cherry-pick; a file or hidden edit written after the
+  earlier checks; one worktree removed before the next is checked; a
+  record for `upstream/main` against a fork's `origin/main`; a rewound
+  remote behind a stale tracking ref; an unreachable remote, at first and
+  between the two asks; a merge not fetched yet; a recreated checkout;
+  records without the binding; refused starts; Integrate and Ship starts;
+  and the command line. Three safeguards were switched off one at a time
+  to confirm their tests fail.
+- Review: not independently reviewed yet. Guidance stays 33.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T18:02:17-06:00" -->
+
 ## 0.33.2 - 2026-11-19
 
 - Found by a live smoke of 0.33.1: six agents (Opus 5.5 at high, Sonnet 5.5

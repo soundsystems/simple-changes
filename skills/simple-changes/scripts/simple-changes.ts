@@ -175,6 +175,7 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
+import type { QueuedRetirementReport } from "./lib/queued-retirement.ts";
 import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
@@ -345,7 +346,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.33.2";
+const VERSION = "0.33.3";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -4701,12 +4702,18 @@ const runLoopStart = (options: CliOptions): void => {
   let reviewLedger: ReviewLedgerResumeState | null = null;
   let workDir: string | null = null;
   let removedWorkDirectories: string[] = [];
+  let earlierQueuedWorktrees: QueuedRetirementReport | null = null;
   const lease = startLoop(
     options.repo,
     agentId,
     options.mode as RequestMode,
     openingRemoteInventory,
     {
+      // A fresh Queue or Sweep start reports what it did with the worktrees
+      // earlier such runs kept, even when it removed none.
+      onQueuedRetirement: (report) => {
+        earlierQueuedWorktrees = report;
+      },
       onReviewLedger: (state) => {
         reviewLedger = state.state === "absent" ? null : state;
       },
@@ -4738,6 +4745,7 @@ const runLoopStart = (options: CliOptions): void => {
   const resumedQuestions = resumedAwaitingUser(lease);
   writeOutput(
     {
+      ...(earlierQueuedWorktrees ? { earlierQueuedWorktrees } : {}),
       holds,
       inheritedAwaitingUser: resumedQuestions,
       lease,
@@ -4753,9 +4761,23 @@ const runLoopStart = (options: CliOptions): void => {
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
-    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
+    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}${renderQueuedRetirement(earlierQueuedWorktrees)}`
   );
 };
+
+// What a fresh Queue or Sweep start did with earlier runs' kept worktrees:
+// one plain line for each one cleared, and for each merged one it left.
+export const renderQueuedRetirement = (
+  report: QueuedRetirementReport | null
+): string =>
+  [
+    ...(report?.removed ?? []).map(
+      ({ branch, branchDeleted, path }) =>
+        `Cleared an earlier copy whose work is now in the project${branchDeleted && branch ? `, with its branch ${branch}` : ""}: ${path}\n`
+    ),
+    ...(report?.kept ?? []).map(({ reason }) => `${reason}\n`),
+    ...(report?.notes ?? []).map((note) => `Note: ${note}\n`),
+  ].join("");
 
 // Accepted reviews that no longer pass the gate on resume need a fresh review,
 // after any identity repair the reason calls for.

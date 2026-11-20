@@ -13,7 +13,11 @@ as unfinished or attempting another merge. Follow
 review. Candidate evidence does not relax any cleanup gate below.
 
 Cleanup is evidence-driven and automatic for proven local candidates in
-Integrate, Ship, Reconcile, and Resume. Remove only objects proven:
+Integrate, Ship, Reconcile, and Resume. A Queue or Sweep run cleans up one
+thing only: its start clears the worktrees earlier Queue and Sweep runs kept,
+once their work is merged
+([below](#a-later-queue-or-sweep-start-clears-merged-kept-worktrees)). Remove
+only objects proven:
 
 - merged into the intended canonical target;
 - obsolete by exact provider/Git evidence; or
@@ -488,15 +492,93 @@ Everything stays where it is:
   or fast-forwarded, and never a blocker.
 - **The run's own worktrees are kept**, with their branches, ignored files,
   and anything else in them, and each path is listed in `keptWorktrees`.
-  They stay until the owner asks to clean the repository: Reconcile or
-  `prune`, which ask first. Nothing in a Queue or Sweep start or finalize
-  removes one.
+  Finalization removes none of them. It records each one so that a later
+  Queue or Sweep start can clear it once its work is merged
+  ([below](#a-later-queue-or-sweep-start-clears-merged-kept-worktrees)).
+  Until then it stays; Reconcile and `prune`, which ask first, can also
+  remove it.
 - **Earlier branches and worktrees stay.** A clean worktree or local branch
   the target already contains is not removed and does not block. Each is
-  named in the cleanup `notes`, and `cleanupStatus` is `pending` until one of
-  those runs, or `prune`, cleans it. Only those modes run automatic cleanup,
-  which is why earlier runtimes reported such a branch as a Queue blocker
-  instead of deleting it.
+  named in the cleanup `notes`, and `cleanupStatus` is `pending` until
+  Integrate, Reconcile, or `prune` cleans it. Closing a Queue or Sweep run
+  removes nothing, which is why earlier runtimes reported such a branch as a
+  Queue blocker instead of deleting it.
+
+### A later Queue or Sweep start clears merged kept worktrees
+
+Kept worktrees do not pile up. When a Queue or Sweep run closes, it records
+each worktree it kept in `queued-worktrees/<run-id>.json` beside the loop
+state (`evals/schemas/queued-worktrees.schema.json`), a file of its own that
+older runtimes never open. Each entry binds three things:
+
+- the worktree's path and branch;
+- a registration ID, also written into the worktree's private Git directory
+  (`<git common dir>/worktrees/<name>/simple-changes-queued-worktree`), which
+  Git deletes with the worktree;
+- the run's target as one ref on one remote address: `refs/heads/<branch>`
+  and the remote's single fetch address as Git resolved it, with any
+  credential removed.
+
+A target that is not a branch on a remote, or whose remote has more than one
+fetch address, cannot be bound. Finalization says so in a cleanup note, and
+those worktrees are never cleared automatically. An entry without the ID or
+the binding is not valid and authorizes nothing.
+
+A fresh `loop start --mode queue` or `--mode sweep` then clears each recorded
+worktree whose work is merged. It runs under the start's locks, after the
+start is validated (controller session, existing run, target, provider
+inventory) and before the lease records its baseline, so a refused start
+removes nothing. No other mode does this, and neither does a start that
+returns a run that already exists. The result is in the command's output as
+`earlierQueuedWorktrees`, with `removed`, `kept`, and `notes`, even when all
+three are empty.
+
+Each worktree is taken alone: every check below runs for it immediately
+before it is removed, and only then is the next one looked at. It is removed
+only when all of them hold:
+
+- **It is the registration the run recorded.** The ID in its private Git
+  directory equals the recorded one, and it is on the recorded branch. A
+  checkout made again at the same path and branch has no such ID; its record
+  is dropped and it is never removed. The checkout the command runs in is
+  never removed.
+- **The recorded remote says the target contains its work.** The start asks
+  the recorded address for the recorded ref with `git ls-remote`, and asks
+  again just before the removal. A remote-tracking ref is never the proof,
+  and neither is the target a later run selects. No answer keeps the
+  worktree. When the answered commit is not on this machine yet, the start
+  downloads that ref's commits from that address; only objects arrive, and
+  no local ref or `FETCH_HEAD` changes.
+- **Containment is exact.** The worktree's head is an ancestor of that
+  commit, or, for a squash merge, every path its commits touched has exactly
+  the same bytes and mode there (`proveExactByteTargetContainment`, over a
+  nonempty set of paths). Patch IDs are never used: they ignore whitespace.
+  A squash edited in review, or a target that has since changed those paths
+  again, does not match, and the worktree is kept.
+- **Nothing holds it.** No unreleased claim, a clean status, no Git operation
+  in progress, including a `sequencer` directory left by an interrupted
+  multi-commit cherry-pick or revert, and no ref the worktree keeps for
+  itself.
+- **Its files are exactly its commit.** Every file is compared with the head
+  itself, so an edit under an assume-unchanged or skip-worktree entry counts,
+  and the disk is walked for anything the commit does not track, so no file
+  Git ignores. A submodule, a link or special file where the commit holds a
+  file or folder, or anything that cannot be read keeps the worktree. A link
+  the commit itself tracks is compared as a link and never followed.
+
+Removal is the unforced `git worktree remove` that `prune` uses
+(`removeProvenWorktrees`), with these checks run after its own fresh re-read.
+The local branch is deleted only when it is the worktree's own branch and
+still points at the proven head. The remote branch and the proposal are not
+touched.
+
+A worktree that is not merged yet simply waits and is not mentioned. One that
+is merged and kept is listed in `kept` with one plain reason; pass it on as
+written, and remove such a worktree only when the owner asks. For ignored
+files the reason reads: "This copy holds files Git ignores (`<names, up to
+five>`), so I left it in place. Remove it by hand, or with computer use, once
+you have what you need from them: `<path>`". A remote that could not be asked
+is one entry in `notes`. Nothing here refuses or fails the start.
 
 Before reporting completion:
 

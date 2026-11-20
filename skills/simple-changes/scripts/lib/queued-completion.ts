@@ -142,48 +142,24 @@ interface QueuedContext {
   targetRevision: string;
 }
 
-type RemoteHead =
+export type RemoteHead =
   | { head: string | null; state: "answered" }
   | { detail: string; state: "unanswered" };
 
 const LS_REMOTE_LINE = /^([0-9a-f]{40,64})\t(.+)$/u;
 
 /**
- * The head of exactly `refs/heads/<branch>` at the remote's push
- * destination, asked of the remote itself: a remote-tracking ref can still
- * name a commit the server has since deleted or rewritten. The answer
- * counts only when it arrived whole. Absence is `ls-remote --exit-code`
- * exiting 2 with no output, which a lost answer cannot fake; anything else
- * is no answer.
+ * The head of exactly `ref` at one remote address, asked of the remote
+ * itself: a remote-tracking ref can still name a commit the server has
+ * since deleted or rewritten. The answer counts only when it arrived
+ * whole. Absence is `ls-remote --exit-code` exiting 2 with no output, which
+ * a lost answer cannot fake; anything else is no answer.
  */
-const remoteBranchHead = (
+export const askRemoteRef = (
   repositoryPath: string,
-  remote: string,
-  branch: string
+  destination: string,
+  ref: string
 ): RemoteHead => {
-  const ref = `refs/heads/${branch}`;
-  let destination: string | null;
-  try {
-    // Every push URL, which must be one whole line: Git pushes to each
-    // of several, so a remote with more has no single destination to ask,
-    // and is refused below as no answer.
-    destination = completeLine(repositoryPath, [
-      "remote",
-      "get-url",
-      "--push",
-      "--all",
-      remote,
-    ]).line;
-  } catch {
-    destination = null;
-  }
-  // A destination that begins with a dash would be read as an option.
-  if (!destination || destination.startsWith("-")) {
-    return {
-      detail: `${remote} has no single push destination to ask`,
-      state: "unanswered",
-    };
-  }
   const listing = runGitRemote(repositoryPath, [
     "ls-remote",
     "--exit-code",
@@ -214,6 +190,41 @@ const remoteBranchHead = (
     head: entries.find((entry) => entry?.[2] === ref)?.[1] ?? null,
     state: "answered",
   };
+};
+
+/**
+ * The head of exactly `refs/heads/<branch>` at the remote's push
+ * destination; see `askRemoteRef`. A remote without one push destination
+ * has nothing to ask, which is no answer.
+ */
+const remoteBranchHead = (
+  repositoryPath: string,
+  remote: string,
+  branch: string
+): RemoteHead => {
+  let destination: string | null;
+  try {
+    // Every push URL, which must be one whole line: Git pushes to each
+    // of several, so a remote with more has no single destination to ask,
+    // and is refused below as no answer.
+    destination = completeLine(repositoryPath, [
+      "remote",
+      "get-url",
+      "--push",
+      "--all",
+      remote,
+    ]).line;
+  } catch {
+    destination = null;
+  }
+  // A destination that begins with a dash would be read as an option.
+  if (!destination || destination.startsWith("-")) {
+    return {
+      detail: `${remote} has no single push destination to ask`,
+      state: "unanswered",
+    };
+  }
+  return askRemoteRef(repositoryPath, destination, `refs/heads/${branch}`);
 };
 
 interface PushDestination {
@@ -700,6 +711,6 @@ export const queuedSummary = (
   const kept =
     keptWorktrees.length === 0
       ? ""
-      : ` The run's ${keptWorktrees.length === 1 ? "worktree stays" : "worktrees stay"} until the owner asks to clean the repository, which asks first: ${keptWorktrees.join(", ")}.`;
+      : ` The run's ${keptWorktrees.length === 1 ? "worktree was" : "worktrees were"} kept for now: ${keptWorktrees.join(", ")}. A later Queue or Sweep run clears a kept worktree by itself once the remote confirms its work is merged and nothing in it exists only there.`;
   return `Queued for review, not merged: ${counts}. Nothing was added to ${lease.targetRef}, and finalization deleted no checkout, branch, or file. Uncommitted work in the primary checkout was left exactly as it was.${kept}`;
 };

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.33.3 - 2026-11-19
+
+- **Bug Fixes & Improvements**:
+  - Working copies from earlier "put this up" requests no longer pile up on
+    your computer. Each such request makes its own separate copy of the
+    project, and 0.33.2 kept every one until you asked for a cleanup. Now,
+    the next time you ask to put a change up, the tool first clears each
+    earlier copy whose change has already been added to the project,
+    together with that copy's own local branch.
+  - A copy is cleared only when nothing in it could be lost. The tool asks
+    the project's own server whether the change is in, and never relies on
+    what your computer last downloaded. The copy's files must match what was
+    sent exactly, with nothing else in its folder. If the change was edited
+    on its way in, even in spacing alone, or the server cannot be reached,
+    the copy stays.
+  - A copy that holds files of its own stays, and you are told why in one
+    line, for example: "This copy holds files Git ignores (.env.local), so I
+    left it in place. Remove it by hand, or with computer use, once you have
+    what you need from them", followed by where the copy is. Installed
+    packages and build output count as such files, so a copy that has them
+    is reported, not removed.
+  - A copy whose change is still waiting for review is left alone and not
+    mentioned. Clearing never stops your request: whenever something is
+    unclear, the copy is kept.
+  - Requests to merge, ship, or clean the repository behave as before.
+    Guidance stays 33, so no repository is asked anything by this update.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T18:02:17-06:00" -->
+
 ## 0.33.2 - 2026-11-19
 
 - **Bug Fixes & Improvements**:

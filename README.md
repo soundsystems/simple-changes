@@ -807,6 +807,29 @@ boundary. To report a vulnerability, see [SECURITY.md](SECURITY.md).
   comes from attestations agents record with `author attest`, never from commit
   or proposal text.
 
+**Clearing merged worktrees at a Queue or Sweep start.**
+
+- Triggered by: a fresh `loop start --mode queue` or `--mode sweep` in a
+  repository where an earlier Queue or Sweep run closed and kept a worktree.
+  No other mode does it.
+- Can touch: only worktrees an earlier run created with `prepare-agent` and
+  recorded in `queued-worktrees/` under the Git directory, and each one's own
+  local branch. It asks the target's recorded remote address with `git
+  ls-remote`, downloads that target's commits when they are missing (no local
+  ref moves), then removes a worktree with an unforced `git worktree remove`.
+  It never touches a remote branch, a proposal, or the checkout it runs in.
+- Opt out: there is no setting. A worktree is kept by a claim on it, by any
+  file its commit does not track (ignored files included), by any difference
+  from its commit, or by deleting its record file.
+- Enforced by: `retireMergedQueuedWorktrees` in `queued-retirement.ts` runs
+  every check for one worktree immediately before removing it: the
+  registration ID in its private Git directory, a fresh answer from the
+  recorded remote, containment by ancestry or exact bytes
+  (`proveExactByteTargetContainment`), no claim or unfinished Git operation,
+  and files that equal the commit with nothing else on disk. Anything
+  unproven keeps the worktree, and nothing here can refuse the start. See
+  [cleanup and completion](skills/simple-changes/references/cleanup-and-completion.md#a-later-queue-or-sweep-start-clears-merged-kept-worktrees).
+
 **Git and `glab` with the user's existing credentials.**
 
 - Triggered by: queue, integrate, and ship work, where agents push branches and

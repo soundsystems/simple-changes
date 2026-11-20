@@ -1479,17 +1479,73 @@ describe("Simple Changes skill contract", () => {
       // Nothing is deleted.
       "**The primary checkout stays exactly as it is**, on its branch, with its uncommitted and untracked work: never stashed, reset, normalized, switched, or fast-forwarded, and never a blocker.",
       "**The run's own worktrees are kept**, with their branches, ignored files, and anything else in them, and each path is listed in `keptWorktrees`.",
-      "They stay until the owner asks to clean the repository: Reconcile or `prune`, which ask first. Nothing in a Queue or Sweep start or finalize removes one.",
+      "Finalization removes none of them. It records each one so that a later Queue or Sweep start can clear it once its work is merged",
+      "Until then it stays; Reconcile and `prune`, which ask first, can also remove it.",
       "A clean worktree or local branch the target already contains is not removed and does not block.",
+      "Closing a Queue or Sweep run removes nothing",
     ]) {
       expect(normalizedCleanup).toContain(sentence);
     }
+    expect(normalizedCleanup).not.toContain(
+      "They stay until the owner asks to clean the repository"
+    );
     expect(normalizedCleanup).not.toContain("alreadyQueued");
     expect(normalizedRecovery).toContain(
       "A relinquished Queue or Sweep run does not need a replan before the next request can start, including one an older runtime left behind."
     );
     expect(changeRequests.replace(/\s+/g, " ")).toContain(
       "the command also records which local branch the proposal came from, in `proposal-sources.json` beside the ledger, and finalization accepts the one proposal recorded from a pushed branch at its exact head. The branch is taken from `--head` when exactly one local branch points there; otherwise pass `--source-branch <branch>`. Record the authors again whenever the pushed head moves."
+    );
+  });
+
+  test("A later Queue or Sweep start clears merged kept worktrees, on proof from the recorded remote only", async () => {
+    const [cleanup, inventory, ultraSimple] = await Promise.all([
+      readFile(cleanupCompletionPath, "utf8"),
+      readFile(inventoryConcurrencyPath, "utf8"),
+      readFile(ultraSimpleModePath, "utf8"),
+    ]);
+    const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+
+    expect(cleanup).toContain(
+      "### A later Queue or Sweep start clears merged kept worktrees"
+    );
+    for (const sentence of [
+      "A Queue or Sweep run cleans up one thing only: its start clears the worktrees earlier Queue and Sweep runs kept, once their work is merged",
+      // The record: its own file, with the identity and the target binding.
+      "Kept worktrees do not pile up.",
+      "it records each worktree it kept in `queued-worktrees/<run-id>.json` beside the loop state (`evals/schemas/queued-worktrees.schema.json`), a file of its own that older runtimes never open.",
+      "a registration ID, also written into the worktree's private Git directory (`<git common dir>/worktrees/<name>/simple-changes-queued-worktree`), which Git deletes with the worktree;",
+      "the run's target as one ref on one remote address: `refs/heads/<branch>` and the remote's single fetch address as Git resolved it, with any credential removed.",
+      "A target that is not a branch on a remote, or whose remote has more than one fetch address, cannot be bound.",
+      "An entry without the ID or the binding is not valid and authorizes nothing.",
+      // Placement: a validated fresh start, before the baseline.
+      "It runs under the start's locks, after the start is validated (controller session, existing run, target, provider inventory) and before the lease records its baseline, so a refused start removes nothing.",
+      "No other mode does this, and neither does a start that returns a run that already exists.",
+      "The result is in the command's output as `earlierQueuedWorktrees`, with `removed`, `kept`, and `notes`, even when all three are empty.",
+      // Check, then remove, one at a time.
+      "Each worktree is taken alone: every check below runs for it immediately before it is removed, and only then is the next one looked at.",
+      "A checkout made again at the same path and branch has no such ID; its record is dropped and it is never removed.",
+      "The start asks the recorded address for the recorded ref with `git ls-remote`, and asks again just before the removal.",
+      "A remote-tracking ref is never the proof, and neither is the target a later run selects. No answer keeps the worktree.",
+      "only objects arrive, and no local ref or `FETCH_HEAD` changes.",
+      "every path its commits touched has exactly the same bytes and mode there (`proveExactByteTargetContainment`, over a nonempty set of paths). Patch IDs are never used: they ignore whitespace.",
+      "A squash edited in review, or a target that has since changed those paths again, does not match, and the worktree is kept.",
+      "including a `sequencer` directory left by an interrupted multi-commit cherry-pick or revert",
+      "so an edit under an assume-unchanged or skip-worktree entry counts, and the disk is walked for anything the commit does not track, so no file Git ignores.",
+      "Removal is the unforced `git worktree remove` that `prune` uses (`removeProvenWorktrees`), with these checks run after its own fresh re-read.",
+      "The local branch is deleted only when it is the worktree's own branch and still points at the proven head.",
+      // Reporting.
+      "A worktree that is not merged yet simply waits and is not mentioned.",
+      '"This copy holds files Git ignores (`<names, up to five>`), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: `<path>`"',
+      "Nothing here refuses or fails the start.",
+    ]) {
+      expect(normalizedCleanup).toContain(sentence);
+    }
+    expect(inventory.replace(/\s+/g, " ")).toContain(
+      "A fresh Queue or Sweep start first clears the worktrees that earlier Queue and Sweep runs kept and whose work is merged, before it records this baseline"
+    );
+    expect(ultraSimple.replace(/\s+/g, " ")).toContain(
+      "**Old copies.** Each change you send for review gets its own separate copy of the project on this computer. Once that change has been added to the project, a later request clears the copy by itself; say nothing about it. When it leaves one in place, pass on the line it gives, once, as written: it says why, such as files that exist only in that copy, and where the copy is. Remove such a copy only when the person asks."
     );
   });
 

@@ -366,6 +366,7 @@
             ]
           },
           "mutationAllowed": { "type": "boolean" },
+          "queuedRegistrationId": { "type": "string" },
           "createdByRun": { "type": "boolean" },
           "claimId": { "type": "string", "pattern": "^claim-[a-z0-9-]+$" },
           "pauseReceiptId": {

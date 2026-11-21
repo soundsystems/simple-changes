@@ -1,31 +1,42 @@
-import { type Dirent, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { devNull } from "node:os";
+import { basename, dirname, join, sep } from "node:path";
 import { targetContainsRevision } from "./cleanup-core.ts";
 import { proveExactByteTargetContainment } from "./exact-byte-proof.ts";
-import { completeObjectId } from "./git-complete.ts";
-import { credentialFreeRemoteUrl } from "./inventory.ts";
+import {
+  completeLine,
+  completeListing,
+  completeObjectId,
+} from "./git-complete.ts";
 import { nothingAtPath } from "./loop-lease-core.ts";
-import { worktreeSourceEntry } from "./loop-lease-shipment.ts";
 import { liveClaimFor } from "./loop-lease-verify.ts";
-import { runGit, runGitRemote } from "./process.ts";
+import {
+  runGit,
+  runGitRemote,
+  runGitWithInput,
+  withGitDeadline,
+} from "./process.ts";
 import { askRemoteRef, type RemoteHead } from "./queued-completion.ts";
+import { moveToTrash, type TrashMover } from "./queued-trash.ts";
 import {
   type KeptQueuedWorktree,
   privateGitDirectory,
   type QueuedTargetBinding,
+  type QueuedWorktreesRecord,
   readQueuedWorktreesRecords,
   readRegistrationId,
+  safeTargetAddress,
   singleFetchUrl,
+  type TrashedQueuedWorktree,
   writeQueuedWorktreesRecord,
 } from "./queued-worktrees.ts";
 import { redactSecrets } from "./redact.ts";
-import { sourceWorktreeDelta } from "./source-worktree-delta.ts";
+import { namedObjectsOf } from "./replacement-lineage.ts";
 import type { RepositoryInventory, WorktreeInventory } from "./types.ts";
 import {
   assertNoGitOperation,
   readCoordinationDocumentFromCommonDirectory,
 } from "./worktree-coordination.ts";
-import { removeProvenWorktrees } from "./worktree-maintenance.ts";
 
 /**
  * How the remote's own target was shown to contain a worktree's work:
@@ -35,33 +46,48 @@ import { removeProvenWorktrees } from "./worktree-maintenance.ts";
  */
 export type QueuedRetirementProof = "exact-byte-target" | "target-contained";
 
-export interface QueuedRetirementRemoval {
-  branch: string | null;
-  /** Whether the worktree's own branch, still at the proven head, went too. */
-  branchDeleted: boolean;
+/** One kept worktree a start moved to the Trash. Its branch was kept. */
+export interface QueuedRetirementMove {
+  branch: string;
   headSha: string;
+  /**
+   * Where the folder is now, confirmed to be the same folder, or null when
+   * its place in the Trash could not be confirmed.
+   */
+  location: string | null;
+  /** Where the folder was. */
   path: string;
   proof: QueuedRetirementProof;
+  /** See `TrashedQueuedWorktree.registration`. */
+  registration: TrashedQueuedWorktree["registration"];
+  /** How to put it back, in plain words, with the exact paths. */
+  restore: string;
   /** The remote ref that was asked, and the commit it answered with. */
   target: { ref: string; revision: string; url: string };
+  trashedAt: string;
 }
 
 /** What a Queue or Sweep start did with earlier runs' kept worktrees. */
 export interface QueuedRetirementReport {
   /** Merged worktrees left in place, each with one plain reason. */
   kept: { path: string; reason: string }[];
+  /** Merged worktrees moved to the Trash. Nothing was deleted. */
+  movedToTrash: QueuedRetirementMove[];
   /** Why something could not be checked. Never a failure of the start. */
   notes: string[];
-  removed: QueuedRetirementRemoval[];
 }
 
 export interface QueuedRetirementHooks {
   /**
-   * Called with a worktree's path once it has passed every earlier check
-   * and the remover's own re-read, just before its last checks run. Tests
-   * use it to change a checkout that was already checked.
+   * Called with a worktree's path once it has passed every earlier check,
+   * just before its last checks run. Tests use it to change a checkout
+   * that was already checked.
    */
   beforeLastChecks?: (path: string) => void;
+  /** Stands in for the Trash. Without it, `systemTrashMover` is used. */
+  moveToTrash?: TrashMover;
+  /** The current time, for tests of how long a move is remembered. */
+  now?: () => Date;
 }
 
 type Candidate = WorktreeInventory & { headSha: string };
@@ -72,74 +98,153 @@ interface Evidence {
 }
 
 interface RetirementContext {
-  /** The first answer of each target this start asked, for sorting only. */
+  /** This start's one answer for each target it asked. */
   answers: Map<string, RemoteHead>;
   /** Registration IDs whose worktree is gone or is another registration. */
   forgotten: Set<string>;
   hooks: QueuedRetirementHooks;
   inventory: RepositoryInventory;
+  /** Whether Git can be kept from downloading on its own; asked once. */
+  lazyFetchOff?: boolean;
   report: QueuedRetirementReport;
-  repositoryPath: string;
 }
 
-const MAX_NAMED_FILES = 5;
+const OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const HEAD_REF_PREFIX = "refs/heads/";
-// `<mode> <type> <object>\t<path>` from `ls-tree -z`.
-const LS_TREE_RECORD_PATTERN = /^(\d+) (\w+) [0-9a-f]+\t(.+)$/su;
-const SYMLINK_MODE = "120000";
-// Refs Git keeps per worktree, in its private directory, outside any branch.
-const OWN_REF_NAMESPACES = [
-  "refs/worktree/",
-  "refs/bisect/",
-  "refs/rewritten/",
+/**
+ * The folder, inside a moved worktree, that holds the private Git directory
+ * the worktree had (`<common>/worktrees/<name>`): its index, its own HEAD
+ * log, and any ref it kept for itself.
+ */
+export const MOVED_GIT_DIRECTORY = ".simple-changes-git-worktree";
+// A record of a move is kept this long, the time macOS itself keeps an item
+// in the Trash when it is set to empty it automatically.
+const REMEMBER_MOVED_DAYS = 30;
+const DAY_MS = 86_400_000;
+// What a multi-step Git operation leaves in a worktree's private directory
+// while it is unfinished, beyond the markers `assertNoGitOperation` reads.
+const UNFINISHED_OPERATION_MARKERS = [
+  "sequencer",
+  "NOTES_MERGE_WORKTREE",
+  "NOTES_MERGE_PARTIAL",
+  "NOTES_MERGE_REF",
 ];
-
+// A partial clone downloads objects when a command first reads them.
+const PARTIAL_CLONE_KEYS =
+  "^(extensions\\.partialclone|remote\\..*\\.promisor)$";
+const GIT_VERSION_PATTERN = /^git version (\d+)\.(\d+)/u;
+const NO_LAZY_FETCH_MAJOR = 2;
+const NO_LAZY_FETCH_MINOR = 45;
+/**
+ * Set for every Git command this module starts. Nothing here may download
+ * on its own: only the two bounded remote commands reach the network, so
+ * the start's locks are never held on a download no one bounded. And a
+ * replacement object must not stand in for real history in a proof.
+ */
+const RETIREMENT_GIT_ENVIRONMENT = {
+  GIT_GRAFT_FILE: devNull,
+  GIT_NO_LAZY_FETCH: "1",
+  GIT_NO_REPLACE_OBJECTS: "1",
+};
+const STATUS_HEAD_PREFIX = "# branch.oid ";
+const STATUS_BRANCH_PREFIX = "# branch.head ";
 const WHITESPACE_RUN = /\s+/gu;
 
 const left = (path: string): string => `so I left it in place: ${path}`;
 
 // Git's own words on one line, for a sentence a person reads.
 const oneLine = (detail: string): string =>
-  detail.replace(WHITESPACE_RUN, " ").trim();
+  redactSecrets(detail.replace(WHITESPACE_RUN, " ").trim());
 
-/** What to tell the owner about a kept copy that holds ignored files. */
-export const ignoredFilesReason = (
-  path: string,
-  names: readonly string[]
-): string =>
-  `This copy holds files Git ignores (${names.join(", ")}), so I left it in place. Remove it by hand, or with computer use, once you have what you need from them: ${path}`;
+const message = (error: unknown): string =>
+  oneLine(error instanceof Error ? error.message : String(error));
+
+const withEnvironment = <T>(
+  values: Record<string, string>,
+  operation: () => T
+): T => {
+  const previous = new Map(
+    Object.keys(values).map((name) => [name, process.env[name]])
+  );
+  Object.assign(process.env, values);
+  try {
+    return operation();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        Reflect.deleteProperty(process.env, name);
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+};
+
+/**
+ * Whether no local read can turn into a download. Outside a partial clone
+ * none can. In one, `GIT_NO_LAZY_FETCH` stops them from Git 2.45 on; an
+ * older Git ignores it, and anything unreadable counts as "cannot tell".
+ */
+const lazyFetchStaysOff = (primaryCheckout: string): boolean => {
+  try {
+    const partial = runGit(
+      primaryCheckout,
+      ["config", "--get-regexp", PARTIAL_CLONE_KEYS],
+      true
+    );
+    if (partial.exitCode !== 0) {
+      // Exit 1 is Git's "no such key": an ordinary, complete clone.
+      return partial.exitCode === 1;
+    }
+    const [, major, minor] =
+      GIT_VERSION_PATTERN.exec(runGit(primaryCheckout, ["version"]).stdout) ??
+      [];
+    const version = [Number(major), Number(minor)] as const;
+    return (
+      version[0] > NO_LAZY_FETCH_MAJOR ||
+      (version[0] === NO_LAZY_FETCH_MAJOR && version[1] >= NO_LAZY_FETCH_MINOR)
+    );
+  } catch {
+    return false;
+  }
+};
 
 // ---------------------------------------------------------------------------
 // The target, asked of its own remote
 
 /**
- * The address to ask about a recorded target, or null when Git would read
- * it as an option. The recorded address has no credential, so the remote of
- * that name is asked through its own address while that still is the
- * recorded one; otherwise the recorded address is asked directly. No other
- * remote is ever asked.
+ * The address to ask about a recorded target, or null when the recorded
+ * address is not in the safe form the record requires. The recorded address
+ * has no credential, so the remote of that name is asked through its own
+ * address while that still is the recorded one; otherwise the recorded
+ * address is asked directly. No other remote is ever asked. A safe address
+ * is a URL, an `[user@]host:path`, or an absolute path, so Git can never
+ * read it as an option or as the name of a configured remote.
  */
 const targetDestination = (
   primaryCheckout: string,
   target: QueuedTargetBinding
 ): string | null => {
+  if (safeTargetAddress(target.url) !== target.url) {
+    return null;
+  }
   const configured = singleFetchUrl(primaryCheckout, target.remote);
-  const destination =
-    configured && credentialFreeRemoteUrl(configured) === target.url
+  const operand =
+    configured && safeTargetAddress(configured) === target.url
       ? configured
       : target.url;
-  return destination.startsWith("-") ? null : destination;
-};
-
-/** Asks the recorded remote address for the recorded ref, now. */
-const askTarget = (
-  primaryCheckout: string,
-  target: QueuedTargetBinding
-): RemoteHead => {
-  const destination = targetDestination(primaryCheckout, target);
-  return destination
-    ? askRemoteRef(primaryCheckout, destination, target.ref)
-    : { detail: "its address cannot be asked", state: "unanswered" };
+  try {
+    const effective = completeLine(primaryCheckout, [
+      "ls-remote",
+      "--get-url",
+      "--",
+      operand,
+    ]).line;
+    return effective === operand ? operand : null;
+  } catch {
+    // Git diagnostics can repeat an operand containing credentials.
+    return null;
+  }
 };
 
 const haveCommit = (primaryCheckout: string, revision: string): boolean => {
@@ -156,41 +261,76 @@ const haveCommit = (primaryCheckout: string, revision: string): boolean => {
  * Downloads the recorded target's commits from its recorded address when
  * the commit the remote answered with is not on this machine yet, which is
  * the usual case: a run starts before it refreshes its target. Only objects
- * arrive. No local ref moves, `FETCH_HEAD` is not written, and no tag,
- * submodule, or maintenance step follows, so the run's baseline is the
- * same with or without it. Returns why the commit is still missing, or
- * null.
+ * arrive. The empty `--refmap=` stops Git from moving any remote-tracking
+ * ref, `FETCH_HEAD` is not written, and no tag, submodule, or maintenance
+ * step follows, so the run's baseline is the same with or without it. The
+ * command is bounded like every remote command. Returns why the commit is
+ * still missing, or null.
  */
 const fetchTargetCommit = (
   primaryCheckout: string,
-  target: QueuedTargetBinding,
+  destination: string,
+  ref: string,
   revision: string
 ): string | null => {
   if (haveCommit(primaryCheckout, revision)) {
     return null;
   }
-  const destination = targetDestination(primaryCheckout, target);
-  if (!destination) {
-    return "its address cannot be asked";
-  }
   const fetched = runGitRemote(primaryCheckout, [
     "fetch",
     "--quiet",
+    "--refmap=",
     "--no-tags",
     "--no-write-fetch-head",
     "--no-recurse-submodules",
     "--no-auto-maintenance",
     destination,
-    target.ref,
+    ref,
   ]);
-  if (fetched.exitCode !== 0) {
-    return redactSecrets(
-      fetched.stderr.trim() || `git fetch exited ${fetched.exitCode}`
-    );
-  }
   // The target may have moved on between the answer and the download; a
   // commit that did not arrive is simply not proven this time.
-  return null;
+  return fetched.exitCode === 0
+    ? null
+    : fetched.stderr.trim() || `git fetch exited ${fetched.exitCode}`;
+};
+
+/**
+ * This start's one question to a recorded target: the remote's answer, with
+ * its commit brought here if it is missing. A remote that gives no answer
+ * or no commits is noted once, and keeps every worktree bound to it. The
+ * address that was asked may hold a credential, so it never reaches a note.
+ */
+const askTarget = (
+  context: RetirementContext,
+  target: QueuedTargetBinding
+): RemoteHead => {
+  const { primaryCheckout } = context.inventory.repository;
+  const destination = targetDestination(primaryCheckout, target);
+  const answer: RemoteHead = destination
+    ? askRemoteRef(primaryCheckout, destination, target.ref)
+    : { detail: "its address cannot be asked", state: "unanswered" };
+  let failure: string | null = null;
+  if (answer.state === "unanswered") {
+    failure = answer.detail;
+  } else if (answer.head && destination) {
+    failure = fetchTargetCommit(
+      primaryCheckout,
+      destination,
+      target.ref,
+      answer.head
+    );
+  }
+  if (failure) {
+    const label =
+      safeTargetAddress(target.url) === target.url
+        ? target.url
+        : "the recorded target";
+    context.report.notes.push(
+      `I could not ask ${label} what has been merged, so earlier copies that wait on it were left in place.`
+    );
+    return { detail: "remote unavailable", state: "unanswered" };
+  }
+  return answer;
 };
 
 /**
@@ -205,10 +345,7 @@ const containmentProof = (
   targetRevision: string
 ): QueuedRetirementProof | null => {
   try {
-    if (
-      completeObjectId(primaryCheckout, `${targetRevision}^{commit}`) !==
-      targetRevision
-    ) {
+    if (!haveCommit(primaryCheckout, targetRevision)) {
       return null;
     }
     if (targetContainsRevision(primaryCheckout, targetRevision, headSha)) {
@@ -226,207 +363,96 @@ const containmentProof = (
   }
 };
 
+const targetKey = (target: QueuedTargetBinding): string =>
+  `${target.url}\n${target.ref}`;
+
+/**
+ * Whether the remote's target contains this worktree's head, by the one
+ * answer this start asked that target for. An unanswered remote keeps every
+ * worktree bound to it.
+ */
+const mergedEvidence = (
+  context: RetirementContext,
+  recorded: KeptQueuedWorktree,
+  worktree: Candidate
+): Evidence | null => {
+  const key = targetKey(recorded.target);
+  const answer =
+    context.answers.get(key) ?? askTarget(context, recorded.target);
+  context.answers.set(key, answer);
+  if (answer.state === "unanswered" || !answer.head) {
+    return null;
+  }
+  const proof = containmentProof(
+    context.inventory.repository.primaryCheckout,
+    worktree.headSha,
+    answer.head
+  );
+  return proof ? { proof, revision: answer.head } : null;
+};
+
 // ---------------------------------------------------------------------------
-// What a clean, merged checkout can still hold that exists nowhere else
-
-interface TrackedShape {
-  directories: ReadonlySet<string>;
-  root: string;
-  /** Every path the commit tracks, with its mode. */
-  tracked: ReadonlyMap<string, string>;
-}
-
-/** The commit's own file list, or why it cannot be used. */
-const trackedShape = (
-  worktreePath: string,
-  headSha: string
-): TrackedShape | { failure: string } => {
-  const listed = runGit(
-    worktreePath,
-    ["ls-tree", "-r", "-z", "--full-tree", headSha],
-    true
-  );
-  const records = listed.stdout.split("\0").filter(Boolean);
-  if (listed.exitCode !== 0 || records.length === 0) {
-    return { failure: "its commit's file list could not be read" };
-  }
-  const tracked = new Map<string, string>();
-  const directories = new Set<string>();
-  for (const record of records) {
-    const [, mode, type, path] = LS_TREE_RECORD_PATTERN.exec(record) ?? [];
-    if (!(mode && path)) {
-      return { failure: "its commit's file list could not be read" };
-    }
-    if (type !== "blob") {
-      return { failure: `${path} is a nested project (a submodule)` };
-    }
-    tracked.set(path, mode);
-    for (
-      let end = path.lastIndexOf("/");
-      end > 0 && !directories.has(path.slice(0, end));
-      end = path.lastIndexOf("/", end - 1)
-    ) {
-      directories.add(path.slice(0, end));
-    }
-  }
-  return { directories, root: worktreePath, tracked };
-};
-
-type EntryVerdict = "descend" | "extra" | "tracked" | { failure: string };
-
-// One entry on disk against the commit's shape. A symbolic link is never
-// followed: it passes only where the commit itself holds a link.
-const entryVerdict = (
-  shape: TrackedShape,
-  path: string,
-  entry: Dirent
-): EntryVerdict => {
-  const mode = shape.tracked.get(path);
-  const untracked = mode === undefined && !shape.directories.has(path);
-  if (entry.isDirectory()) {
-    return shape.directories.has(path) ? "descend" : "extra";
-  }
-  if (entry.isFile()) {
-    return mode === undefined ? "extra" : "tracked";
-  }
-  if (entry.isSymbolicLink() && mode === SYMLINK_MODE) {
-    return "tracked";
-  }
-  return untracked
-    ? "extra"
-    : {
-        failure: `${path} is a link or special file where its commit holds a file or folder`,
-      };
-};
-
-// Adds what `relative` holds beyond the commit's shape, up to five names. A
-// directory with no tracked path under it is named and not descended into,
-// which covers a nested repository.
-const collectExtras = (
-  shape: TrackedShape,
-  relative: string,
-  extras: string[]
-): string | null => {
-  // Sorted, so the same checkout always names the same files.
-  const entries = readdirSync(resolve(shape.root, relative), {
-    withFileTypes: true,
-  }).sort((one, other) => (one.name < other.name ? -1 : 1));
-  for (const entry of entries) {
-    if (extras.length >= MAX_NAMED_FILES) {
-      return null;
-    }
-    const path = relative ? `${relative}/${entry.name}` : entry.name;
-    if (path === ".git") {
-      continue;
-    }
-    const verdict = entryVerdict(shape, path, entry);
-    if (typeof verdict === "object") {
-      return verdict.failure;
-    }
-    if (verdict === "extra") {
-      extras.push(entry.isDirectory() ? `${path}/` : path);
-    }
-    const failure =
-      verdict === "descend" ? collectExtras(shape, path, extras) : null;
-    if (failure) {
-      return failure;
-    }
-  }
-  return null;
-};
+// What keeps a merged worktree where it is
 
 /**
- * Up to five entries on disk in a checkout that its commit does not track,
- * which in a checkout with clean status are files Git ignores. The disk
- * itself is walked and compared with the commit's own file list, so a list
- * Git lost or cut short shows more extra files, never fewer. Anything that
- * cannot be read, a submodule, or a link or special file in a tracked
- * place is a failure, which keeps the checkout.
+ * Why Git's own fresh look at the checkout does not show the recorded
+ * branch at the proven commit with nothing unsaved, or null. One `status`
+ * call answers all three, and always prints its branch lines, so an answer
+ * lost on its way here reads as "could not check", never as clean.
+ * Untracked files count; files Git ignores do not.
  */
-export const filesBeyondHead = (
-  worktreePath: string,
-  headSha: string
-): { extras: string[] } | { failure: string } => {
-  const shape = trackedShape(worktreePath, headSha);
-  if ("failure" in shape) {
-    return shape;
-  }
-  const extras: string[] = [];
+const unsavedOrChanged = (
+  worktree: Candidate,
+  branch: string
+): string | null => {
+  const changed = `This copy changed while I was checking it, ${left(worktree.path)}`;
+  let entries: string[];
   try {
-    const failure = collectExtras(shape, "", extras);
-    return failure ? { failure } : { extras };
+    const status = completeListing(
+      worktree.path,
+      ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
+      "\0"
+    );
+    if (status.exitCode !== 0 || status.stdout === "") {
+      return `I could not check this copy for unsaved work, ${left(worktree.path)}`;
+    }
+    entries = status.stdout.split("\0").filter(Boolean);
   } catch {
-    return { failure: "a folder in it could not be listed" };
+    return `I could not check this copy for unsaved work, ${left(worktree.path)}`;
   }
-};
-
-// Whether anything is stored under a directory, without following links.
-const holdsAnyFile = (directory: string): boolean => {
-  if (nothingAtPath(directory)) {
-    return false;
+  if (
+    !(
+      entries.includes(`${STATUS_HEAD_PREFIX}${worktree.headSha}`) &&
+      entries.includes(`${STATUS_BRANCH_PREFIX}${branch}`)
+    )
+  ) {
+    return changed;
   }
-  return readdirSync(directory, { withFileTypes: true }).some(
-    (entry) => !entry.isDirectory() || holdsAnyFile(join(directory, entry.name))
-  );
+  return entries.some((entry) => !entry.startsWith("# "))
+    ? `This copy has changes that are not saved in a commit, ${left(worktree.path)}`
+    : null;
 };
 
 /**
- * Why Git state private to this worktree would be lost with it, or null.
+ * Whether a Git operation is unfinished in this worktree.
  * `assertNoGitOperation` reads the merge, cherry-pick, revert, bisect, and
- * rebase markers; a `sequencer` directory is checked here as well, since an
- * interrupted multi-commit cherry-pick or revert can sit between picks on a
- * clean head with its remaining steps stored only there. Refs the worktree
- * keeps for itself count too. Anything unreadable is a reason.
+ * rebase markers; the rest are checked here, since an interrupted
+ * multi-commit cherry-pick or revert, or a notes merge, can sit on a clean
+ * head with its remaining steps stored only in the private directory.
+ * Anything unreadable counts as unfinished.
  */
-const privateGitState = (
-  commonGitDirectory: string,
+const hasUnfinishedOperation = (
+  gitDirectory: string,
   worktreePath: string
-): string | null => {
-  const unfinished = `This copy has an unfinished Git operation, ${left(worktreePath)}`;
+): boolean => {
   try {
     assertNoGitOperation(worktreePath);
-    const gitDirectory = privateGitDirectory(commonGitDirectory, worktreePath);
-    if (!(gitDirectory && nothingAtPath(join(gitDirectory, "sequencer")))) {
-      return unfinished;
-    }
-    const ownRefs = runGit(
-      worktreePath,
-      ["for-each-ref", "--format=%(refname)", ...OWN_REF_NAMESPACES],
-      true
+    return UNFINISHED_OPERATION_MARKERS.some(
+      (marker) => !nothingAtPath(join(gitDirectory, marker))
     );
-    return ownRefs.exitCode !== 0 ||
-      ownRefs.stdout.trim() !== "" ||
-      holdsAnyFile(join(gitDirectory, "refs", "worktree"))
-      ? `This copy holds Git references of its own, ${left(worktreePath)}`
-      : null;
   } catch {
-    return unfinished;
+    return true;
   }
-};
-
-/**
- * Why the checkout's files are not exactly its commit, or null. Every file
- * is compared with the head itself, so an edit under an assume-unchanged or
- * skip-worktree entry counts, and then the disk is walked for anything the
- * commit does not track at all.
- */
-const contentBeyondCommit = (worktree: Candidate): string | null => {
-  const delta = sourceWorktreeDelta(worktree.path, worktree.headSha, (path) =>
-    worktreeSourceEntry(worktree.path, path)
-  );
-  if ("failure" in delta) {
-    return `I could not compare this copy's files with its saved version (${delta.failure}), ${left(worktree.path)}`;
-  }
-  if (delta.entries.size > 0) {
-    return `This copy holds changes Git's status does not show (${[...delta.entries.keys()].slice(0, MAX_NAMED_FILES).join(", ")}), ${left(worktree.path)}`;
-  }
-  const beyond = filesBeyondHead(worktree.path, worktree.headSha);
-  if ("failure" in beyond) {
-    return `I could not check every file in this copy (${beyond.failure}), ${left(worktree.path)}`;
-  }
-  return beyond.extras.length > 0
-    ? ignoredFilesReason(worktree.path, beyond.extras)
-    : null;
 };
 
 const claimReason = (
@@ -441,10 +467,37 @@ const claimReason = (
     ? `Another agent has claimed this copy, ${left(path)}`
     : null;
 
+// Moving a folder moves everything inside it, so a worktree that holds
+// another registered worktree, or the repository itself, stays.
+const holdsOtherWork = (
+  inventory: RepositoryInventory,
+  path: string
+): boolean => {
+  const inside = `${path}${sep}`;
+  const live = completeListing(
+    inventory.repository.primaryCheckout,
+    ["worktree", "list", "--porcelain", "-z"],
+    "\0",
+    false
+  );
+  if (!live.stdout.startsWith("worktree ")) {
+    return true;
+  }
+  return (
+    live.stdout
+      .split("\0")
+      .some((field) => field.startsWith(`worktree ${inside}`)) ||
+    inventory.repository.commonGitDirectory.startsWith(inside) ||
+    inventory.worktrees.some((item) => item.path.startsWith(inside))
+  );
+};
+
 // ---------------------------------------------------------------------------
 // One recorded worktree at a time
 
-type Registration = "another" | "same" | "unknown";
+type Registration =
+  | { gitDirectory: string; state: "same" }
+  | { state: "another" | "unknown" };
 
 /**
  * Whether the checkout at the recorded path is the registration the run
@@ -459,13 +512,14 @@ const registrationOf = (
   try {
     const gitDirectory = privateGitDirectory(commonGitDirectory, recorded.path);
     if (!gitDirectory) {
-      return "unknown";
+      return { state: "unknown" };
     }
-    return readRegistrationId(gitDirectory) === recorded.registrationId
-      ? "same"
-      : "another";
+    return readRegistrationId(gitDirectory, recorded.path) ===
+      recorded.registrationId
+      ? { gitDirectory, state: "same" }
+      : { state: "another" };
   } catch {
-    return "unknown";
+    return { state: "unknown" };
   }
 };
 
@@ -486,7 +540,7 @@ const locate = (
   if (!worktree || worktree.prunable || worktree.isPrimary) {
     return "forget";
   }
-  const registration = registrationOf(commonGitDirectory, recorded);
+  const registration = registrationOf(commonGitDirectory, recorded).state;
   if (registration === "another") {
     return "forget";
   }
@@ -501,160 +555,277 @@ const locate = (
   return { ...worktree, headSha: worktree.headSha };
 };
 
-// The first time a start asks about a target: the remote's answer, with
-// its commit brought here if it is missing. A remote that gives no answer
-// or no commits is noted once, and keeps every worktree bound to it.
-const firstAnswer = (
-  context: RetirementContext,
-  { target }: KeptQueuedWorktree
-): RemoteHead => {
-  const { primaryCheckout } = context.inventory.repository;
-  const answer = askTarget(primaryCheckout, target);
-  const failure =
-    answer.state === "unanswered"
-      ? answer.detail
-      : answer.head && fetchTargetCommit(primaryCheckout, target, answer.head);
-  if (failure) {
-    context.report.notes.push(
-      `I could not ask ${target.url} what has been merged (${oneLine(failure)}), so earlier copies that wait on it were left in place.`
-    );
-  }
-  return answer;
-};
-
-const targetKey = (target: QueuedTargetBinding): string =>
-  `${target.url}\n${target.ref}`;
-
 /**
- * Whether the remote's target contains this worktree's head, by this
- * start's first answer for that target. It only sorts the merged from the
- * rest: a worktree is removed on the fresh answer `lastChecks` asks for. An
- * unanswered remote is noted once and keeps every worktree bound to it.
- */
-const mergedEvidence = (
-  context: RetirementContext,
-  recorded: KeptQueuedWorktree,
-  worktree: Candidate
-): Evidence | null => {
-  const { primaryCheckout } = context.inventory.repository;
-  const key = targetKey(recorded.target);
-  const answer = context.answers.get(key) ?? firstAnswer(context, recorded);
-  context.answers.set(key, answer);
-  if (answer.state === "unanswered" || !answer.head) {
-    return null;
-  }
-  const proof = containmentProof(
-    primaryCheckout,
-    worktree.headSha,
-    answer.head
-  );
-  return proof ? { proof, revision: answer.head } : null;
-};
-
-/**
- * Every safety check for one worktree, run after the remover's own fresh
- * re-read and immediately before Git removes it, so nothing rests on an
- * earlier look: the registration and branch, a fresh answer from the
- * recorded remote with the proof repeated if the target moved, the claim,
- * Git state private to the worktree, and last the files themselves.
- * Returns the reason to keep it, or null.
+ * Every check for one worktree, on a fresh read, immediately before it is
+ * moved, so nothing rests on an earlier look: the registration, Git's own
+ * fresh word on its branch, commit, and unsaved work, the proof run again
+ * against that commit, the claim, a lock, an unfinished Git operation, and
+ * anything else that lives inside the folder. Returns the reason to keep
+ * it, or the private Git directory to take along.
  */
 const lastChecks = (
   context: RetirementContext,
   recorded: KeptQueuedWorktree,
-  fresh: Candidate,
+  worktree: Candidate,
   evidence: Evidence
-): string | null => {
+): { gitDirectory: string } | { reason: string } => {
   const { commonGitDirectory, primaryCheckout } = context.inventory.repository;
-  if (
-    fresh.branch !== recorded.branch ||
-    registrationOf(commonGitDirectory, recorded) !== "same"
-  ) {
-    return `This copy changed while I was checking it, ${left(fresh.path)}`;
+  const { path } = worktree;
+  const registration = registrationOf(commonGitDirectory, recorded);
+  if (registration.state !== "same") {
+    return {
+      reason: `This copy changed while I was checking it, ${left(path)}`,
+    };
   }
-  const answer = askTarget(primaryCheckout, recorded.target);
-  const unconfirmed = `I could not confirm with ${recorded.target.url} that this copy's work is still in the project, ${left(fresh.path)}`;
-  if (answer.state === "unanswered" || !answer.head) {
-    return unconfirmed;
-  }
-  if (answer.head !== evidence.revision) {
-    const proof = containmentProof(primaryCheckout, fresh.headSha, answer.head);
-    if (!proof) {
-      return unconfirmed;
-    }
-    evidence.proof = proof;
-    evidence.revision = answer.head;
-  }
-  return (
-    claimReason(commonGitDirectory, fresh.path) ??
-    privateGitState(commonGitDirectory, fresh.path) ??
-    contentBeyondCommit(fresh)
+  const { gitDirectory } = registration;
+  const proof = containmentProof(
+    primaryCheckout,
+    worktree.headSha,
+    evidence.revision
   );
+  if (!proof) {
+    return {
+      reason: `I could not confirm again that this copy's work is in the project, ${left(path)}`,
+    };
+  }
+  evidence.proof = proof;
+  let reason =
+    unsavedOrChanged(worktree, recorded.branch) ??
+    claimReason(commonGitDirectory, path);
+  if (!reason && hasUnfinishedOperation(gitDirectory, path)) {
+    reason = `This copy has an unfinished Git operation, ${left(path)}`;
+  }
+  if (!(reason || nothingAtPath(join(gitDirectory, "locked")))) {
+    reason = `This copy is locked, ${left(path)}`;
+  }
+  if (!reason && holdsOtherWork(context.inventory, path)) {
+    reason = `Another copy of the project lives inside this one, ${left(path)}`;
+  }
+  return reason ? { reason } : { gitDirectory };
+};
+
+/** How to put a moved worktree back, in plain words with exact paths. */
+export const restoreSteps = (
+  path: string,
+  trashed: Pick<
+    TrashedQueuedWorktree,
+    "gitDirectory" | "location" | "registration"
+  >
+): string => {
+  const folder = trashed.location
+    ? `move ${trashed.location} back to ${path}`
+    : `find the folder named ${basename(path)} in the Trash and move it back to ${path}`;
+  return trashed.registration === "moved-with-copy"
+    ? `To get it back, ${folder}, then move ${join(path, MOVED_GIT_DIRECTORY)} to ${trashed.gitDirectory} (make the folder that holds it first if it is gone).`
+    : `To get it back, ${folder}, then run git worktree unlock from the primary checkout with the restored path as its argument.`;
+};
+
+const saveRecord = (
+  context: RetirementContext,
+  record: QueuedWorktreesRecord
+): void => {
+  try {
+    writeQueuedWorktreesRecord(
+      context.inventory.repository.commonGitDirectory,
+      record
+    );
+  } catch (error) {
+    context.report.notes.push(
+      `I could not update the record of earlier copies (${message(error)}).`
+    );
+  }
 };
 
 /**
- * Removes one merged worktree through `removeProvenWorktrees`, the removal
- * `prune` and `worktree cleanup` use, one candidate per call with
- * `lastChecks` as its guard. It removes without force and deletes the
- * branch only while that is the worktree's own, still at the proven head.
+ * Takes the worktree's private Git directory along into the moved folder,
+ * with one rename. Git then no longer lists a worktree whose folder is
+ * missing and no longer counts its branch as checked out, and nothing in
+ * that directory (the index, the worktree's own HEAD log, refs it kept for
+ * itself) is left for a later `git worktree prune` to delete. Any failure
+ * leaves the directory exactly where it was.
  */
-const removeMerged = (
+const takeGitDirectoryAlong = (
+  gitDirectory: string,
+  location: string
+): boolean => {
+  try {
+    const destination = join(location, MOVED_GIT_DIRECTORY);
+    if (!nothingAtPath(destination)) {
+      return false;
+    }
+    renameSync(gitDirectory, destination);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const pinPrefix = (id: string): string =>
+  `refs/simple-changes/queued-trash/${id}/`;
+
+// Git no longer traverses private reflogs once their directory is in the
+// Trash. Publish recovery roots in a single ref transaction before moving.
+const pinRecoveryObjects = (
+  path: string,
+  directory: string,
+  copy: KeptQueuedWorktree,
+  head: string
+): void => {
+  const named = namedObjectsOf(path, directory, []);
+  const objects = new Set([head, ...named.map((item) => item.object)]);
+  const common = dirname(dirname(directory));
+  const logs = [
+    join(directory, "logs/HEAD"),
+    join(common, "logs/refs/heads", copy.branch),
+    ...named
+      .filter((item) => item.name.startsWith("refs/"))
+      .map((item) => join(directory, "logs", item.name)),
+  ];
+  for (const log of logs) {
+    if (nothingAtPath(log)) {
+      continue;
+    }
+    for (const line of readFileSync(log, "utf8").split("\n").filter(Boolean)) {
+      const ids = line.split(" ", 2);
+      if (ids.length !== 2 || !ids.every((id) => OBJECT_ID_PATTERN.test(id))) {
+        throw new Error("Unreadable recovery reflog");
+      }
+      for (const id of ids) {
+        if (id !== "0".repeat(id.length)) {
+          objects.add(id);
+        }
+      }
+    }
+  }
+  const prefix = pinPrefix(copy.registrationId);
+  runGitWithInput(
+    path,
+    ["-c", `core.hooksPath=${devNull}`, "update-ref", "--no-deref", "--stdin"],
+    [...objects].map((oid) => `update ${prefix}${oid} ${oid}\n`).join("")
+  );
+};
+
+const releasePins = (primary: string, id: string): void => {
+  const prefix = pinPrefix(id);
+  const refs = completeListing(
+    primary,
+    ["for-each-ref", "--format=%(refname)", prefix],
+    "\n",
+    false
+  );
+  const deletes = refs.stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((ref) => {
+      const oid = ref.slice(prefix.length);
+      if (!(ref.startsWith(prefix) && OBJECT_ID_PATTERN.test(oid))) {
+        throw new Error("Unexpected recovery ref");
+      }
+      return `delete ${ref} ${oid}\n`;
+    });
+  if (deletes.length) {
+    runGitWithInput(
+      primary,
+      [
+        "-c",
+        `core.hooksPath=${devNull}`,
+        "update-ref",
+        "--no-deref",
+        "--stdin",
+      ],
+      deletes.join("")
+    );
+  }
+};
+
+/**
+ * Moves one merged worktree to the Trash. Nothing changes before the folder
+ * is confirmed gone from its path; a folder that did not move is reported
+ * kept, exactly as it was. Each step that did happen is written to the
+ * report and the record before the next one starts, so a later failure
+ * cannot hide it. The branch is never deleted.
+ */
+const moveMerged = (
   context: RetirementContext,
+  record: QueuedWorktreesRecord,
   recorded: KeptQueuedWorktree,
   worktree: Candidate,
   evidence: Evidence
 ): void => {
   const { report } = context;
-  const errors: string[] = [];
-  const guard: { ran: boolean; reason: string | null } = {
-    ran: false,
-    reason: null,
-  };
-  const [removed] = removeProvenWorktrees(
-    context.repositoryPath,
-    // The full local form of the target branch, which is never deleted.
-    recorded.target.ref,
-    [{ containment: evidence.proof, worktree }],
-    errors,
-    {
-      beforeRemoval: (fresh) => {
-        context.hooks.beforeLastChecks?.(fresh.path);
-        guard.reason = lastChecks(context, recorded, fresh, evidence);
-        guard.ran = true;
-        return guard.reason;
-      },
-    }
-  );
-  if (!removed) {
-    const fallback = guard.ran
-      ? `Git would not remove this copy (${oneLine(errors.join(" "))}), ${left(worktree.path)}`
-      : `This copy changed while I was checking it, ${left(worktree.path)}`;
+  const { path } = worktree;
+  context.hooks.beforeLastChecks?.(path);
+  const checked = lastChecks(context, recorded, worktree, evidence);
+  if ("reason" in checked) {
+    report.kept.push({ path, reason: checked.reason });
+    return;
+  }
+  pinRecoveryObjects(path, checked.gitDirectory, recorded, worktree.headSha);
+  // Protect the index and private refs even if the process stops after
+  // Trash takes the folder, or macOS conceals its destination.
+  const lock = join(checked.gitDirectory, "locked");
+  writeFileSync(lock, "Simple Changes Trash recovery\n", { flag: "wx" });
+  const result = moveToTrash(path, context.hooks.moveToTrash);
+  if (result.state === "kept") {
+    unlinkSync(lock);
+    releasePins(path, recorded.registrationId);
     report.kept.push({
-      path: worktree.path,
-      reason: guard.reason ?? fallback,
+      path,
+      reason: `I could not move this copy to the Trash (${oneLine(result.reason)}), ${left(path)}`,
     });
     return;
   }
-  context.forgotten.add(recorded.registrationId);
-  report.notes.push(...errors);
-  report.removed.push({
-    branch: removed.branch,
-    branchDeleted: removed.branchDeleted,
-    headSha: removed.headSha,
-    path: removed.path,
+  const trashed: TrashedQueuedWorktree = {
+    at: (context.hooks.now?.() ?? new Date()).toISOString(),
+    gitDirectory: checked.gitDirectory,
+    headSha: worktree.headSha,
+    location: result.location,
+    registration: "left-in-git",
+  };
+  const move: QueuedRetirementMove = {
+    branch: recorded.branch,
+    headSha: worktree.headSha,
+    location: trashed.location,
+    path,
     proof: evidence.proof,
+    registration: trashed.registration,
+    restore: restoreSteps(path, trashed),
     target: {
       ref: recorded.target.ref,
       revision: evidence.revision,
       url: recorded.target.url,
     },
-  });
+    trashedAt: trashed.at,
+  };
+  report.movedToTrash.push(move);
+  recorded.trashed = trashed;
+  saveRecord(context, record);
+  if (
+    result.location &&
+    takeGitDirectoryAlong(checked.gitDirectory, result.location)
+  ) {
+    trashed.registration = "moved-with-copy";
+    move.registration = trashed.registration;
+    move.restore = restoreSteps(path, trashed);
+    saveRecord(context, record);
+    unlinkSync(join(result.location, MOVED_GIT_DIRECTORY, "locked"));
+    return;
+  }
+  report.notes.push(
+    `Git still lists the copy that was at ${path}, because its place in the Trash could not be confirmed or its Git folder could not be moved along. Its Git registration is locked against pruning.`
+  );
 };
 
 const retireOne = (
   context: RetirementContext,
+  record: QueuedWorktreesRecord,
   recorded: KeptQueuedWorktree
 ): void => {
+  // Already moved by an earlier start: history, never a candidate again,
+  // also when someone has put the folder back.
+  if (recorded.trashed) {
+    return;
+  }
   const worktree = locate(context, recorded);
   if (worktree === "forget") {
     context.forgotten.add(recorded.registrationId);
@@ -667,16 +838,18 @@ const retireOne = (
   ) {
     return;
   }
+  const { commonGitDirectory, primaryCheckout } = context.inventory.repository;
+  context.lazyFetchOff ??= lazyFetchStaysOff(primaryCheckout);
+  if (!context.lazyFetchOff) {
+    return;
+  }
   // Not merged yet, as far as the remote says: it waits, unreported.
   const evidence = mergedEvidence(context, recorded, worktree);
   if (!evidence) {
     return;
   }
   const early =
-    claimReason(
-      context.inventory.repository.commonGitDirectory,
-      worktree.path
-    ) ??
+    claimReason(commonGitDirectory, worktree.path) ??
     (worktree.changes.length > 0
       ? `This copy has changes that are not saved in a commit, ${left(worktree.path)}`
       : null);
@@ -684,71 +857,106 @@ const retireOne = (
     context.report.kept.push({ path: worktree.path, reason: early });
     return;
   }
-  removeMerged(context, recorded, worktree, evidence);
+  moveMerged(context, record, recorded, worktree, evidence);
 };
 
-const message = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+// Drops the entries nothing will act on again: a worktree that is gone or
+// is another registration, and a move made long enough ago. Only the record
+// is touched.
+const forgetSettledEntries = (
+  context: RetirementContext,
+  records: readonly QueuedWorktreesRecord[]
+): void => {
+  const now = (context.hooks.now?.() ?? new Date()).getTime();
+  const remembered = (item: KeptQueuedWorktree): boolean => {
+    if (!item.trashed) {
+      return !context.forgotten.has(item.registrationId);
+    }
+    const age = now - Date.parse(item.trashed.at);
+    if (age > REMEMBER_MOVED_DAYS * DAY_MS) {
+      releasePins(
+        context.inventory.repository.primaryCheckout,
+        item.registrationId
+      );
+      return false;
+    }
+    return true;
+  };
+  for (const record of records) {
+    const worktrees = record.worktrees.filter(remembered);
+    if (worktrees.length !== record.worktrees.length) {
+      saveRecord(context, { ...record, worktrees });
+    }
+  }
+};
 
 /**
- * At a fresh Queue or Sweep start, clears the worktrees earlier Queue and
- * Sweep runs created and kept, once their work is merged. The caller holds
- * the loop and worktree-coordination locks, has finished validating the
- * start, and has not captured the lease baseline yet.
+ * At a fresh Queue or Sweep start, moves to the Trash the worktrees earlier
+ * Queue and Sweep runs created and kept, once their work is merged. The
+ * caller holds the loop and worktree-coordination locks, has finished
+ * validating the start, and has not captured the lease baseline yet.
  *
- * Each recorded worktree is taken alone, checked, and removed before the
- * next one is looked at. It goes only when all of this is proven:
+ * Nothing is deleted: no `git worktree remove`, no branch deletion. A
+ * mistake is undone by moving the folder back (`restoreSteps`), so the
+ * checks are the reasonable ones, not an exhaustive proof. Each recorded
+ * worktree is taken alone and moved only when:
  *
- * - it is the registration the run recorded (the ID in its private Git
- *   directory), on the recorded branch, and not the checkout in use;
- * - the recorded remote, asked now for the recorded target ref, answers
- *   with a commit that contains its head by ancestry or exact bytes;
- * - no claim holds it, its status is clean, and no Git operation or
- *   private ref would be lost with it;
- * - its files equal its commit even where status is told not to look, and
- *   nothing is on disk beyond what the commit tracks.
+ * - it is the registration the run recorded (the ID `prepare-agent` wrote
+ *   into its private Git directory), on the recorded branch, and not the
+ *   checkout in use;
+ * - the recorded remote, asked at this start for the recorded target ref,
+ *   answers with a commit that contains its head by ancestry or exact
+ *   bytes, and that proof still holds on the last look;
+ * - no claim or lock holds it, Git's own fresh status shows no uncommitted
+ *   change and no untracked file, and no Git operation is unfinished.
  *
- * Anything else, or anything that cannot be read, keeps the worktree. One
- * that is merged and kept is reported with its reason; one that is not
- * merged yet is not mentioned. This never throws and never stops the run.
+ * Files Git ignores (installed packages, build output, local settings) go
+ * to the Trash with the folder. Anything else, or anything that cannot be
+ * read, keeps the worktree. One that is merged and kept is reported with
+ * its reason; one that is not merged yet is not mentioned. This never
+ * throws and never stops the run.
  */
 export const retireMergedQueuedWorktrees = (
-  repositoryPath: string,
   inventory: RepositoryInventory,
   hooks: QueuedRetirementHooks = {}
 ): QueuedRetirementReport => {
-  const report: QueuedRetirementReport = { kept: [], notes: [], removed: [] };
+  const report: QueuedRetirementReport = {
+    kept: [],
+    movedToTrash: [],
+    notes: [],
+  };
   const context: RetirementContext = {
     answers: new Map(),
     forgotten: new Set(),
     hooks,
     inventory,
     report,
-    repositoryPath,
   };
   try {
-    const { commonGitDirectory } = inventory.repository;
-    const records = readQueuedWorktreesRecords(commonGitDirectory);
-    for (const recorded of records.flatMap((record) => record.worktrees)) {
-      try {
-        retireOne(context, recorded);
-      } catch (error) {
-        report.notes.push(
-          `I could not check an earlier copy (${message(error)}), ${left(recorded.path)}`
+    withGitDeadline(30_000, () =>
+      withEnvironment(RETIREMENT_GIT_ENVIRONMENT, () => {
+        const records = readQueuedWorktreesRecords(
+          inventory.repository.commonGitDirectory
         );
-      }
-    }
-    for (const record of records) {
-      const worktrees = record.worktrees.filter(
-        (item) => !context.forgotten.has(item.registrationId)
-      );
-      if (worktrees.length !== record.worktrees.length) {
-        writeQueuedWorktreesRecord(commonGitDirectory, {
-          ...record,
-          worktrees,
-        });
-      }
-    }
+        for (const record of records) {
+          for (const recorded of record.worktrees) {
+            try {
+              retireOne(context, record, recorded);
+            } catch (error) {
+              report.notes.push(
+                `I could not check an earlier copy (${message(error)}), ${left(recorded.path)}`
+              );
+            }
+          }
+        }
+        if (context.lazyFetchOff === false) {
+          report.notes.push(
+            "This project downloads parts of its history only when they are read, and this Git cannot be told not to (Git 2.45 or later can), so earlier copies were left in place."
+          );
+        }
+        forgetSettledEntries(context, records);
+      })
+    );
   } catch (error) {
     report.notes.push(`Earlier copies were not checked: ${message(error)}`);
   }

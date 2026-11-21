@@ -711,6 +711,6 @@ export const queuedSummary = (
   const kept =
     keptWorktrees.length === 0
       ? ""
-      : ` The run's ${keptWorktrees.length === 1 ? "worktree was" : "worktrees were"} kept for now: ${keptWorktrees.join(", ")}. A later Queue or Sweep run clears a kept worktree by itself once the remote confirms its work is merged and nothing in it exists only there.`;
+      : ` The run's ${keptWorktrees.length === 1 ? "worktree was" : "worktrees were"} kept for now: ${keptWorktrees.join(", ")}. A later Queue or Sweep run moves a kept worktree to the Trash by itself once the remote confirms its work is merged and nothing in it is unsaved.`;
   return `Queued for review, not merged: ${counts}. Nothing was added to ${lease.targetRef}, and finalization deleted no checkout, branch, or file. Uncommitted work in the primary checkout was left exactly as it was.${kept}`;
 };

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://simple-changes.dev/schemas/queued-worktrees.schema.json",
   "title": "Simple Changes kept queued worktrees",
-  "description": "Record a closed Queue or Sweep run leaves beside the loop state at `queued-worktrees/<run-id>.json`: the worktrees it created and kept. Each entry binds the worktree's branch, the ID written into its private Git directory when the run closed, and the target the run proposed into as one ref on one remote address. A fresh `loop start --mode queue|sweep` reads it to clear such a worktree once that remote confirms the target contains its work and every safety check passes; a worktree is never removed on this record alone, and an entry without the registration ID or the target binding is not valid and authorizes nothing. Kept in its own file so older runtimes never meet it, and deleted once none of its worktrees is left.",
+  "description": "Record a closed Queue or Sweep run leaves beside the loop state at `queued-worktrees/<run-id>.json`: the worktrees it created and kept. Each entry binds the worktree's branch, the ID `prepare-agent` wrote into its private Git directory, and the target the run proposed into as one ref on one remote address, recorded without any credential. A fresh `loop start --mode queue|sweep` reads it to move such a worktree to the Trash once that remote confirms the target contains its work and the worktree holds nothing unsaved; nothing is moved on this record alone, and an entry without the registration ID or the target binding is not valid and authorizes nothing. A move is written back into its entry as `trashed`, and such an entry is never acted on again. Kept in its own file so older runtimes never meet it, and deleted once none of its entries is left.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -41,6 +41,32 @@
               "remote": { "type": "string", "minLength": 1 },
               "url": { "type": "string", "minLength": 1 },
               "ref": { "type": "string", "pattern": "^refs/heads/.+$" }
+            }
+          },
+          "trashed": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "at",
+              "gitDirectory",
+              "headSha",
+              "location",
+              "registration"
+            ],
+            "properties": {
+              "at": { "type": "string", "format": "date-time" },
+              "gitDirectory": { "type": "string", "minLength": 1 },
+              "headSha": {
+                "type": "string",
+                "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+              },
+              "location": {
+                "anyOf": [
+                  { "type": "string", "minLength": 1 },
+                  { "type": "null" }
+                ]
+              },
+              "registration": { "enum": ["left-in-git", "moved-with-copy"] }
             }
           }
         }

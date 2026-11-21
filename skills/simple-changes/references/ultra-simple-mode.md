@@ -243,10 +243,14 @@ clean-up, and never report the run finished while a line is open.
 
 **Old copies.** Each change you send for review gets its own separate copy
 of the project on this computer. Once that change has been added to the
-project, a later request clears the copy by itself; say nothing about it.
-When it leaves one in place, pass on the line it gives, once, as written: it
-says why, such as files that exist only in that copy, and where the copy is.
-Remove such a copy only when the person asks.
+project, a later request moves the copy to the Trash by itself and deletes
+nothing. Say so once, in one line: "I moved an old copy of the project to
+the Trash, because its change is already in the project. Nothing was
+deleted, and I can put it back if you need it." When they ask for it back,
+follow the steps the request gave for that copy. When it leaves a copy in
+place, pass on the line it gives, once, as written: it says why, such as
+work in that copy that is not saved yet, and where the copy is. Remove such
+a copy only when the person asks.
 
 ## Other people's work
 

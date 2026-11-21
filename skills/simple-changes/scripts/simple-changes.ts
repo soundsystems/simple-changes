@@ -4703,42 +4703,46 @@ const runLoopStart = (options: CliOptions): void => {
   let workDir: string | null = null;
   let removedWorkDirectories: string[] = [];
   let earlierQueuedWorktrees: QueuedRetirementReport | null = null;
-  const lease = startLoop(
-    options.repo,
-    agentId,
-    options.mode as RequestMode,
-    openingRemoteInventory,
-    {
-      // A fresh Queue or Sweep start reports what it did with the worktrees
-      // earlier such runs kept, even when it removed none.
-      onQueuedRetirement: (report) => {
-        earlierQueuedWorktrees = report;
-      },
-      onReviewLedger: (state) => {
-        reviewLedger = state.state === "absent" ? null : state;
-      },
-      // Under the loop locks: only this run is live, so every other run's
-      // directories are finished and no close can race the sweep.
-      onStarted: (started) => {
-        try {
-          workDir = bindRunWorkDirectory(
-            workRepository,
-            started.runId,
-            agentId,
-            workDirectorySession("loop start"),
-            openingWorkDirectory
-          );
-        } catch (error) {
-          process.stderr.write(
-            `Warning: no work directory was bound: ${(error as Error).message}\n`
-          );
+  const lease = sayingWhatMoved(
+    () => earlierQueuedWorktrees,
+    () =>
+      startLoop(
+        options.repo,
+        agentId,
+        options.mode as RequestMode,
+        openingRemoteInventory,
+        {
+          // A fresh Queue or Sweep start reports what it did with the worktrees
+          // earlier such runs kept, even when it moved none.
+          onQueuedRetirement: (report) => {
+            earlierQueuedWorktrees = report;
+          },
+          onReviewLedger: (state) => {
+            reviewLedger = state.state === "absent" ? null : state;
+          },
+          // Under the loop locks: only this run is live, so every other run's
+          // directories are finished and no close can race the sweep.
+          onStarted: (started) => {
+            try {
+              workDir = bindRunWorkDirectory(
+                workRepository,
+                started.runId,
+                agentId,
+                workDirectorySession("loop start"),
+                openingWorkDirectory
+              );
+            } catch (error) {
+              process.stderr.write(
+                `Warning: no work directory was bound: ${(error as Error).message}\n`
+              );
+            }
+            removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+              removeFinishedRunWorkDirectories(workRepository, started.runId)
+            );
+          },
+          ...(request === undefined ? {} : { request }),
         }
-        removedWorkDirectories = removeClosedRunWorkDirectories(() =>
-          removeFinishedRunWorkDirectories(workRepository, started.runId)
-        );
-      },
-      ...(request === undefined ? {} : { request }),
-    }
+      )
   );
   const holds = informationalHolds(options.repo);
   const freshness = leaseRuntimeFreshness(lease);
@@ -4765,15 +4769,30 @@ const runLoopStart = (options: CliOptions): void => {
   );
 };
 
+// A start that fails after it moved earlier copies to the Trash still says
+// what it moved, on stderr, before the failure is reported.
+const sayingWhatMoved = <T>(
+  report: () => QueuedRetirementReport | null,
+  start: () => T
+): T => {
+  try {
+    return start();
+  } catch (error) {
+    process.stderr.write(renderQueuedRetirement(report()));
+    throw error;
+  }
+};
+
 // What a fresh Queue or Sweep start did with earlier runs' kept worktrees:
-// one plain line for each one cleared, and for each merged one it left.
+// one plain line for each one it moved to the Trash, with how to get it
+// back, and one for each merged one it left.
 export const renderQueuedRetirement = (
   report: QueuedRetirementReport | null
 ): string =>
   [
-    ...(report?.removed ?? []).map(
-      ({ branch, branchDeleted, path }) =>
-        `Cleared an earlier copy whose work is now in the project${branchDeleted && branch ? `, with its branch ${branch}` : ""}: ${path}\n`
+    ...(report?.movedToTrash ?? []).map(
+      ({ branch, path, restore }) =>
+        `Moved an earlier copy to the Trash, because its work is now in the project: ${path}. Nothing was deleted, and its branch ${branch} was kept. ${restore}\n`
     ),
     ...(report?.kept ?? []).map(({ reason }) => `${reason}\n`),
     ...(report?.notes ?? []).map((note) => `Note: ${note}\n`),

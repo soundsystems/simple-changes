@@ -38,6 +38,7 @@ import {
 import { verificationAgainst } from "./loop-lease-verify.ts";
 import { preparedWorktreePath, slug } from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
+import { markQueuedWorktree } from "./queued-worktrees.ts";
 import type {
   ChangelogAuthorBinding,
   LoopLease,
@@ -80,6 +81,17 @@ const isDirectory = (path: string): boolean => {
   } catch {
     return false;
   }
+};
+
+const registrationForNewCheckout = (
+  lease: LoopLease,
+  path: string
+): Pick<LoopWorktreeLease, "queuedRegistrationId"> => {
+  if (lease.mode !== "queue" && lease.mode !== "sweep") {
+    return {};
+  }
+  const id = markQueuedWorktree(lease.commonGitDirectory, path);
+  return id ? { queuedRegistrationId: id } : {};
 };
 
 export interface PreparedAgentWorktree {
@@ -320,7 +332,8 @@ export const prepareAgentWorktree = (
 
       const finalizePreparation = (
         currentLease: LoopLease,
-        preparation: LoopWorktreePreparation
+        preparation: LoopWorktreePreparation,
+        registration: Pick<LoopWorktreeLease, "queuedRegistrationId"> = {}
       ): PreparedAgentWorktree => {
         inventory = captureInventory(repositoryPath);
         const preparedPath = existsSync(preparation.path)
@@ -346,6 +359,13 @@ export const prepareAgentWorktree = (
           );
         }
         const completedAt = new Date().toISOString();
+        const author = exactWorktreeLease(
+          createdWorktree,
+          "author",
+          agentId,
+          true
+        );
+
         const completedLease: LoopLease = {
           ...withMutationEvidence(currentLease, completedAt),
           preparations: currentLease.preparations.filter(
@@ -354,7 +374,7 @@ export const prepareAgentWorktree = (
           updatedAt: completedAt,
           worktrees: [
             ...currentLease.worktrees,
-            exactWorktreeLease(createdWorktree, "author", agentId, true),
+            { ...author, ...registration },
           ],
         };
         writeLease(completedLease);
@@ -458,7 +478,11 @@ export const prepareAgentWorktree = (
             preparation.baseRevision,
           ]);
         }
-        return finalizePreparation(currentLease, preparation);
+        return finalizePreparation(
+          currentLease,
+          preparation,
+          registrationForNewCheckout(currentLease, preparation.path)
+        );
       };
 
       const pending = lease.preparations.find(

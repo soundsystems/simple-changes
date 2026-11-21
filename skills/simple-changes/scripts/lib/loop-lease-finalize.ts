@@ -3054,7 +3054,7 @@ const relinquishController = (
 // which checkouts this run left and what to ask about them. The receipt is
 // persisted by now and the run is closing, so a record that cannot be
 // written is a note in the result, never a failed finalization: its
-// worktrees then simply stay.
+// worktrees then simply stay where they are.
 const rememberKeptQueuedWorktrees = (
   lease: LoopLease,
   inventory: RepositoryInventory,
@@ -3073,7 +3073,7 @@ const rememberKeptQueuedWorktrees = (
     );
   } catch (error) {
     cleanup.notes.push(
-      `The record of this run's kept worktrees could not be written, so a later run will not clear them by itself: ${error instanceof Error ? error.message : String(error)}`
+      `The record of this run's kept worktrees could not be written, so a later run will not move them to the Trash by itself: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 };
@@ -3099,8 +3099,8 @@ const finalizeOwnedLoop = (
   // branches and proposals. Its finalization deletes nothing: the primary
   // checkout, the local target branch, every earlier branch and worktree,
   // and the run's own worktrees all stay as they are. Only a later fresh
-  // Queue or Sweep start clears a kept worktree, once its work is merged
-  // (`queued-retirement.ts`).
+  // Queue or Sweep start moves a kept worktree to the Trash, once its work
+  // is merged (`queued-retirement.ts`).
   const queued = closesAsQueued(lease)
     ? assessQueuedWork(lease, finalInventory, declared)
     : null;

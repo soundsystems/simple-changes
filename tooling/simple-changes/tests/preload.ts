@@ -31,6 +31,13 @@ process.env.SIMPLE_CHANGES_WORK_ROOT = mkdtempSync(
   join(tmpdir(), "simple-changes-work-root-")
 );
 
+// A Queue or Sweep start moves merged earlier worktrees to the Trash. No
+// test may reach the real one, so every move this process makes, and every
+// move a command line it starts makes, goes into a private folder instead.
+process.env.SIMPLE_CHANGES_TRASH_DIR = mkdtempSync(
+  join(tmpdir(), "simple-changes-trash-")
+);
+
 // Every test names its repository. Run them from an empty directory outside
 // any repository, with Git's discovery stopped above it and no inherited Git
 // location variables, so a command that falls back to the working directory

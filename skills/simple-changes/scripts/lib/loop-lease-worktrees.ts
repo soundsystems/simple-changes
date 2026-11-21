@@ -83,17 +83,6 @@ const isDirectory = (path: string): boolean => {
   }
 };
 
-const registrationForNewCheckout = (
-  lease: LoopLease,
-  path: string
-): Pick<LoopWorktreeLease, "queuedRegistrationId"> => {
-  if (lease.mode !== "queue" && lease.mode !== "sweep") {
-    return {};
-  }
-  const id = markQueuedWorktree(lease.commonGitDirectory, path);
-  return id ? { queuedRegistrationId: id } : {};
-};
-
 export interface PreparedAgentWorktree {
   agentId: string;
   baseRevision: string;
@@ -332,8 +321,7 @@ export const prepareAgentWorktree = (
 
       const finalizePreparation = (
         currentLease: LoopLease,
-        preparation: LoopWorktreePreparation,
-        registration: Pick<LoopWorktreeLease, "queuedRegistrationId"> = {}
+        preparation: LoopWorktreePreparation
       ): PreparedAgentWorktree => {
         inventory = captureInventory(repositoryPath);
         const preparedPath = existsSync(preparation.path)
@@ -359,13 +347,6 @@ export const prepareAgentWorktree = (
           );
         }
         const completedAt = new Date().toISOString();
-        const author = exactWorktreeLease(
-          createdWorktree,
-          "author",
-          agentId,
-          true
-        );
-
         const completedLease: LoopLease = {
           ...withMutationEvidence(currentLease, completedAt),
           preparations: currentLease.preparations.filter(
@@ -374,7 +355,7 @@ export const prepareAgentWorktree = (
           updatedAt: completedAt,
           worktrees: [
             ...currentLease.worktrees,
-            { ...author, ...registration },
+            exactWorktreeLease(createdWorktree, "author", agentId, true),
           ],
         };
         writeLease(completedLease);
@@ -478,11 +459,8 @@ export const prepareAgentWorktree = (
             preparation.baseRevision,
           ]);
         }
-        return finalizePreparation(
-          currentLease,
-          preparation,
-          registrationForNewCheckout(currentLease, preparation.path)
-        );
+        markQueuedWorktree(currentLease, preparation.path);
+        return finalizePreparation(currentLease, preparation);
       };
 
       const pending = lease.preparations.find(

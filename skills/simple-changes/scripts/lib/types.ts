@@ -929,7 +929,6 @@ export interface LoopWorktreeLease {
   mutationAllowed: boolean;
   path: string;
   pauseReceiptId?: string;
-  queuedRegistrationId?: string;
   retention?: LoopWorktreeRetention;
   role: LoopWorktreeRole;
 }

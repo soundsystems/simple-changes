@@ -341,7 +341,8 @@ const folderStamp = (path: string): string => {
 
 export const readRegistrationId = (
   gitDirectory: string,
-  path: string
+  path: string,
+  runId?: string
 ): string | null => {
   let text: string;
   try {
@@ -349,7 +350,12 @@ export const readRegistrationId = (
       join(gitDirectory, `${REGISTRATION_FILE}.folder`),
       "utf8"
     );
-    if (stamp !== folderStamp(path)) {
+    const [identity, owner] = stamp.split("\n");
+    if (
+      identity !== folderStamp(path) ||
+      !owner ||
+      (runId !== undefined && runId !== owner)
+    ) {
       return null;
     }
     text = readFileSync(join(gitDirectory, REGISTRATION_FILE), "utf8");
@@ -365,8 +371,8 @@ export const readRegistrationId = (
 
 /**
  * Marks the worktree `prepare-agent` just created for a Queue or Sweep run
- * with a new registration ID and its physical folder identity. The lease
- * receives the same ID. An interrupted preparation resumed from an existing
+ * with a new registration ID, its physical folder identity and the owning
+ * run ID in its private Git directory. An interrupted preparation resumed from an existing
  * checkout never creates a marker.
  * Finalization records the ID it finds and never makes one, so a checkout
  * made again at the same path before the run closes, which has a new
@@ -375,13 +381,19 @@ export const readRegistrationId = (
  * automatically, so this never throws.
  */
 export const markQueuedWorktree = (
-  commonGitDirectory: string,
+  lease: Pick<LoopLease, "commonGitDirectory" | "runId" | "mode">,
   worktreePath: string
-): string | null => {
+): void => {
+  if (lease.mode !== "queue" && lease.mode !== "sweep") {
+    return;
+  }
   try {
-    const gitDirectory = privateGitDirectory(commonGitDirectory, worktreePath);
+    const gitDirectory = privateGitDirectory(
+      lease.commonGitDirectory,
+      worktreePath
+    );
     if (!gitDirectory) {
-      return null;
+      return;
     }
     const id = randomUUID();
     writeFileSync(join(gitDirectory, REGISTRATION_FILE), `${id}\n`, {
@@ -390,23 +402,27 @@ export const markQueuedWorktree = (
     });
     writeFileSync(
       join(gitDirectory, `${REGISTRATION_FILE}.folder`),
-      folderStamp(worktreePath),
+      `${folderStamp(worktreePath)}\n${lease.runId}`,
       { flag: "wx", mode: 0o600 }
     );
-    return id;
   } catch {
-    return null;
+    // Any incomplete marker makes this registration ineligible.
   }
 };
 
 // The ID `markQueuedWorktree` wrote for this worktree, or null.
 const existingRegistrationId = (
-  commonGitDirectory: string,
+  lease: LoopLease,
   worktreePath: string
 ): string | null => {
   try {
-    const gitDirectory = privateGitDirectory(commonGitDirectory, worktreePath);
-    return gitDirectory ? readRegistrationId(gitDirectory, worktreePath) : null;
+    const gitDirectory = privateGitDirectory(
+      lease.commonGitDirectory,
+      worktreePath
+    );
+    return gitDirectory
+      ? readRegistrationId(gitDirectory, worktreePath, lease.runId)
+      : null;
   } catch {
     return null;
   }
@@ -521,15 +537,8 @@ export const recordKeptQueuedWorktrees = (
       );
       continue;
     }
-    const registrationId = existingRegistrationId(
-      lease.commonGitDirectory,
-      path
-    );
-    if (
-      !registrationId ||
-      registrationId !==
-        lease.worktrees.find((item) => item.path === path)?.queuedRegistrationId
-    ) {
+    const registrationId = existingRegistrationId(lease, path);
+    if (!registrationId) {
       result.notes.push(
         `A later run will not move kept worktree ${path} to the Trash by itself: it does not carry the mark this run's prepare-agent gives a worktree it creates (an earlier version prepared it, or it was made again since).`
       );

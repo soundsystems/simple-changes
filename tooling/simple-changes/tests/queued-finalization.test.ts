@@ -234,7 +234,7 @@ describe("Queue and Sweep finalization", () => {
       "Queued for review, not merged"
     );
     expect(result.receipt.queued?.summary).toContain(
-      `stays until the owner asks to clean the repository, which asks first: ${unit.path}.`
+      `The run's worktree was kept for now: ${unit.path}. A later Queue or Sweep run moves a kept worktree to the Trash by itself once the remote confirms its work is merged and nothing in it is unsaved.`
     );
     // The person's uncommitted source is exactly as they left it.
     expect(primaryState(run.root)).toEqual(before);

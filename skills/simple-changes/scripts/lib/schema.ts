@@ -34,6 +34,7 @@ export const SCHEMA_NAMES = [
   "changelog-author",
   "held-units",
   "proposal-sources",
+  "queued-worktrees",
   "remote-branch-reconciliation",
   "remote-branch-ancestry",
   "remote-branch-supersession",

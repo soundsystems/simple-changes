@@ -175,6 +175,7 @@ import {
   buildProposalSignatureBlock,
   type ProposalSignatureRole,
 } from "./lib/proposal-signatures.ts";
+import type { QueuedRetirementReport } from "./lib/queued-retirement.ts";
 import { withReadOnlyGit } from "./lib/read-only-git.ts";
 import {
   parseReadyWorkInput,
@@ -345,7 +346,7 @@ import {
   standaloneWorktreeCleanup,
 } from "./lib/worktree-maintenance.ts";
 
-const VERSION = "0.33.2";
+const VERSION = "0.33.3";
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const PLAIN_SHELL_WORD_PATTERN = /^[\w./-]+$/u;
 const PACKAGE_ROOT = resolve(dirname(SCRIPT_FILE), "..");
@@ -4701,43 +4702,54 @@ const runLoopStart = (options: CliOptions): void => {
   let reviewLedger: ReviewLedgerResumeState | null = null;
   let workDir: string | null = null;
   let removedWorkDirectories: string[] = [];
-  const lease = startLoop(
-    options.repo,
-    agentId,
-    options.mode as RequestMode,
-    openingRemoteInventory,
-    {
-      onReviewLedger: (state) => {
-        reviewLedger = state.state === "absent" ? null : state;
-      },
-      // Under the loop locks: only this run is live, so every other run's
-      // directories are finished and no close can race the sweep.
-      onStarted: (started) => {
-        try {
-          workDir = bindRunWorkDirectory(
-            workRepository,
-            started.runId,
-            agentId,
-            workDirectorySession("loop start"),
-            openingWorkDirectory
-          );
-        } catch (error) {
-          process.stderr.write(
-            `Warning: no work directory was bound: ${(error as Error).message}\n`
-          );
+  let earlierQueuedWorktrees: QueuedRetirementReport | null = null;
+  const lease = sayingWhatMoved(
+    () => earlierQueuedWorktrees,
+    () =>
+      startLoop(
+        options.repo,
+        agentId,
+        options.mode as RequestMode,
+        openingRemoteInventory,
+        {
+          // A fresh Queue or Sweep start reports what it did with the worktrees
+          // earlier such runs kept, even when it moved none.
+          onQueuedRetirement: (report) => {
+            earlierQueuedWorktrees = report;
+          },
+          onReviewLedger: (state) => {
+            reviewLedger = state.state === "absent" ? null : state;
+          },
+          // Under the loop locks: only this run is live, so every other run's
+          // directories are finished and no close can race the sweep.
+          onStarted: (started) => {
+            try {
+              workDir = bindRunWorkDirectory(
+                workRepository,
+                started.runId,
+                agentId,
+                workDirectorySession("loop start"),
+                openingWorkDirectory
+              );
+            } catch (error) {
+              process.stderr.write(
+                `Warning: no work directory was bound: ${(error as Error).message}\n`
+              );
+            }
+            removedWorkDirectories = removeClosedRunWorkDirectories(() =>
+              removeFinishedRunWorkDirectories(workRepository, started.runId)
+            );
+          },
+          ...(request === undefined ? {} : { request }),
         }
-        removedWorkDirectories = removeClosedRunWorkDirectories(() =>
-          removeFinishedRunWorkDirectories(workRepository, started.runId)
-        );
-      },
-      ...(request === undefined ? {} : { request }),
-    }
+      )
   );
   const holds = informationalHolds(options.repo);
   const freshness = leaseRuntimeFreshness(lease);
   const resumedQuestions = resumedAwaitingUser(lease);
   writeOutput(
     {
+      ...(earlierQueuedWorktrees ? { earlierQueuedWorktrees } : {}),
       holds,
       inheritedAwaitingUser: resumedQuestions,
       lease,
@@ -4753,9 +4765,38 @@ const runLoopStart = (options: CliOptions): void => {
       resumedQuestions
         ? `The previous controller paused for the user's answer to: ${resumedQuestions.join(" | ")}. Confirm their answer before continuing.\n`
         : ""
-    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}`
+    }${renderResumedReviews(reviewLedger)}${renderFreshnessWarning(freshness)}${renderRecordedHolds(holds)}${renderQueuedRetirement(earlierQueuedWorktrees)}`
   );
 };
+
+// A start that fails after it moved earlier copies to the Trash still says
+// what it moved, on stderr, before the failure is reported.
+const sayingWhatMoved = <T>(
+  report: () => QueuedRetirementReport | null,
+  start: () => T
+): T => {
+  try {
+    return start();
+  } catch (error) {
+    process.stderr.write(renderQueuedRetirement(report()));
+    throw error;
+  }
+};
+
+// What a fresh Queue or Sweep start did with earlier runs' kept worktrees:
+// one plain line for each one it moved to the Trash, with how to get it
+// back, and one for each merged one it left.
+export const renderQueuedRetirement = (
+  report: QueuedRetirementReport | null
+): string =>
+  [
+    ...(report?.movedToTrash ?? []).map(
+      ({ branch, path, restore }) =>
+        `Moved an earlier copy to the Trash, because its work is now in the project: ${path}. Nothing was deleted, and its branch ${branch} was kept. ${restore}\n`
+    ),
+    ...(report?.kept ?? []).map(({ reason }) => `${reason}\n`),
+    ...(report?.notes ?? []).map((note) => `Note: ${note}\n`),
+  ].join("");
 
 // Accepted reviews that no longer pass the gate on resume need a fresh review,
 // after any identity repair the reason calls for.

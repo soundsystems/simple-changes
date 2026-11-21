@@ -160,7 +160,8 @@
         "Verify it",
         "Open but do not merge a proposal",
         "Record the proposal's authors at the pushed head, then finalize so the run closes as queued for review, not merged",
-        "Leave uncommitted work in the primary checkout exactly as it is, and never report queued work as merged or delivered"
+        "Leave uncommitted work in the primary checkout exactly as it is, and never report queued work as merged or delivered",
+        "Pass on what loop start reports about earlier kept worktrees, each one it moved to the Trash with how to get it back and each merged one it left with its reason, and remove none of them itself"
       ]
     },
     {

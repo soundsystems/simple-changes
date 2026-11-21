@@ -38,6 +38,7 @@ import {
 import { verificationAgainst } from "./loop-lease-verify.ts";
 import { preparedWorktreePath, slug } from "./managed-worktrees.ts";
 import { runGit } from "./process.ts";
+import { markQueuedWorktree } from "./queued-worktrees.ts";
 import type {
   ChangelogAuthorBinding,
   LoopLease,
@@ -458,6 +459,7 @@ export const prepareAgentWorktree = (
             preparation.baseRevision,
           ]);
         }
+        markQueuedWorktree(currentLease, preparation.path);
         return finalizePreparation(currentLease, preparation);
       };
 

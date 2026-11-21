@@ -79,6 +79,7 @@ const cleanupCompletionPath = new URL(
   "../../../skills/simple-changes/references/cleanup-and-completion.md",
   import.meta.url
 );
+const readmePath = new URL("../../../README.md", import.meta.url);
 const recoveryPath = new URL(
   "../../../skills/simple-changes/references/recovery.md",
   import.meta.url
@@ -1479,11 +1480,16 @@ describe("Simple Changes skill contract", () => {
       // Nothing is deleted.
       "**The primary checkout stays exactly as it is**, on its branch, with its uncommitted and untracked work: never stashed, reset, normalized, switched, or fast-forwarded, and never a blocker.",
       "**The run's own worktrees are kept**, with their branches, ignored files, and anything else in them, and each path is listed in `keptWorktrees`.",
-      "They stay until the owner asks to clean the repository: Reconcile or `prune`, which ask first. Nothing in a Queue or Sweep start or finalize removes one.",
+      "Finalization removes none of them. It records each one so that a later Queue or Sweep start can move it to the Trash once its work is merged",
+      "Until then it stays; Reconcile and `prune`, which ask first, can also remove it.",
       "A clean worktree or local branch the target already contains is not removed and does not block.",
+      "Closing a Queue or Sweep run removes nothing",
     ]) {
       expect(normalizedCleanup).toContain(sentence);
     }
+    expect(normalizedCleanup).not.toContain(
+      "They stay until the owner asks to clean the repository"
+    );
     expect(normalizedCleanup).not.toContain("alreadyQueued");
     expect(normalizedRecovery).toContain(
       "A relinquished Queue or Sweep run does not need a replan before the next request can start, including one an older runtime left behind."
@@ -1491,6 +1497,94 @@ describe("Simple Changes skill contract", () => {
     expect(changeRequests.replace(/\s+/g, " ")).toContain(
       "the command also records which local branch the proposal came from, in `proposal-sources.json` beside the ledger, and finalization accepts the one proposal recorded from a pushed branch at its exact head. The branch is taken from `--head` when exactly one local branch points there; otherwise pass `--source-branch <branch>`. Record the authors again whenever the pushed head moves."
     );
+  });
+
+  test("A later Queue or Sweep start moves merged kept worktrees to the Trash, deletes nothing, and says how to get one back", async () => {
+    const [cleanup, inventory, ultraSimple, readme] = await Promise.all([
+      readFile(cleanupCompletionPath, "utf8"),
+      readFile(inventoryConcurrencyPath, "utf8"),
+      readFile(ultraSimpleModePath, "utf8"),
+      readFile(readmePath, "utf8"),
+    ]);
+    const normalizedCleanup = cleanup.replace(/\s+/g, " ");
+    const anchor =
+      "#a-later-queue-or-sweep-start-moves-merged-kept-worktrees-to-the-trash";
+
+    expect(cleanup).toContain(
+      "### A later Queue or Sweep start moves merged kept worktrees to the Trash"
+    );
+    for (const sentence of [
+      "A Queue or Sweep run cleans up one thing only, and deletes nothing to do it: its start moves to the Trash the worktrees earlier Queue and Sweep runs kept, once their work is merged",
+      // Reversible, not provable.
+      "Kept worktrees do not pile up, and nothing is deleted to make that so.",
+      "A mistake is undone by moving the folder back, so the checks below are the reasonable ones, not a proof that nothing in the folder could ever matter.",
+      // The record: the mark from prepare-agent, and the target binding.
+      "`prepare-agent` marks each worktree it creates for a Queue or Sweep run with a registration ID in the worktree's private Git directory (`<git common dir>/worktrees/<name>/simple-changes-queued-worktree`).",
+      "it records each worktree it kept in `queued-worktrees/<run-id>.json` beside the loop state (`evals/schemas/queued-worktrees.schema.json`), a file of its own that older runtimes never open.",
+      "Closing a run never writes one, so a checkout made again at the same path, before or after the run closes, has no ID and is never recorded or moved. Neither is a worktree an earlier version prepared;",
+      "A web address loses its user name and password. An SSH address keeps its user name, because the same path can be another repository for another user, and is refused with a password. A `<helper>::<address>` form, an unknown scheme, a query or fragment, and a relative path are not recorded at all.",
+      "A target that is not one branch on exactly one remote, or whose remote has more than one fetch address or an address that cannot be recorded safely, cannot be bound.",
+      "An entry without the ID or the binding is not valid and authorizes nothing.",
+      // Placement: a validated fresh start, before the baseline.
+      "It runs under the start's locks, after the start is validated (controller session, existing run, target, provider inventory) and before the lease records its baseline, so a refused start moves nothing.",
+      "No other mode does this, and neither does a start that returns a run that already exists.",
+      "The result is in the command's output as `earlierQueuedWorktrees`, with `movedToTrash`, `kept`, and `notes`, even when all three are empty.",
+      // Check, then move, one at a time.
+      "Each worktree is taken alone: every check below runs for it on a fresh read immediately before it is moved, and only then is the next one looked at.",
+      "A checkout made again at the same path and branch has no such ID; its record is dropped and it is never moved.",
+      "The start asks the recorded address for the recorded ref with `git ls-remote`, once for each target.",
+      "A remote-tracking ref is never the proof, and neither is the target a later run selects. No answer keeps the worktree.",
+      "with an empty `--refmap=`; only objects arrive, and no local ref, remote-tracking ref, or `FETCH_HEAD` changes.",
+      "every path its commits touched has exactly the same bytes and mode there (`proveExactByteTargetContainment`, over a nonempty set of paths). Patch IDs are never used: they ignore whitespace.",
+      "The proof is run again on the last look, and replacement objects are ignored.",
+      "Git's own fresh status shows no uncommitted change and no untracked file. Files Git ignores, such as installed packages, build output, and local settings, do not keep it: they go to the Trash with the folder.",
+      "including a `sequencer` directory left by an interrupted multi-commit cherry-pick or revert and an unfinished notes merge",
+      // Bounded network.
+      "The two remote commands are the only ones that reach the network, and each stops after 30 seconds. Every other Git command here runs with lazy fetching off (`GIT_NO_LAZY_FETCH`)",
+      // The move itself.
+      "on macOS 15 or later through `/usr/bin/trash`, or into the folder `SIMPLE_CHANGES_TRASH_DIR` names when that is set.",
+      "Any other computer has no Trash this can check, so the worktree is kept and reported; nothing ever falls back to deleting.",
+      "If the Trash refuses, the worktree is exactly as it was and is listed in `kept`.",
+      "is moved into the folder as `.simple-changes-git-worktree`. Git then no longer lists a worktree whose folder is missing and no longer counts its branch as checked out, and no later `git worktree prune` can delete that directory.",
+      "**The branch is never deleted**, at the start or at finalization: this release has no automatic branch deletion for Queue or Sweep.",
+      "Nothing here runs `git worktree remove` or `git branch -D`, and the only file it ever deletes is its own record file.",
+      "An entry with `trashed` is never acted on again, so a folder someone put back stays put; the entry is dropped after 30 days.",
+      // Getting it back.
+      "Move the folder from the Trash back to its old path, then move `<path>/.simple-changes-git-worktree` back to the recorded Git directory, making its parent `worktrees` folder first if Git has removed it.",
+      "If the folder is put somewhere else, run `git worktree repair <new path>` from the primary checkout afterwards.",
+      // Reporting.
+      "A worktree that is not merged yet simply waits and is not mentioned.",
+      "tell the owner once, in plain words: the old copy is in the Trash, nothing was deleted, and it can be put back.",
+      "A failure after a move never stops the start: if the repository cannot be read again, the lease is built from the inventory read before, without the moved worktrees.",
+      "Nothing here refuses or fails the start.",
+    ]) {
+      expect(normalizedCleanup).toContain(sentence);
+    }
+    // The design that deleted is gone from the reference.
+    for (const removed of [
+      "removeProvenWorktrees",
+      "The local branch is deleted only when",
+      "This copy holds files Git ignores",
+    ]) {
+      expect(normalizedCleanup).not.toContain(removed);
+    }
+    expect(cleanup).toContain(`([below](${anchor}))`);
+    expect(inventory.replace(/\s+/g, " ")).toContain(
+      "A fresh Queue or Sweep start first moves to the Trash the worktrees that earlier Queue and Sweep runs kept and whose work is merged, before it records this baseline"
+    );
+    expect(inventory).toContain(`cleanup-and-completion.md${anchor}`);
+    expect(ultraSimple.replace(/\s+/g, " ")).toContain(
+      '**Old copies.** Each change you send for review gets its own separate copy of the project on this computer. Once that change has been added to the project, a later request moves the copy to the Trash by itself and deletes nothing. Say so once, in one line: "I moved an old copy of the project to the Trash, because its change is already in the project. Nothing was deleted, and I can put it back if you need it."'
+    );
+    const normalizedReadme = readme.replace(/\s+/g, " ");
+    for (const sentence of [
+      "**Moving merged worktrees to the Trash at a Queue or Sweep start.**",
+      "Nothing is deleted: there is no `git worktree remove` and no branch deletion, and the branch stays.",
+      "unless `SIMPLE_CHANGES_TRASH_DIR` names a folder to use instead, every worktree is kept.",
+    ]) {
+      expect(normalizedReadme).toContain(sentence);
+    }
+    expect(readme).toContain(`cleanup-and-completion.md${anchor}`);
   });
 
   test("Controllers finalize before replying, and a turn-end guard backs the rule", async () => {

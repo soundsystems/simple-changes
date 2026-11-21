@@ -807,6 +807,37 @@ boundary. To report a vulnerability, see [SECURITY.md](SECURITY.md).
   comes from attestations agents record with `author attest`, never from commit
   or proposal text.
 
+**Moving merged worktrees to the Trash at a Queue or Sweep start.**
+
+- Triggered by: a fresh `loop start --mode queue` or `--mode sweep` in a
+  repository where an earlier Queue or Sweep run closed and kept a worktree.
+  No other mode does it.
+- Can touch: only worktrees an earlier run created with `prepare-agent`,
+  marked then, and recorded in `queued-worktrees/` under the Git directory.
+  It asks the target's recorded remote address with `git ls-remote`,
+  downloads that target's commits when they are missing (no local ref moves),
+  then moves the worktree's folder to the Trash and the worktree's private
+  Git directory into that folder. Nothing is deleted: there is no `git
+  worktree remove` and no branch deletion, and the branch stays. It never
+  touches a remote branch, a proposal, or the checkout it runs in.
+- Opt out: there is no setting. A worktree is kept by a claim or a `git
+  worktree lock` on it, by any uncommitted or untracked file, or by deleting
+  its record file. On a computer without a Trash it can check, which is
+  anything but macOS 15 or later unless `SIMPLE_CHANGES_TRASH_DIR` names a
+  folder to use instead, every worktree is kept.
+- Enforced by: `retireMergedQueuedWorktrees` in `queued-retirement.ts` runs
+  every check for one worktree immediately before moving it: the
+  registration ID `prepare-agent` wrote into its private Git directory, an
+  answer from the recorded remote, containment by ancestry or exact bytes
+  (`proveExactByteTargetContainment`), a clean fresh status, and no claim,
+  lock, or unfinished Git operation. `moveToTrash` in `queued-trash.ts`
+  counts a move only when the folder is gone from its path, and names its
+  place in the Trash only when that place holds the same folder. The record
+  never holds a credential (`safeTargetAddress`). Anything unproven keeps
+  the worktree, and nothing here can refuse the start. To get a moved
+  worktree back, see
+  [cleanup and completion](skills/simple-changes/references/cleanup-and-completion.md#a-later-queue-or-sweep-start-moves-merged-kept-worktrees-to-the-trash).
+
 **Git and `glab` with the user's existing credentials.**
 
 - Triggered by: queue, integrate, and ship work, where agents push branches and

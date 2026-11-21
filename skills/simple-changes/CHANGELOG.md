@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.33.3 - 2026-11-19
+
+### Bug Fixes & Improvements
+
+- The next time you ask to put a change up, Simple Changes can move an
+  earlier request's working copy to the Trash once the project's server
+  confirms its work has been added. Its local branch is kept, and you are
+  told how to get the copy back.
+- The whole folder goes with it, including installed packages, build output,
+  and local settings that Git ignores. Simple Changes never empties the
+  Trash. Moving a copy there does not free its disk space; emptying the
+  Trash does, and removes those files from recovery there.
+- A copy with unsaved changes that Git reports, extra files Git does not
+  ignore, or work still in progress stays in place. If the tool cannot
+  confirm that the work was added, the copy stays too. A change still
+  waiting for review is left alone without a message.
+- Automatic moves use the Trash on macOS 15 or later. On other systems,
+  copies stay in place and you are told why, unless a separate destination
+  has been configured. Trouble checking or moving an old copy never stops
+  the new request.
+- This happens only when a fresh Queue or Sweep run starts. Requests to
+  merge, ship, or clean the repository behave as before. Guidance stays 33,
+  so this update asks no new setup questions.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T18:02:17-06:00" -->
+<!-- simple-changelogs-signature agent="GPT-6.1 Sol high" at="2026-11-20T22:20:37-06:00" -->
+
 ## 0.33.2 - 2026-11-19
 
 - **Bug Fixes & Improvements**:

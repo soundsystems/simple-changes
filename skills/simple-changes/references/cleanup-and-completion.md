@@ -13,7 +13,11 @@ as unfinished or attempting another merge. Follow
 review. Candidate evidence does not relax any cleanup gate below.
 
 Cleanup is evidence-driven and automatic for proven local candidates in
-Integrate, Ship, Reconcile, and Resume. Remove only objects proven:
+Integrate, Ship, Reconcile, and Resume. A Queue or Sweep run cleans up one
+thing only, and deletes nothing to do it: its start moves to the Trash the
+worktrees earlier Queue and Sweep runs kept, once their work is merged
+([below](#a-later-queue-or-sweep-start-moves-merged-kept-worktrees-to-the-trash)).
+Remove only objects proven:
 
 - merged into the intended canonical target;
 - obsolete by exact provider/Git evidence; or
@@ -488,15 +492,156 @@ Everything stays where it is:
   or fast-forwarded, and never a blocker.
 - **The run's own worktrees are kept**, with their branches, ignored files,
   and anything else in them, and each path is listed in `keptWorktrees`.
-  They stay until the owner asks to clean the repository: Reconcile or
-  `prune`, which ask first. Nothing in a Queue or Sweep start or finalize
-  removes one.
+  Finalization removes none of them. It records each one so that a later
+  Queue or Sweep start can move it to the Trash once its work is merged
+  ([below](#a-later-queue-or-sweep-start-moves-merged-kept-worktrees-to-the-trash)).
+  Until then it stays; Reconcile and `prune`, which ask first, can also
+  remove it.
 - **Earlier branches and worktrees stay.** A clean worktree or local branch
   the target already contains is not removed and does not block. Each is
-  named in the cleanup `notes`, and `cleanupStatus` is `pending` until one of
-  those runs, or `prune`, cleans it. Only those modes run automatic cleanup,
-  which is why earlier runtimes reported such a branch as a Queue blocker
-  instead of deleting it.
+  named in the cleanup `notes`, and `cleanupStatus` is `pending` until
+  Integrate, Reconcile, or `prune` cleans it. Closing a Queue or Sweep run
+  removes nothing, which is why earlier runtimes reported such a branch as a
+  Queue blocker instead of deleting it.
+
+### A later Queue or Sweep start moves merged kept worktrees to the Trash
+
+Kept worktrees do not pile up, and nothing is deleted to make that so. A
+merged worktree is moved to the Trash, whole, where the person can get it
+back. A mistake is undone by moving the folder back, so the checks below are
+the reasonable ones, not a proof that nothing in the folder could ever
+matter.
+
+`prepare-agent` marks each worktree it creates for a Queue or Sweep run with
+a registration ID in the worktree's private Git directory
+(`<git common dir>/worktrees/<name>/simple-changes-queued-worktree`). When
+the run closes, it records each worktree it kept in
+`queued-worktrees/<run-id>.json` beside the loop state
+(`evals/schemas/queued-worktrees.schema.json`), a file of its own that older
+runtimes never open. Each entry binds three things:
+
+- the worktree's path and branch;
+- the registration ID `prepare-agent` wrote. Closing a run never writes one,
+  so a checkout made again at the same path, before or after the run closes,
+  has no ID and is never recorded or moved. Neither is a worktree an earlier
+  version prepared;
+- the run's target as one ref on one remote address: `refs/heads/<branch>`
+  and the remote's single fetch address as Git resolved it, in a form that is
+  safe to keep. A web address loses its user name and password. An SSH
+  address keeps its user name, because the same path can be another
+  repository for another user, and is refused with a password. A
+  `<helper>::<address>` form, an unknown scheme, a query or fragment, and a
+  relative path are not recorded at all.
+
+A target that is not one branch on exactly one remote, or whose remote has
+more than one fetch address or an address that cannot be recorded safely,
+cannot be bound. Finalization says so in a cleanup note, and those worktrees
+are never moved automatically. An entry without the ID or the binding is not
+valid and authorizes nothing.
+
+A fresh `loop start --mode queue` or `--mode sweep` then moves each recorded
+worktree whose work is merged. It runs under the start's locks, after the
+start is validated (controller session, existing run, target, provider
+inventory) and before the lease records its baseline, so a refused start
+moves nothing. No other mode does this, and neither does a start that
+returns a run that already exists. The result is in the command's output as
+`earlierQueuedWorktrees`, with `movedToTrash`, `kept`, and `notes`, even when
+all three are empty.
+
+Each worktree is taken alone: every check below runs for it on a fresh read
+immediately before it is moved, and only then is the next one looked at. It
+is moved only when all of them hold:
+
+- **It is the registration the run recorded.** The ID in its private Git
+  directory equals the recorded one, and it is on the recorded branch at the
+  commit that was proven. A checkout made again at the same path and branch
+  has no such ID; its record is dropped and it is never moved. The checkout
+  the command runs in is never moved.
+- **The recorded remote says the target contains its work.** The start asks
+  the recorded address for the recorded ref with `git ls-remote`, once for
+  each target. A remote-tracking ref is never the proof, and neither is the
+  target a later run selects. No answer keeps the worktree. When the answered
+  commit is not on this machine yet, the start downloads that ref's commits
+  from that address with an empty `--refmap=`; only objects arrive, and no
+  local ref, remote-tracking ref, or `FETCH_HEAD` changes.
+- **Containment is exact.** The worktree's head is an ancestor of that
+  commit, or, for a squash merge, every path its commits touched has exactly
+  the same bytes and mode there (`proveExactByteTargetContainment`, over a
+  nonempty set of paths). Patch IDs are never used: they ignore whitespace.
+  A squash edited in review, or a target that has since changed those paths
+  again, does not match, and the worktree is kept. The proof is run again on
+  the last look, and replacement objects are ignored.
+- **Nothing in it is unsaved.** Git's own fresh status shows no uncommitted
+  change and no untracked file. Files Git ignores, such as installed
+  packages, build output, and local settings, do not keep it: they go to the
+  Trash with the folder. So does an edit that an assume-unchanged or
+  skip-worktree entry hides from status.
+- **Nothing holds it.** No unreleased claim, no worktree lock, no Git
+  operation in progress, including a `sequencer` directory left by an
+  interrupted multi-commit cherry-pick or revert and an unfinished notes
+  merge, and no other worktree inside its folder.
+
+The two remote commands are the only ones that reach the network, and each
+stops after 30 seconds. Every other Git command here runs with lazy fetching
+off (`GIT_NO_LAZY_FETCH`), so the start's locks are never held on a download
+nothing bounds. A partial clone on a Git older than 2.45, which cannot turn
+lazy fetching off, is not checked at all, and one note says so.
+
+**The move.** The folder goes to the Trash: on macOS 15 or later through
+`/usr/bin/trash`, or into the folder `SIMPLE_CHANGES_TRASH_DIR` names when
+that is set. Any other computer has no Trash this can check, so the worktree
+is kept and reported; nothing ever falls back to deleting. A move counts only
+when nothing is left at the path, and its place in the Trash is given only
+when that place holds the very same folder (same device and file number). If
+the Trash refuses, the worktree is exactly as it was and is listed in `kept`.
+
+Once the folder is confirmed in the Trash, the worktree's private Git
+directory (`<git common dir>/worktrees/<name>`, with its index, its own HEAD
+log, and any ref it kept for itself) is moved into the folder as
+`.simple-changes-git-worktree`. Git then no longer lists a worktree whose
+folder is missing and no longer counts its branch as checked out, and no
+later `git worktree prune` can delete that directory. If the folder's place
+in the Trash could not be confirmed, or the directory could not be moved, it
+stays where it was under a Git worktree lock. Putting the folder back and
+unlocking the restored worktree preserves its index even after a prune.
+
+Before the move, recovery refs under `refs/simple-changes/queued-trash/`
+pin its head, private ref targets and reflog commits. These refs protect the
+objects through garbage collection. A later Queue or Sweep start releases
+them once the move is more than 30 days old.
+
+**The branch is never deleted**, at the start or at finalization: this
+release has no automatic branch deletion for Queue or Sweep. The remote
+branch and the proposal are not touched. Nothing here runs `git worktree
+remove` or `git branch -D`, and the only file it ever deletes is its own
+record file.
+
+Each move is written into its record entry at once as `trashed`: when, the
+commit, where the folder went if that was confirmed, and where its Git
+directory belongs. It is listed in `movedToTrash` with the same facts and a
+`restore` sentence. An entry with `trashed` is never acted on again, so a
+folder someone put back stays put; the entry is dropped after 30 days.
+
+**Getting one back.** Move the folder from the Trash back to its old path,
+then move `<path>/.simple-changes-git-worktree` back to the recorded Git
+directory, making its parent `worktrees` folder first if Git has removed it.
+The worktree then works as before, on its kept branch. If the folder is put
+somewhere else, run `git worktree repair <new path>` from the primary
+checkout afterwards. `restore` gives these steps with the exact paths.
+Check that both destinations are free before restoring. If the branch was
+deleted separately, recreate it at the recorded `headSha` before using the
+restored checkout. Preserve any newer folder, registration or branch that
+now uses the original name.
+
+A worktree that is not merged yet simply waits and is not mentioned. For one
+that was moved, tell the owner once, in plain words: the old copy is in the
+Trash, nothing was deleted, and it can be put back. One that is merged and
+kept is listed in `kept` with one plain reason; pass it on as written, and
+remove such a worktree only when the owner asks. A remote that could not be
+asked is one entry in `notes`. A failure after a move never stops the start:
+if the repository cannot be read again, the lease is built from the
+inventory read before, without the moved worktrees. Nothing here refuses or
+fails the start.
 
 Before reporting completion:
 

@@ -89,6 +89,7 @@ import {
   queuedDeclarations,
   queuedSummary,
 } from "./queued-completion.ts";
+import { recordKeptQueuedWorktrees } from "./queued-worktrees.ts";
 import {
   type RemoteBranchCleanupReport,
   remoteBranchCleanupReport,
@@ -3049,6 +3050,34 @@ const relinquishController = (
   });
 };
 
+// Written before the lease goes, so a later Queue or Sweep start knows
+// which checkouts this run left and what to ask about them. The receipt is
+// persisted by now and the run is closing, so a record that cannot be
+// written is a note in the result, never a failed finalization: its
+// worktrees then simply stay where they are.
+const rememberKeptQueuedWorktrees = (
+  lease: LoopLease,
+  inventory: RepositoryInventory,
+  queued: QueuedAssessment,
+  closedAt: string,
+  cleanup: FinalizationCleanupResult
+): void => {
+  try {
+    cleanup.notes.push(
+      ...recordKeptQueuedWorktrees(
+        lease,
+        inventory,
+        queued.keptWorktrees,
+        closedAt
+      ).notes
+    );
+  } catch (error) {
+    cleanup.notes.push(
+      `The record of this run's kept worktrees could not be written, so a later run will not move them to the Trash by itself: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+};
+
 const finalizeOwnedLoop = (
   repositoryPath: string,
   openingLease: LoopLease,
@@ -3069,7 +3098,9 @@ const finalizeOwnedLoop = (
   // A Queue or Sweep run never merges, so it is judged by its own pushed
   // branches and proposals. Its finalization deletes nothing: the primary
   // checkout, the local target branch, every earlier branch and worktree,
-  // and the run's own worktrees all stay as they are.
+  // and the run's own worktrees all stay as they are. Only a later fresh
+  // Queue or Sweep start moves a kept worktree to the Trash, once its work
+  // is merged (`queued-retirement.ts`).
   const queued = closesAsQueued(lease)
     ? assessQueuedWork(lease, finalInventory, declared)
     : null;
@@ -3077,7 +3108,7 @@ const finalizeOwnedLoop = (
     automaticCleanup.cleanup.notes.push(
       ...queuedLeftovers(lease, finalInventory).map(
         (leftover) =>
-          `Left for a later Integrate, Reconcile, or \`prune\`, because a ${lease.mode} run never cleans up: ${leftover}`
+          `Left for a later Integrate, Reconcile, or \`prune\`, because closing a ${lease.mode} run removes nothing: ${leftover}`
       )
     );
   }
@@ -3103,6 +3134,15 @@ const finalizeOwnedLoop = (
   );
   writeImmutableRecoveryEvent(receiptPath, { lease, receipt });
   if (blockers.length === 0) {
+    if (queued) {
+      rememberKeptQueuedWorktrees(
+        lease,
+        finalInventory,
+        queued,
+        now,
+        automaticCleanup.cleanup
+      );
+    }
     rmSync(loopLeasePath(lease.commonGitDirectory), { force: true });
     forgetLeaseSession(lease);
     removeControllerBinding(lease);

@@ -1325,7 +1325,7 @@ const unconfirmedOwnRefs = (
 // short, which would drop the object as unparsable, is asked once more and
 // then refused, and so is a listing the private Git directory does not
 // confirm.
-const namedObjectsOf = (
+export const namedObjectsOf = (
   path: string,
   privateGitDirectory: string,
   overrides: readonly string[]

@@ -192,6 +192,35 @@ export const unregisteredCommandCleanup = async (
     : new GuardedProcessGroupStillAliveError(command, childPid);
 };
 
+// Only synchronous optional maintenance uses a deadline. Restore the
+// caller's deadline even when a command times out or refuses its answer.
+let gitDeadline: number | undefined;
+export const withGitDeadline = <T>(
+  milliseconds: number,
+  operation: () => T
+): T => {
+  const previous = gitDeadline;
+  gitDeadline = Math.min(
+    previous ?? Number.POSITIVE_INFINITY,
+    performance.now() + milliseconds
+  );
+  try {
+    return operation();
+  } finally {
+    gitDeadline = previous;
+  }
+};
+const gitTimeout = (limit?: number): { timeout?: number } => {
+  if (gitDeadline === undefined) {
+    return limit === undefined ? {} : { timeout: limit };
+  }
+  const remaining = Math.ceil(gitDeadline - performance.now());
+  if (remaining <= 0) {
+    throw new Error("The time allowed for Git maintenance has elapsed");
+  }
+  return { timeout: Math.min(limit ?? Number.POSITIVE_INFINITY, remaining) };
+};
+
 const runCommand = (
   command: string,
   args: readonly string[],
@@ -209,6 +238,7 @@ const runCommand = (
     },
     stderr: "pipe",
     stdout: "pipe",
+    ...gitTimeout(),
   });
   const stdout = textDecoder.decode(result.stdout);
   const stderr = textDecoder.decode(result.stderr);
@@ -730,6 +760,7 @@ export const runGitBytes = (
     env: { ...process.env, LC_ALL: "C" },
     stderr: "pipe",
     stdout: "pipe",
+    ...gitTimeout(),
   });
   return {
     exitCode: result.exitCode,
@@ -766,6 +797,7 @@ const concurrentGitResults = (
       } satisfies GitWorkerInput)
     ),
     stdout: "pipe",
+    ...gitTimeout(),
   });
   if (worker.exitCode !== 0) {
     return null;
@@ -867,7 +899,7 @@ export const runGitRemote = (
     env,
     stderr: "pipe",
     stdout: "pipe",
-    timeout: timeoutMs,
+    ...gitTimeout(timeoutMs),
   });
   const stdout = textDecoder.decode(result.stdout);
   const stderr = textDecoder.decode(result.stderr);
@@ -898,6 +930,7 @@ export const runGitWithInput = (
     stderr: "pipe",
     stdin: new TextEncoder().encode(input),
     stdout: "pipe",
+    ...gitTimeout(),
   });
   const stdout = textDecoder.decode(result.stdout);
   const stderr = textDecoder.decode(result.stderr);

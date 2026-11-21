@@ -1,5 +1,75 @@
 # Developer changelog
 
+## 0.33.3 - 2026-11-19
+
+- Fresh Queue and Sweep starts move eligible worktrees kept by earlier
+  queued runs to Trash. Finalization still keeps the copy and its branch;
+  Integrate, Ship, explicit cleanup, and resumed starts keep their existing
+  behavior. Retirement runs under the start's locks after validation and
+  before its baseline. Failures become notes, not start failures. If the
+  inventory cannot be refreshed after a move, the lease uses the validated
+  inventory with moved copies excluded.
+- `prepare-agent` marks a newly created Queue or Sweep worktree with a
+  registration ID, folder identity, and run ID in its private Git directory.
+  Finalization records only an existing matching mark in
+  `queued-worktrees/<run-id>.json`. Recreated copies, older unmarked copies,
+  and incomplete preparations are ineligible. The record binds the target
+  to one branch ref and one safely recordable fetch address. Ambiguous or
+  unsafe addresses are never automatic cleanup authority.
+- The recorded remote is asked for its target once per start. Local
+  tracking refs are not proof. A missing target commit is fetched with an
+  empty `--refmap=`, no tags, no `FETCH_HEAD`, no submodules, and no automatic
+  maintenance. Containment requires ancestry or identical bytes and modes
+  on a nonempty set of touched paths for a squash. A squash edited in review
+  or followed by changes to those paths can leave the copy in place.
+- Each copy gets fresh registration, branch, head, status, containment,
+  claim, lock, unfinished-operation, and nested-worktree checks immediately
+  before its move. Reported uncommitted changes and nonignored untracked
+  files keep it. Ignored files and edits hidden by assume-unchanged or
+  skip-worktree move with the folder. This is a recoverable move, not a
+  proof that every file matches the commit. The current checkout, target's
+  local branch, and other claimed or locked copies are excluded.
+- `queued-trash.ts` uses `/usr/bin/trash` on macOS 15 or later, or a rename
+  into `SIMPLE_CHANGES_TRASH_DIR` when configured. Without either, the copy
+  is kept and reported. There is no permanent-deletion fallback. A move
+  counts only after the old path is absent; its destination is trusted only
+  after matching the folder's device and inode. Tests substitute a temporary
+  folder and cannot use the real Trash.
+- Before moving, recovery refs under `refs/simple-changes/queued-trash/`
+  pin the head, private ref targets, and reflog commits. The private Git
+  directory, including the index and HEAD log, travels inside the confirmed
+  Trash copy as `.simple-changes-git-worktree`, protecting it from worktree
+  pruning. If its destination cannot be confirmed or that directory cannot
+  move, the registration stays locked against pruning. Recovery refs keep
+  those objects reachable through garbage collection for at least 30 days;
+  a later Queue or Sweep start releases them and drops the move record only
+  when the move is more than 30 days old. It never empties Trash or deletes
+  the retained branch.
+- `earlierQueuedWorktrees` reports `movedToTrash`, `kept`, and `notes`.
+  Moves include the original path, branch, head, verified destination when
+  known, registration disposition, target proof, timestamp, and exact
+  restoration steps. Restore the folder and its private Git directory to
+  their recorded paths, or unlock a registration left in Git. Preserve newer
+  occupants; a different restore path needs `git worktree repair`. A moved
+  entry is not processed again while recorded, even if restored. Emptying
+  Trash removes the folder and its private Git data; recovery refs do not
+  back up ignored files or the index. Disk space is reclaimed when Trash is
+  emptied, not by moving the folder there.
+- Retirement Git commands disable replacement objects, grafts, and lazy
+  fetching. Each remote command has a 30-second deadline. Partial clones on
+  Git before 2.45 are kept because lazy fetching cannot be disabled there.
+  Unanswered remotes and uncertain state keep copies; unmerged copies are
+  silent. Errors after a move retain its report and do not block start.
+- `queued-retirement.test.ts` covers ancestry and exact squash containment,
+  ignored and hidden edits, late mutations, recreated registrations, remote
+  identity and stale refs, refused starts and other modes, Trash refusals,
+  restoration after prune, reflog/private-ref recovery after garbage
+  collection, 30-day retention, and inventory-refresh failure. These are
+  test coverage descriptions, not a claim of completed independent review.
+  Version remains 0.33.3 and guidance remains 33.
+<!-- simple-changelogs-signature agent="Claude Fable 5.2 high" at="2026-11-19T18:02:17-06:00" -->
+<!-- simple-changelogs-signature agent="GPT-6.1 Sol high" at="2026-11-20T22:20:37-06:00" -->
+
 ## 0.33.2 - 2026-11-19
 
 - Found by a live smoke of 0.33.1: six agents (Opus 5.5 at high, Sonnet 5.5

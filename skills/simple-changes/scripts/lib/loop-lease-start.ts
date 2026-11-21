@@ -3,10 +3,11 @@ import type { AuthoringSidecar } from "./authoring.ts";
 import { assertNotChangelogAuthorCheckout } from "./changelog-authors.ts";
 import { EXIT_CODES, SimpleChangesError } from "./errors.ts";
 import { requireHarnessSession } from "./harness-session.ts";
-import { sha256Json } from "./hash.ts";
+import { sha256, sha256Json } from "./hash.ts";
 import {
   captureInventory,
   compareSnapshots,
+  inventoryDigestInput,
   locateRepository,
 } from "./inventory.ts";
 import {
@@ -28,7 +29,12 @@ import {
   writeLease,
 } from "./loop-lease-core.ts";
 import { buildPreviewPlan } from "./planner.ts";
-import { runGit } from "./process.ts";
+import { runGit, withGitDeadline } from "./process.ts";
+import {
+  type QueuedRetirementHooks,
+  type QueuedRetirementReport,
+  retireMergedQueuedWorktrees,
+} from "./queued-retirement.ts";
 import { validateOpeningRemoteInventory } from "./remote-branch-reconciliation.ts";
 import {
   heldLoopLock,
@@ -139,6 +145,14 @@ const resolveExistingLoopStart = (
 };
 
 export interface LoopStartOptions {
+  /**
+   * Receives what a fresh Queue or Sweep start did with the worktrees
+   * earlier Queue and Sweep runs kept, even when it moved none. It is
+   * called once the start can no longer fail on anything the move left
+   * behind, and not at all for any other mode or when the start returns a
+   * run that already exists.
+   */
+  onQueuedRetirement?: (report: QueuedRetirementReport) => void;
   /** Receives the review ledger a resume loads under the held loop lock. */
   onReviewLedger?: (state: ReviewLedgerResumeState) => void;
   /**
@@ -147,11 +161,266 @@ export interface LoopStartOptions {
    */
   onStarted?: (lease: LoopLease) => void;
   /**
+   * Test seams for moving earlier Queue and Sweep worktrees to the Trash,
+   * among them the Trash itself.
+   */
+  queuedRetirementHooks?: QueuedRetirementHooks;
+  /**
+   * Reads the inventory again after earlier worktrees were moved. Tests
+   * substitute a read that fails.
+   */
+  readInventoryAfterRetirement?: (
+    repositoryPath: string
+  ) => RepositoryInventory;
+  /**
    * The run's `--authoring-request` (resume only): revalidation uses it
    * combined with the saved settings, so the run has one review gate.
    */
   request?: AuthoringSidecar;
 }
+
+interface OpeningTarget {
+  openingRemoteInventory: RemoteBranchReconciliationReceipt | undefined;
+  targetBranch: string | null;
+  targetRevision: string;
+}
+
+// The target a fresh run opens on, with its provider inventory validated.
+const openingTarget = (
+  inventory: RepositoryInventory,
+  openingRemoteInventoryInput: unknown
+): OpeningTarget => {
+  const targetBranch = targetBranchForRef(
+    inventory.repository.primaryCheckout,
+    inventory.targetRef
+  );
+  const targetRevision = runGit(inventory.repository.primaryCheckout, [
+    "rev-parse",
+    "--verify",
+    `${inventory.targetRef}^{commit}`,
+  ]).stdout.trim();
+  return {
+    openingRemoteInventory: openingRemoteInventoryForStart(
+      inventory,
+      openingRemoteInventoryInput,
+      targetBranch,
+      targetRevision
+    ),
+    targetBranch,
+    targetRevision,
+  };
+};
+
+const QUEUED_MODES: ReadonlySet<RequestMode> = new Set(["queue", "sweep"]);
+
+/**
+ * The validated inventory as it stands once the given worktrees were moved
+ * to the Trash, worked out without asking Git again: a worktree whose
+ * registration went with its folder is no longer listed and its branch is
+ * no longer checked out anywhere, and one whose registration stayed is
+ * listed as Git lists a worktree whose folder is missing. Branches are
+ * never deleted, so nothing else differs.
+ */
+const inventoryWithoutMoved = (
+  validated: RepositoryInventory,
+  moved: QueuedRetirementReport["movedToTrash"]
+): RepositoryInventory => {
+  const registrations = new Map(
+    moved.map((move) => [move.path, move.registration])
+  );
+  const worktrees = validated.worktrees.flatMap((worktree) => {
+    const registration = registrations.get(worktree.path);
+    if (registration === "moved-with-copy") {
+      return [];
+    }
+    return registration
+      ? [{ ...worktree, locked: true, prunable: false }]
+      : [worktree];
+  });
+  const branches = validated.branches.map((branch) =>
+    branch.worktreePath !== null &&
+    registrations.get(branch.worktreePath) === "moved-with-copy"
+      ? { ...branch, worktreePath: null }
+      : branch
+  );
+  const inventory = { ...validated, branches, worktrees };
+  return {
+    ...inventory,
+    baselineDigest: sha256(inventoryDigestInput(inventory)),
+  };
+};
+
+/**
+ * The lease a fresh run opens with. A Queue or Sweep start first moves to
+ * the Trash the worktrees earlier Queue and Sweep runs kept whose work is
+ * merged, here: under the start's locks, after the start is validated, and
+ * before the lease records any baseline. Moving never refuses the start.
+ *
+ * Once a folder has moved, nothing may leave the lease describing a
+ * checkout that is gone, and nothing may stop the start. So the baseline
+ * is read again, and when that read or the lease built from it fails, the
+ * lease is built from the validated inventory with exactly the moved
+ * worktrees taken out, which needs no further answer from Git.
+ */
+const leaseAfterQueuedRetirement = (
+  repositoryPath: string,
+  validated: RepositoryInventory,
+  agentId: string,
+  mode: RequestMode,
+  target: OpeningTarget,
+  options: LoopStartOptions
+): LoopLease => {
+  // Only a validated start moves anything: this refuses a branch that
+  // cannot be recorded exactly before any worktree is touched.
+  const validatedLease = openingLease(validated, agentId, mode, target);
+  if (!QUEUED_MODES.has(mode)) {
+    return validatedLease;
+  }
+  const report = retireMergedQueuedWorktrees(
+    validated,
+    options.queuedRetirementHooks
+  );
+  let lease = validatedLease;
+  if (report.movedToTrash.length > 0) {
+    try {
+      lease = openingLease(
+        withGitDeadline(30_000, () =>
+          (options.readInventoryAfterRetirement ?? captureInventory)(
+            repositoryPath
+          )
+        ),
+        agentId,
+        mode,
+        target
+      );
+    } catch (error) {
+      report.notes.push(
+        `I could not read the project again after moving earlier copies (${error instanceof Error ? error.message : String(error)}), so this request starts from what I read before, without them.`
+      );
+      lease = openingLease(
+        inventoryWithoutMoved(validated, report.movedToTrash),
+        agentId,
+        mode,
+        target
+      );
+    }
+  }
+  options.onQueuedRetirement?.(report);
+  return lease;
+};
+
+// The lease of a fresh run, taken from one inventory.
+const openingLease = (
+  inventory: RepositoryInventory,
+  agentId: string,
+  mode: RequestMode,
+  { openingRemoteInventory, targetBranch, targetRevision }: OpeningTarget
+): LoopLease => {
+  const now = new Date().toISOString();
+  const currentPath = inventory.repository.currentCheckout;
+  const concurrentWork =
+    inventory.policy.value.concurrentWork === "strict"
+      ? "strict"
+      : "allow-claimed";
+  const coordination = readCoordinationDocumentFromCommonDirectory(
+    inventory.repository.commonGitDirectory
+  );
+  const primaryBranch =
+    inventory.worktrees.find((worktree) => worktree.isPrimary)?.branch ?? null;
+  // Each registration, and the opening inventory below, records the
+  // worktree's branch, so a branch that is not exact refuses the start
+  // and names the worktree.
+  const worktrees = inventory.worktrees.map((worktree) => {
+    if (worktree.path === currentPath) {
+      return exactWorktreeLease(worktree, "controller", agentId, false);
+    }
+    const claim = concurrentClaimFor(
+      {
+        commonGitDirectory: inventory.repository.commonGitDirectory,
+        concurrentWork,
+        primaryCheckout: inventory.repository.primaryCheckout,
+      },
+      worktree,
+      coordination,
+      primaryBranch,
+      targetBranch
+    );
+    if (claim) {
+      return {
+        ...exactWorktreeLease(
+          worktree,
+          "concurrent-author",
+          claim.owner.agentId,
+          false
+        ),
+        claimId: claim.claimId,
+      };
+    }
+    return exactWorktreeLease(worktree, "preserved", null, false);
+  });
+  const lease: LoopLease = {
+    baselineDigest: inventory.baselineDigest,
+    commonGitDirectory: inventory.repository.commonGitDirectory,
+    concurrentWork,
+    controller: {
+      acquiredAt: now,
+      handoffs: [],
+      reason: null,
+      relinquishedAt: null,
+      status: "active",
+    },
+    createdAt: now,
+    dispositions: [],
+    firstMutationAt: null,
+    mode: mode as LoopLease["mode"],
+    openingBranches: inventory.branches.map(({ name, sha }) => ({
+      name,
+      sha,
+    })),
+    openingInvariantDigest: scopeInvariantDigest(inventory),
+    ...(openingRemoteInventory ? { openingRemoteInventory } : {}),
+    openingWorktrees: inventory.worktrees.map(
+      ({ branch, changeDigest, headSha, path }) => ({
+        branch,
+        changeDigest,
+        headSha,
+        path,
+      })
+    ),
+    overrides: [],
+    ownerAgentId: agentId,
+    preparations: [],
+    primaryCheckout: inventory.repository.primaryCheckout,
+    remoteBindings: inventory.repository.remoteBindings,
+    runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
+    schemaVersion: 1,
+    shipmentScopeFrozenAt: null,
+    shipmentScopeRequired: mode === "ship",
+    targetRef: inventory.targetRef,
+    targetRevision,
+    updatedAt: now,
+    worktrees,
+  };
+  if (mode === "ship" && inventory.localChanges.length === 0) {
+    // Capture the clean opening baseline while both locks are held.
+    // Committed and generated delivery remains explicit additionalPaths
+    // in the later outcome; an empty scope proves no delivery by itself.
+    const plan = buildPreviewPlan(
+      inventory,
+      inventory,
+      compareSnapshots(inventory, inventory),
+      "Capture the clean opening shipment baseline"
+    );
+    lease.shipmentScope = {
+      openingChanges: [],
+      openingInventoryDigest: inventory.baselineDigest,
+      plan,
+      planDigest: sha256Json(plan),
+      recordedAt: now,
+    };
+  }
+  return lease;
+};
 
 export const startLoop = (
   repositoryPath: string,
@@ -185,13 +454,13 @@ export const startLoop = (
         opening.repository.commonGitDirectory,
         "loop start claim snapshot",
         () => {
-          const inventory = captureInventory(repositoryPath);
+          const validated = captureInventory(repositoryPath);
           const existing = readLeaseFromCommonDirectory(
-            inventory.repository.commonGitDirectory
+            validated.repository.commonGitDirectory
           );
           const resumed = resolveExistingLoopStart(
             existing,
-            inventory,
+            validated,
             agentId,
             mode
           );
@@ -201,7 +470,7 @@ export const startLoop = (
               // Beside the lease it transfers, under the loop lock it holds.
               const reviewLedger = loadReviewLedgerForResume(
                 heldLoopLock(
-                  inventory.repository.commonGitDirectory,
+                  validated.repository.commonGitDirectory,
                   "loop start"
                 ),
                 resumed.primaryCheckout,
@@ -212,125 +481,18 @@ export const startLoop = (
             options.onStarted?.(resumed);
             return resumed;
           }
-          const now = new Date().toISOString();
-          const currentPath = inventory.repository.currentCheckout;
-          const concurrentWork =
-            inventory.policy.value.concurrentWork === "strict"
-              ? "strict"
-              : "allow-claimed";
-          const coordination = readCoordinationDocumentFromCommonDirectory(
-            inventory.repository.commonGitDirectory
+          // The last of start validation: the controller session and any
+          // existing run were settled above, and these settle the target,
+          // the provider inventory, and each worktree's exact branch.
+          const target = openingTarget(validated, openingRemoteInventoryInput);
+          const lease = leaseAfterQueuedRetirement(
+            repositoryPath,
+            validated,
+            agentId,
+            mode,
+            target,
+            options
           );
-          const primaryBranch =
-            inventory.worktrees.find((worktree) => worktree.isPrimary)
-              ?.branch ?? null;
-          const targetBranch = targetBranchForRef(
-            inventory.repository.primaryCheckout,
-            inventory.targetRef
-          );
-          const targetRevision = runGit(inventory.repository.primaryCheckout, [
-            "rev-parse",
-            "--verify",
-            `${inventory.targetRef}^{commit}`,
-          ]).stdout.trim();
-          const openingRemoteInventory = openingRemoteInventoryForStart(
-            inventory,
-            openingRemoteInventoryInput,
-            targetBranch,
-            targetRevision
-          );
-          // Each registration, and the opening inventory below, records the
-          // worktree's branch, so a branch that is not exact refuses the start
-          // and names the worktree.
-          const worktrees = inventory.worktrees.map((worktree) => {
-            if (worktree.path === currentPath) {
-              return exactWorktreeLease(worktree, "controller", agentId, false);
-            }
-            const claim = concurrentClaimFor(
-              {
-                commonGitDirectory: inventory.repository.commonGitDirectory,
-                concurrentWork,
-                primaryCheckout: inventory.repository.primaryCheckout,
-              },
-              worktree,
-              coordination,
-              primaryBranch,
-              targetBranch
-            );
-            if (claim) {
-              return {
-                ...exactWorktreeLease(
-                  worktree,
-                  "concurrent-author",
-                  claim.owner.agentId,
-                  false
-                ),
-                claimId: claim.claimId,
-              };
-            }
-            return exactWorktreeLease(worktree, "preserved", null, false);
-          });
-          const lease: LoopLease = {
-            baselineDigest: inventory.baselineDigest,
-            commonGitDirectory: inventory.repository.commonGitDirectory,
-            concurrentWork,
-            controller: {
-              acquiredAt: now,
-              handoffs: [],
-              reason: null,
-              relinquishedAt: null,
-              status: "active",
-            },
-            createdAt: now,
-            dispositions: [],
-            firstMutationAt: null,
-            mode: mode as LoopLease["mode"],
-            openingBranches: inventory.branches.map(({ name, sha }) => ({
-              name,
-              sha,
-            })),
-            openingInvariantDigest: scopeInvariantDigest(inventory),
-            ...(openingRemoteInventory ? { openingRemoteInventory } : {}),
-            openingWorktrees: inventory.worktrees.map(
-              ({ branch, changeDigest, headSha, path }) => ({
-                branch,
-                changeDigest,
-                headSha,
-                path,
-              })
-            ),
-            overrides: [],
-            ownerAgentId: agentId,
-            preparations: [],
-            primaryCheckout: inventory.repository.primaryCheckout,
-            remoteBindings: inventory.repository.remoteBindings,
-            runId: `run-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`,
-            schemaVersion: 1,
-            shipmentScopeFrozenAt: null,
-            shipmentScopeRequired: mode === "ship",
-            targetRef: inventory.targetRef,
-            targetRevision,
-            updatedAt: now,
-            worktrees,
-          };
-          if (mode === "ship" && inventory.localChanges.length === 0) {
-            // Capture the clean opening baseline while both locks are held.
-            // Committed and generated delivery remains explicit additionalPaths
-            // in the later outcome; an empty scope proves no delivery by itself.
-            const plan = buildPreviewPlan(
-              inventory,
-              inventory,
-              compareSnapshots(inventory, inventory),
-              "Capture the clean opening shipment baseline"
-            );
-            lease.shipmentScope = {
-              openingChanges: [],
-              openingInventoryDigest: inventory.baselineDigest,
-              plan,
-              planDigest: sha256Json(plan),
-              recordedAt: now,
-            };
-          }
           const written = writeLease(lease);
           writeControllerBinding(written, {
             awaitingUser: null,

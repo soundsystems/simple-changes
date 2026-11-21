@@ -114,6 +114,11 @@ directory. `loop start` creates it atomically and records:
 - exact user-approved overrides and audited removal dispositions, when any
   exist.
 
+A fresh Queue or Sweep start first moves to the Trash the worktrees that
+earlier Queue and Sweep runs kept and whose work is merged, before it records
+this baseline; see
+[cleanup and completion](cleanup-and-completion.md#a-later-queue-or-sweep-start-moves-merged-kept-worktrees-to-the-trash).
+
 The lock directory prevents two integration operations from updating shared
 manifest, target, proposal, merge, deployment, or cleanup state at once. It is
 not a repository-wide authoring mutex. A second controller cannot replace an
